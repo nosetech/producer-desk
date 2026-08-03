@@ -46,3 +46,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 変更は必ずPRで`develop`に取り込む。GitHub issueに対応する変更は、PR本文に `Closes #<issue番号>` を記載する
 - issueはこのシステムの設計フェーズの進行管理に使われている（要件定義 #2 → アーキテクチャ設計 #3 → 基本設計 #4 の順）。各ドキュメント冒頭に対応issue番号が記載されている
 - 前提となる調査資料は別リポジトリ `nosetech/research-log` の `log/2026/07/autonomous-dev-orchestration/` 配下にあり、各ドキュメントからリンクされている（`existing-tools.md` / `architecture-and-challenges.md` / `poc-results.md`）
+- PR作成時は `.github/workflows/` のCIでフォーマット・lint・テストが自動実行される（`orchestrator/**` / `dashboard/**` の変更パスに応じてジョブが分岐）。push前にローカルで以下を実行し、CI落ちを防ぐこと
+  - `orchestrator/`: `ruff format .` → `ruff check .` → `pytest`（事前に `pip install -e ".[dev]"`）
+  - `dashboard/`: `npm run format` → `npm run lint` → `npx tsc --noEmit`

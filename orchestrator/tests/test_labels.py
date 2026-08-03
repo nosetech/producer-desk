@@ -149,9 +149,7 @@ def test_retry_converges_after_add_failure_leaves_no_status_label() -> None:
         ({STATUS_IN_REVIEW}, STATUS_IN_REVIEW),
     ],
 )
-def test_resolve_instruction_label_follows_table(
-    current_labels: set[str], expected: str
-) -> None:
+def test_resolve_instruction_label_follows_table(current_labels: set[str], expected: str) -> None:
     assert resolve_instruction_label(current_labels) == expected
 
 
