@@ -1,0 +1,173 @@
+# 基本設計書: 自走型AI開発オーケストレーションシステム（producer-desk）
+
+- 対応issue: [#4](https://github.com/nosetech/producer-desk/issues/4)（親issue: [#1](https://github.com/nosetech/producer-desk/issues/1)、前提issue: [#2](https://github.com/nosetech/producer-desk/issues/2) [#3](https://github.com/nosetech/producer-desk/issues/3)）
+- 作成日: 2026-08-03
+- 前提: [要件定義書](./requirements.md) / [アーキテクチャ設計書](./architecture.md)
+- 画面設計: 本書ではワイヤーフレーム等の視覚的な設計は扱わない。Claude Designへの委譲プロンプトを[design-prompt-dashboard.md](./design-prompt-dashboard.md)としてまとめている。
+
+## 1. データモデル・状態遷移設計
+
+### 状態一覧・遷移条件・ラベル操作
+
+| 状態 | ラベル | 付与するアクター | タイミング |
+|---|---|---|---|
+| 未着手 | `status:todo` | 人間 または AI（issue作成時） | issue作成時 |
+| 作業中 | `status:in-progress` | Agent Runner（自己付与） | ディスパッチされ着手した時 |
+| 判断待ち | `needs-human-decision` | Agent Runner（自己付与） | 人間の判断が必要と自ら判断した時 |
+| レビュー待ち | `status:in-review` | Agent Runner（自己付与） | PRを作成した時 |
+| 完了 | （ラベルなし） | 人間 | issueをクローズした時 |
+
+状態ラベルは常に1つのみ付与される（[アーキテクチャ設計書 3章](./architecture.md#3-タスク状態管理)）。
+
+### 冪等な状態遷移フロー
+
+ラベルの付け替えは以下の擬似コードの通り、**現在のラベル一覧を取得してから差分のみ適用**する（PoCで判明した `--remove-label`/`--add-label` の非atomic性への対処、[poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md) 1章）。
+
+```python
+def transition_label(repo, issue_number, new_label):
+    current_labels = gh_api_get_labels(repo, issue_number)
+    status_labels = {"status:todo", "status:in-progress", "needs-human-decision", "status:in-review"}
+
+    # 既に目的のラベルが付いていれば何もしない（再実行しても安全）
+    if new_label in current_labels:
+        return
+
+    # 現在付与されている状態ラベルのみを個別に外す
+    for label in current_labels & status_labels:
+        gh_api_remove_label(repo, issue_number, label)
+
+    gh_api_add_label(repo, issue_number, new_label)
+```
+
+- リトライ時も「現在の状態を見て必要な差分だけ適用する」ため、途中で失敗しても再実行で収束する。
+
+## 2. オーケストレータ／ダッシュボードAPI設計
+
+### 2-1. 対象リポジトリ一覧の管理
+
+設定ファイル（`config/projects.yaml`）で管理する。
+
+```yaml
+projects:
+  - repo: nosetech/project-a
+    worktree_path: /Users/producer/worktrees/project-a
+    session_id: null   # 初回ディスパッチ後に自動採番・保存
+  - repo: nosetech/project-b
+    worktree_path: /Users/producer/worktrees/project-b
+    session_id: null
+```
+
+- プロジェクト追加時は、このファイルにエントリを追加し、対象リポジトリのworktreeを用意した上でオーケストレータを再起動する（[要件定義書 2-4](./requirements.md#2-4-agent-runnerの起動停止プロジェクト追加時の運用フロー)の「手動起動・停止」＝このファイルへの登録とオーケストレータの認識、と読み替える）。
+
+### 2-2. データ取得仕様（ポーリング）
+
+- **ポーリング間隔**: 5分。
+- 各対象リポジトリに対し `gh issue list --repo <repo> --state open --json number,title,labels,comments,updatedAt` 相当のAPI呼び出しで、Open issue一覧とラベル・コメント・更新日時を取得する。
+- 取得結果から、ダッシュボード表示用に以下を集約する。
+  - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
+  - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
+  - 利用量・リミットモニター: Claude Codeの利用量／リミット到達状況（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）。ローカルのClaude Code使用量ログ・リミット到達検知の具体的な取得方法は実装フェーズで設計する
+
+### 2-3. 指示出しAPI（内部API）
+
+ダッシュボード（Next.js）とオーケストレータ間の内部APIは以下の通り。
+
+```
+POST /api/projects/{repo}/issues/{issue_number}/instruct
+Content-Type: application/json
+
+{
+  "action": "approve" | "reject" | "comment",
+  "message": "string（省略時はaction種別に応じた定型文を使用）"
+}
+```
+
+- `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿し、[1章](#1-データモデル状態遷移設計)の状態遷移フローで `needs-human-decision` → `status:in-progress` へラベルを更新した上で、[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを**即時実行**する（次回ポーリングを待たない）。
+- `reject`: 定型文（またはユーザー入力の理由）をコメント投稿し、ラベルは `needs-human-decision` のまま維持する（差し戻し。Agent Runnerの再開はプロデューサーが改めて `approve` するまで行わない）。
+- `comment`: 任意メッセージをissueにコメント投稿するのみ（ラベル変更・ディスパッチなし）。
+- 認証は[6-2](#6-2-ネットワークアクセスの認証設計)の通りアプリレベルの追加認証は行わず、Tailscaleのネットワーク境界に委ねる。
+
+内部的な処理は `gh api repos/{repo}/issues/{issue_number}/comments` へのPOSTとして実装する（[アーキテクチャ設計書 4章](./architecture.md#4-ダッシュボードオーケストレーション)の案A）。
+
+直接GitHub issue上にコメントされた指示（ダッシュボード経由でない指示）は、次回ポーリング（最大5分後）でオーケストレータが検知し、同様にディスパッチする。
+
+### 2-4. ダッシュボードの画面設計
+
+視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+
+## 3. Agent Runner連携設計
+
+### 3-1. 起動パラメータ
+
+```bash
+claude -p "<指示内容>" \
+  --resume <session-id> \
+  --cwd <worktree-path> \
+  --dangerously-skip-permissions
+```
+
+- `<session-id>` は `config/projects.yaml` にプロジェクトごとに保存し、初回ディスパッチ時にセッションを新規作成した後、そのセッションIDを書き戻して以降の指示で再利用する。
+- `<worktree-path>` はプロジェクトごとに用意されたgit worktreeのパス。
+
+### 3-2. 監視方法
+
+- **ヘルスチェック**: ワンショット実行のため常時稼働の監視は不要。プロセスの終了コード（0=正常終了、非0=異常終了）を確認し、異常終了時はダッシュボードの活動ログにエラーとして記録する。
+- **ログ収集**: 標準出力・標準エラー出力を `logs/<repo>/<timestamp>.log` としてローカルに保存する。加えて、実行結果の要約をissueコメントとして投稿し、ダッシュボードの活動ログと連動させる。
+
+### 3-3. オーケストレータ⇔Agent Runnerのインターフェース仕様
+
+- オーケストレータはPythonの `subprocess` でClaude Code CLIを直接起動し、標準出力・終了コードを同期的に取得する（HTTP等の別プロセス間APIは設けない）。
+- 1プロジェクトにつき同時に1つの `claude -p` プロセスのみ実行する（同一worktreeへの同時書き込みを避けるため、ディスパッチ中は当該プロジェクトの新規ディスパッチをキューイングする）。
+
+## 4. モデルルーター設定設計
+
+[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、MVPではLiteLLM Proxyを導入せず、Claude Code CLIを直接利用する。そのため本書では設定ファイル構成・モデル選択ポリシーの詳細設計は行わない。将来ローカルLLMを併用する際に、LiteLLM Proxyの設定ファイル構成・論理モデル名の命名規則・使い分けポリシーの実装仕様を別途設計する。
+
+## 5. 通知・承認フロー詳細設計
+
+### 5-1. Slack設定手順
+
+1. Slackワークスペースで通知用チャンネルを作成し、Incoming Webhookアプリを追加してWebhook URLを発行する。
+2. Webhook URLはオーケストレータの設定（環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル）に保存する。リポジトリにはコミットしない。
+
+### 5-2. メッセージフォーマット
+
+判断待ち（`needs-human-decision`）が新規発生した際、以下の内容でWebhook POSTする。
+
+```json
+{
+  "text": ":bell: 判断待ちが発生しました\n*リポジトリ*: nosetech/project-a\n*issue*: #12 ログイン機能のAPI設計について\nhttps://github.com/nosetech/project-a/issues/12"
+}
+```
+
+### 5-3. ダッシュボードからの承認・却下操作の内部処理フロー
+
+1. プロデューサーがダッシュボードで対象issueの「承認」または「却下」ボタンをタップする。
+2. ダッシュボードが[2-3](#2-3-指示出しapi内部api)の内部APIにリクエストを送信する。
+3. オーケストレータが対象issueの現在のラベルを取得する（[1章](#1-データモデル状態遷移設計)の冪等フロー）。
+4. `gh api` 経由でissueに定型コメントを投稿する。
+5. 承認の場合、ラベルを `needs-human-decision` → `status:in-progress` に更新し、[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを即時実行する。却下の場合はラベルを維持し、ディスパッチは行わない。
+6. 処理結果をダッシュボードのレスポンスとして返し、UIの判断待ち一覧から該当issueを除外する（承認の場合）。
+
+## 6. 権限・セキュリティ設計
+
+### 6-1. Agent Runnerのサンドボックス・権限設定
+
+- `claude -p` 起動時に `--dangerously-skip-permissions` フラグを付与し、worktreeディレクトリ内でのフル自動実行を許可する（[アーキテクチャ設計書 7章](./architecture.md#7-権限管理安全対策)）。
+- 設定ファイル（`.claude/settings.json`）による権限モード指定は行わず、起動コマンドを見れば挙動が一目瞭然になるようにする。
+
+### 6-2. ネットワークアクセスの認証設計
+
+- アプリケーションレベルの追加認証（Basic認証等）は設けない。
+- ダッシュボード・オーケストレータの待受プロセスは、0.0.0.0ではなく**TailscaleのインターフェースIPにのみbind**する（例: Next.jsの起動オプションで `--hostname <tailscale-ip>` を指定）。これにより、Tailscaleネットワークの外からは到達不能にする。
+
+## 成果物
+
+- 本書（データモデル定義、状態遷移フロー、API仕様、Agent Runner連携仕様、通知フロー、権限設計）
+- [design-prompt-dashboard.md](./design-prompt-dashboard.md)（Claude Designへの画面設計委譲プロンプト）
+
+## 参考
+
+- [要件定義書](./requirements.md)
+- [アーキテクチャ設計書](./architecture.md)
+- [poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md)

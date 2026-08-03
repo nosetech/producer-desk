@@ -13,7 +13,7 @@
 flowchart TB
     subgraph Mobile["モバイル / PC（Tailscale経由）"]
         A["ブラウザ（ダッシュボード）"]
-        N["Discord アプリ"]
+        N["Slack アプリ"]
     end
 
     subgraph HomeNet["自宅ネットワーク（ローカルPC・Tailscale配下）"]
@@ -25,29 +25,29 @@ flowchart TB
     end
 
     H["GitHub Issues（データ層・状態機械）"]
-    Discord["Discord（Channels）"]
+    Slack["Slack（Incoming Webhook）"]
 
     A <--> B
     B <--> C
     C -- "ポーリング" --> H
     C -- "検知した指示をディスパッチ" --> D1 & D2 & D3
     D1 & D2 & D3 -- "ラベル更新・コメント投稿" --> H
-    C -- "判断待ち発生を通知" --> Discord
-    Discord --> N
+    C -- "判断待ち発生を通知（Webhook POST）" --> Slack
+    Slack --> N
 ```
 
 - モデルルーター（LiteLLM Proxy）はMVPでは導入しない（[5章](#5-モデルルーティング)参照）。
-- ダッシュボード・Discordともに、モバイル/PCからのアクセスはTailscaleのネットワーク境界のみで保護する（[8章](#8-ネットワーク構成)参照）。
+- ダッシュボードへのアクセスはTailscaleのネットワーク境界のみで保護する（[8章](#8-ネットワーク構成)参照）。Slack通知はオーケストレータからのWebhook送信のみで、Tailscale網の外（Slack社インフラ）を経由する点に留意する。
 
 ### コンポーネント一覧と責務
 
 | コンポーネント | 責務 | 技術 |
 |---|---|---|
 | ダッシュボード（Web UI） | 判断待ち一覧／活動ログ／利用量・リミットモニターの表示、ワンタップ承認・却下の入力 | Next.js（React） |
-| オーケストレータ | GitHub Issuesのポーリング、状態集約、指示コメントの検知・ディスパッチ、Discordへの通知送信 | Pythonポーリングスクリプト（PoC-Aの`instruction_watcher.py`を発展） |
+| オーケストレータ | GitHub Issuesのポーリング、状態集約、指示コメントの検知・ディスパッチ、Slackへの通知送信 | Pythonポーリングスクリプト（PoC-Aの`instruction_watcher.py`を発展） |
 | Agent Runner | 実際にコードを書く実行単位。プロジェクトごとにgit worktreeで隔離し、ディスパッチ時にワンショットで起動 | Claude Code CLI（`claude -p`） |
 | データ層 | タスク状態・指示履歴の正 | GitHub Issues/Projects |
-| 通知 | 判断待ち発生時にモバイルへ知らせる（ダッシュボードでの定期確認運用が基本、Discordは補完） | Discord（Channels） |
+| 通知 | 判断待ち発生時にモバイルへ知らせる（ダッシュボードでの定期確認運用が基本、Slackは補完） | Slack（Incoming Webhook） |
 
 ### コンポーネント間の通信方式
 
@@ -95,8 +95,8 @@ flowchart TB
 ## 6. 通知・承認フロー
 
 - Claude Code Remote ControlのPush通知は実機検証で信頼性が確認できなかった（[要件定義書 2-6](./requirements.md#2-6-通知要件)）ため、Remote Controlには依存しない。
-- **Discord**をChannelsとして採用し、判断待ち発生時にオーケストレータからDiscordへ通知を送信する。
-- 主な利用シーン（就寝前後の確認、PC前レビュー）を踏まえ、ダッシュボードでの定期確認運用を基本としつつ、Discord通知を即時性の補完として併用する。
+- **Slack（Incoming Webhook）**を採用し、判断待ち発生時にオーケストレータからSlackへ通知を送信する。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わず、オーケストレータが直接Slack Incoming Webhook URLへHTTP POSTする一方向通知とする（双方向の承認操作はダッシュボード側で行うため、Slack側での応答は不要）。
+- 主な利用シーン（就寝前後の確認、PC前レビュー）を踏まえ、ダッシュボードでの定期確認運用を基本としつつ、Slack通知を即時性の補完として併用する。
 
 ## 7. 権限管理・安全対策
 

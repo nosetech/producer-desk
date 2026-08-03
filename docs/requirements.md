@@ -51,7 +51,7 @@
 ### 2-6. 通知要件
 
 - Claude Code Remote ControlのPush通知は実機検証（Android、3回）で一度も届かず、信頼性に課題があることが判明している（[poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md) 7-1節）。
-- Telegram等の公式Channelsプラグインを併用し、Push通知の信頼性をプラットフォーム側に委ねる形で補完する。
+- Slack（Incoming Webhook）を併用し、Push通知の信頼性をプラットフォーム側に委ねる形で補完する（Claude Code純正のChannelsプラグインではなく、オーケストレータから直接Slackへ通知する方式。[architecture.md 6章](./architecture.md#6-通知承認フロー)参照）。
 - 主な利用シーンが「就寝前後」「PC前レビュー」中心で即時性の優先度が低いことも踏まえ、Push通知の到達を前提にしすぎない設計とする。
 
 ### 2-7. 承認・却下操作の要件
@@ -96,7 +96,7 @@
 - Tailscaleのネットワーク境界のみによる認証
 - プロジェクトごとのgit worktree隔離
 - CLIコマンドによるAgent Runnerの手動起動・停止
-- Telegram等Channels併用による通知の信頼性補完
+- Slack（Incoming Webhook）併用による通知の信頼性補完
 - 利用リミット到達時はプランのリセットまで待機（追加コスト支払いなし）
 
 ### 4-2. 将来拡張とする範囲
