@@ -1,0 +1,11 @@
+# config/projects.yaml のサンプル。
+# 実データは config/projects.yaml にコピーして作成する（.gitignore対象、コミットしない）。
+# 仕様: docs/basic-design.md 2-1（対象リポジトリ一覧の管理）
+
+projects:
+  - repo: nosetech/project-a
+    worktree_path: /Users/producer/worktrees/project-a
+    session_id: null # 初回ディスパッチ後に自動採番・保存
+  - repo: nosetech/project-b
+    worktree_path: /Users/producer/worktrees/project-b
+    session_id: null
