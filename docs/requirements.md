@@ -20,7 +20,7 @@
 
 - 判断待ち一覧（`needs-human-decision` ラベルが付与されたissueの横断集約）
 - 最近の活動ログ（タイムライン形式。Agent Runnerの直近のコミット・PR・issue更新）
-- コスト（API利用量）モニター（[3-4](#3-4-コスト制約)の月額上限と連動）
+- Claude Codeの利用量／リミット到達状況モニター（[3-4](#3-4-コスト制約)参照）
 - プロジェクト別サマリは今回のMVPでは対象外とする。
 
 ### 2-2. 「判断が必要な項目」の判定規約
@@ -44,9 +44,9 @@
 
 ### 2-5. モデル選択方針
 
-- MVPではClaudeのみを利用する。
+- MVPではClaude Codeのみを利用する。Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約を利用する（[3-4](#3-4-コスト制約)参照）。Agent RunnerはClaude Code CLIプロセスとしてプロジェクトごとに起動する。
   - ローカルLLMはツール呼び出し（Function Calling）の信頼性がモデルサイズに強く依存し不安定であることがPoC（[architecture-and-challenges.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/architecture-and-challenges.md) 2-4節）で確認されているため、コード変更を伴う自走タスクには現時点で採用しない。
-- ただし、Agent RunnerからはLiteLLM Proxy経由でモデルを呼ぶ構成にしておき、将来的なローカルLLM併用（設定ファイルの変更のみでの切り替え）に備える。
+- 将来的にローカルLLMを併用する場合はLiteLLM Proxy等によるモデルルーティング層の追加を検討する。ただしMVPのClaude CodeはサブスクリプションベースでAPIエンドポイントを経由しないため、モデルルーターを挟む構成は将来拡張時に別途設計する。
 
 ### 2-6. 通知要件
 
@@ -77,8 +77,9 @@
 
 ### 3-4. コスト制約
 
-- Claude APIの月額利用上限を設定する。
-- 上限に近づいた場合は通知、超過した場合はAgent Runnerを自動停止する。
+- Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約の範囲内で運用する。追加コストを支払っての即時再開は行わない。
+- 利用リミット（レートリミット等）に達した場合は、Agent Runnerを一時停止し、プランのリセットタイミングまで待機する。
+- ダッシュボードには利用量・リミット到達状況をモニターとして表示する（[2-1](#2-1-ダッシュボード表示項目)参照）。
 
 ### 3-5. 運用体制
 
@@ -89,14 +90,14 @@
 
 ### 4-1. MVPに含める範囲
 
-- ダッシュボード（判断待ち一覧／最近の活動ログ／コストモニター、ワンタップ承認・却下）
+- ダッシュボード（判断待ち一覧／最近の活動ログ／利用量・リミットモニター、ワンタップ承認・却下）
 - GitHub issueコメント経由の指示出し（案A）
-- モデルはClaudeのみ（LiteLLM Proxy経由の構成で将来拡張に備える）
+- モデルはClaude Codeのみ（Pro/Maxプラン等のサブスクリプション、Anthropic API従量課金は使わない）
 - Tailscaleのネットワーク境界のみによる認証
 - プロジェクトごとのgit worktree隔離
 - CLIコマンドによるAgent Runnerの手動起動・停止
 - Telegram等Channels併用による通知の信頼性補完
-- Claude API月額利用上限と自動停止
+- 利用リミット到達時はプランのリセットまで待機（追加コスト支払いなし）
 
 ### 4-2. 将来拡張とする範囲
 
