@@ -76,3 +76,4 @@
 - 本プロンプトが参照しているデータ項目・API仕様は [basic-design.md 2章](./basic-design.md#2-オーケストレータダッシュボードapi設計) に対応している。デザイン確定後、実装時にこの対応関係を確認すること。
 - 状態バッジの色分けは [basic-design.md 1章](./basic-design.md#1-データモデル状態遷移設計) のラベルスキーマ（`status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review`）に対応させる。
 - デザイン成果物（Artifact）ができたら、URLまたはコードをこのリポジトリの実装issueに添付し、Next.js実装のベースとする。
+- 本プロンプトでの初回デザイン後に指示入力欄の要件が追加された場合は、ゼロから作り直すのではなく [design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md) の差分プロンプトを使って既存デザインを更新すること。
