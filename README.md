@@ -44,7 +44,7 @@ pip install -e .
 python -m orchestrator.main
 ```
 
-5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチまでを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章）。ダッシュボードUI本体は後続issueで実装する。
+5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチ、判断待ち新規発生時のSlack通知までを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章・5章）。ダッシュボードUI本体は後続issueで実装する。
 
 ### 3. config/projects.yaml の作成
 
@@ -56,7 +56,7 @@ cp config/projects.yaml.example config/projects.yaml
 
 ### 4. Slack Webhook URL等のsecrets
 
-Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（`.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。
+Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（`.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。未設定の場合、オーケストレータは判断待ち発生時のSlack通知処理を単にスキップする（起動エラーにはならない）。
 
 ## ログ出力先ディレクトリの運用方針
 
