@@ -50,12 +50,14 @@ class FakeIssueCreator:
         return number
 
 
-def _recording_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, str]], threading.Event]:
-    calls: list[tuple[str, str]] = []
+def _recording_dispatch_queue() -> tuple[
+    DispatchQueue, list[tuple[str, int, str]], threading.Event
+]:
+    calls: list[tuple[str, int, str]] = []
     event = threading.Event()
 
-    def dispatch_fn(repo: str, message: str) -> None:
-        calls.append((repo, message))
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        calls.append((repo, issue_number, message))
         event.set()
 
     return DispatchQueue(dispatch_fn=dispatch_fn), calls, event
@@ -189,7 +191,7 @@ def test_instruct_approve_posts_comment_transitions_label_and_dispatches() -> No
         assert comments.posted == [("nosetech/project-a", 1, "承認します。進めてください。")]
         assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
         assert event.wait(timeout=2)
-        assert calls == [("nosetech/project-a", "承認します。進めてください。")]
+        assert calls == [("nosetech/project-a", 1, "承認します。進めてください。")]
     finally:
         server.shutdown()
 
@@ -276,7 +278,7 @@ def test_create_issue_immediate_dispatch() -> None:
         assert issue_creator.created == [("nosetech/project-a", "新機能", "実装してください")]
         assert labels.labels_by_issue[42] == {STATUS_IN_PROGRESS}
         assert event.wait(timeout=2)
-        assert calls == [("nosetech/project-a", "実装してください")]
+        assert calls == [("nosetech/project-a", 42, "実装してください")]
     finally:
         server.shutdown()
 

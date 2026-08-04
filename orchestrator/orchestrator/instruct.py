@@ -68,7 +68,7 @@ def apply_instruction(
         add_label=add_label,
         remove_label=remove_label,
     )
-    dispatch_queue.enqueue(repo, message)
+    dispatch_queue.enqueue(repo, issue_number, message)
     return new_label
 
 
@@ -142,5 +142,5 @@ def handle_create_issue(
         add_label=add_label,
         remove_label=remove_label,
     )
-    dispatch_queue.enqueue(repo, prompt)
+    dispatch_queue.enqueue(repo, issue_number, prompt)
     return CreateIssueResult(issue_number=issue_number, dispatched=True)

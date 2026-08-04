@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 利用者はプロデューサー1名のみ。複数ユーザー対応・権限分離はMVPで考慮しない
 - **GitHub Issues/Projectsが正のデータストア**。独自DBは持たない。状態は単一の排他的ラベルで表現する: `status:todo` → `status:in-progress` → `needs-human-decision` → `status:in-review` → （issueクローズ＝完了）
 - ラベル操作は**冪等**に行う（`gh` のadd/remove-labelは非atomicなため、現在のラベルを取得してから差分のみ適用する。`basic-design.md` 1章の擬似コード参照）
-- Agent Runnerは常駐プロセスではなく **`claude -p ... --resume ... --cwd ... --dangerously-skip-permissions` のワンショット実行**。プロジェクトごとにgit worktreeで隔離し、同一プロジェクトへの同時実行は行わずFIFOキューで順次処理する
+- Agent Runnerは常駐プロセスではなく **`claude -p ... --resume ... --dangerously-skip-permissions` のワンショット実行**（worktreeディレクトリはCLIフラグではなくsubprocessの`cwd`引数で指定する。実CLIに`--cwd`フラグは存在しないため、`basic-design.md` 3-1参照）。プロジェクトごとにgit worktreeで隔離し、同一プロジェクトへの同時実行は行わずFIFOキューで順次処理する
 - MVPでは **LiteLLM Proxy等のモデルルーターを導入しない**。Claude Code CLIを直接利用し、Anthropic APIの従量課金ではなく**Claude Code Pro/Maxプラン等のサブスクリプション**を使う。利用リミット到達時は追加コストを払わずリセットまで待機する
 - MVPでは**Dockerを使わずネイティブ構成**（Homebrew/pip等）。PoC環境でDockerのネットワーク操作がハングする問題が確認されたため
 - コンポーネント間通信は**ポーリングに統一**（Webhookは不採用）。Tailscaleの閉域網内で完結させる前提のため、外部到達可能なエンドポイントを必要とする方式は避ける

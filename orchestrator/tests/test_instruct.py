@@ -45,11 +45,11 @@ class FakeComments:
         self.posted.append((repo, issue_number, body))
 
 
-def _synchronous_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, str]]]:
-    calls: list[tuple[str, str]] = []
+def _synchronous_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, int, str]]]:
+    calls: list[tuple[str, int, str]] = []
 
-    def dispatch_fn(repo: str, message: str) -> None:
-        calls.append((repo, message))
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        calls.append((repo, issue_number, message))
 
     return DispatchQueue(dispatch_fn=dispatch_fn), calls
 
@@ -88,7 +88,7 @@ def test_handle_instruct_approve_uses_default_message_and_dispatches() -> None:
     assert comments.posted == [("nosetech/project-a", 1, APPROVE_DEFAULT_MESSAGE)]
     assert labels.labels == {STATUS_IN_PROGRESS}
     _wait_for(calls, 1)
-    assert calls == [("nosetech/project-a", APPROVE_DEFAULT_MESSAGE)]
+    assert calls == [("nosetech/project-a", 1, APPROVE_DEFAULT_MESSAGE)]
 
 
 def test_handle_instruct_approve_with_custom_message() -> None:
@@ -196,7 +196,7 @@ def test_handle_instruct_instruct_on_in_progress_does_not_change_label_but_dispa
     assert result.dispatched is True
     assert labels.labels == {STATUS_IN_PROGRESS}
     _wait_for(calls, 1)
-    assert calls == [("nosetech/project-a", "割り込み指示です")]
+    assert calls == [("nosetech/project-a", 1, "割り込み指示です")]
 
 
 def test_handle_instruct_instruct_on_in_review_keeps_label() -> None:
@@ -271,7 +271,7 @@ def test_handle_create_issue_immediate_dispatches() -> None:
     assert issue_creator.created == [("nosetech/project-a", "新機能", "プロンプト本文")]
     assert labels.labels == {STATUS_IN_PROGRESS}
     _wait_for(calls, 1)
-    assert calls == [("nosetech/project-a", "プロンプト本文")]
+    assert calls == [("nosetech/project-a", 99, "プロンプト本文")]
 
 
 def test_handle_create_issue_queued_does_not_dispatch() -> None:
