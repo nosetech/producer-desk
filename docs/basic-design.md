@@ -78,6 +78,7 @@ projects:
   - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
   - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
   - 利用量・リミットモニター: Claude Codeの利用量／リミット到達状況（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）。ローカルのClaude Code使用量ログ・リミット到達検知の具体的な取得方法は実装フェーズで設計する
+- **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "activity": [...]}` 形式のJSONで返す。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
 
 ### 2-3. 指示出しAPI（内部API）
 
