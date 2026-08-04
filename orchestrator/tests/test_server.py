@@ -8,11 +8,61 @@ import urllib.error
 import urllib.request
 
 from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummary
+from orchestrator.config import Project
+from orchestrator.dispatch_queue import DispatchQueue
+from orchestrator.labels import STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
 from orchestrator.server import StateStore, make_server
 
+PROJECT_A = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
 
-def _run_server_in_background(store: StateStore):
-    server = make_server(store, host="127.0.0.1", port=0)
+
+class FakeLabels:
+    def __init__(self, initial: dict[int, set[str]] | None = None) -> None:
+        self.labels_by_issue: dict[int, set[str]] = initial or {}
+
+    def get_labels(self, repo: str, issue_number: int) -> set[str]:
+        return set(self.labels_by_issue.get(issue_number, set()))
+
+    def add_label(self, repo: str, issue_number: int, label: str) -> None:
+        self.labels_by_issue.setdefault(issue_number, set()).add(label)
+
+    def remove_label(self, repo: str, issue_number: int, label: str) -> None:
+        self.labels_by_issue.setdefault(issue_number, set()).discard(label)
+
+
+class FakeComments:
+    def __init__(self) -> None:
+        self.posted: list[tuple[str, int, str]] = []
+
+    def post_comment(self, repo: str, issue_number: int, body: str) -> None:
+        self.posted.append((repo, issue_number, body))
+
+
+class FakeIssueCreator:
+    def __init__(self, start_number: int = 100) -> None:
+        self._next = start_number
+        self.created: list[tuple[str, str, str]] = []
+
+    def create_issue(self, repo: str, title: str, body: str) -> int:
+        self.created.append((repo, title, body))
+        number = self._next
+        self._next += 1
+        return number
+
+
+def _recording_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, str]], threading.Event]:
+    calls: list[tuple[str, str]] = []
+    event = threading.Event()
+
+    def dispatch_fn(repo: str, message: str) -> None:
+        calls.append((repo, message))
+        event.set()
+
+    return DispatchQueue(dispatch_fn=dispatch_fn), calls, event
+
+
+def _run_server(store: StateStore, **kwargs) -> tuple:
+    server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
@@ -22,6 +72,22 @@ def _get(server, path: str) -> tuple[int, dict]:
     host, port = server.server_address[0], server.server_address[1]
     with urllib.request.urlopen(f"http://{host}:{port}{path}") as response:
         return response.status, json.loads(response.read())
+
+
+def _post(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
 
 
 def test_state_store_returns_none_before_any_update() -> None:
@@ -41,7 +107,8 @@ def test_state_store_returns_latest_set_state() -> None:
 
 def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
     store = StateStore()
-    server, _ = _run_server_in_background(store)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
     try:
         status, body = _get(server, "/api/state")
         assert status == 200
@@ -75,7 +142,8 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
             ],
         )
     )
-    server, _ = _run_server_in_background(store)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
     try:
         status, body = _get(server, "/api/state")
         assert status == 200
@@ -87,13 +155,171 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
 
 def test_unknown_path_returns_404() -> None:
     store = StateStore()
-    server, _ = _run_server_in_background(store)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
     try:
-        try:
-            _get(server, "/unknown")
-        except urllib.error.HTTPError as e:
-            assert e.code == 404
-        else:
-            raise AssertionError("expected HTTPError")
+        status, _ = _post(server, "/unknown", {})
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_posts_comment_transitions_label_and_dispatches() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, event = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert body["label"] == STATUS_IN_PROGRESS
+        assert body["dispatched"] is True
+        assert comments.posted == [("nosetech/project-a", 1, "承認します。進めてください。")]
+        assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
+        assert event.wait(timeout=2)
+        assert calls == [("nosetech/project-a", "承認します。進めてください。")]
+    finally:
+        server.shutdown()
+
+
+def test_instruct_reject_only_comments_no_label_change_no_dispatch() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+    )
+    try:
+        status, body = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues/1/instruct",
+            {"action": "reject", "message": "設計を見直してください"},
+        )
+
+        assert status == 200
+        assert body["dispatched"] is False
+        assert body["label"] is None
+        assert comments.posted == [("nosetech/project-a", 1, "設計を見直してください")]
+        assert labels.labels_by_issue[1] == {STATUS_NEEDS_HUMAN_DECISION}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_missing_action_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/project-a/issues/1/instruct", {})
+        assert status == 400
+    finally:
+        server.shutdown()
+
+
+def test_instruct_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _post(
+            server, "/api/projects/nosetech/unknown-repo/issues/1/instruct", {"action": "approve"}
+        )
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_create_issue_immediate_dispatch() -> None:
+    store = StateStore()
+    labels = FakeLabels()
+    issue_creator = FakeIssueCreator(start_number=42)
+    dispatch_queue, calls, event = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        create_issue=issue_creator.create_issue,
+    )
+    try:
+        status, body = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "新機能", "prompt": "実装してください", "dispatch": "immediate"},
+        )
+
+        assert status == 201
+        assert body["issue_number"] == 42
+        assert body["dispatched"] is True
+        assert issue_creator.created == [("nosetech/project-a", "新機能", "実装してください")]
+        assert labels.labels_by_issue[42] == {STATUS_IN_PROGRESS}
+        assert event.wait(timeout=2)
+        assert calls == [("nosetech/project-a", "実装してください")]
+    finally:
+        server.shutdown()
+
+
+def test_create_issue_queued_does_not_dispatch() -> None:
+    store = StateStore()
+    labels = FakeLabels()
+    issue_creator = FakeIssueCreator(start_number=42)
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        create_issue=issue_creator.create_issue,
+    )
+    try:
+        status, body = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "新機能", "prompt": "実装してください", "dispatch": "queued"},
+        )
+
+        assert status == 201
+        assert body["dispatched"] is False
+        assert labels.labels_by_issue[42] == {STATUS_TODO}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_create_issue_invalid_dispatch_value_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "t", "prompt": "p", "dispatch": "later"},
+        )
+        assert status == 400
     finally:
         server.shutdown()
