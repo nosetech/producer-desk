@@ -44,7 +44,7 @@ pip install -e .
 python -m orchestrator.main
 ```
 
-現時点（issue #11）では `config/projects.yaml` の読み込み確認のみを行う雛形。ポーリング・ディスパッチ本体は後続issueで実装する。
+5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチまでを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章）。ダッシュボードUI本体は後続issueで実装する。
 
 ### 3. config/projects.yaml の作成
 

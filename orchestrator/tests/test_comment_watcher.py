@@ -28,11 +28,11 @@ class FakeLabels:
         self.labels_by_issue.setdefault(issue_number, set()).discard(label)
 
 
-def _synchronous_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, str]]]:
-    calls: list[tuple[str, str]] = []
+def _synchronous_dispatch_queue() -> tuple[DispatchQueue, list[tuple[str, int, str]]]:
+    calls: list[tuple[str, int, str]] = []
 
-    def dispatch_fn(repo: str, message: str) -> None:
-        calls.append((repo, message))
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        calls.append((repo, issue_number, message))
 
     return DispatchQueue(dispatch_fn=dispatch_fn), calls
 
@@ -129,7 +129,7 @@ def test_new_comment_after_first_observation_triggers_dispatch() -> None:
 
     assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
     _wait_for(calls, 1)
-    assert calls == [("nosetech/project-a", "承認します。進めてください。")]
+    assert calls == [("nosetech/project-a", 1, "承認します。進めてください。")]
 
 
 def test_no_new_comments_does_not_dispatch_again() -> None:

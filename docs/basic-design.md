@@ -141,18 +141,19 @@ Content-Type: application/json
 
 ```bash
 claude -p "<指示内容>" \
-  --resume <session-id> \
-  --cwd <worktree-path> \
-  --dangerously-skip-permissions
+  --output-format json \
+  --dangerously-skip-permissions \
+  (--session-id <new-uuid> | --resume <session-id>)
 ```
 
-- `<session-id>` は `config/projects.yaml` にプロジェクトごとに保存し、初回ディスパッチ時にセッションを新規作成した後、そのセッションIDを書き戻して以降の指示で再利用する。
-- `<worktree-path>` はプロジェクトごとに用意されたgit worktreeのパス。
+- worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.run(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
+- `<session-id>` は `config/projects.yaml` にプロジェクトごとに保存する。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/projects.yaml` に書き戻し、以降の指示では `--resume <session-id>` で再開する。
+- `--output-format json` により、実行結果（`result` フィールド等）を構造化データとして取得し、3-2のissueコメント要約に利用する。
 
 ### 3-2. 監視方法
 
-- **ヘルスチェック**: ワンショット実行のため常時稼働の監視は不要。プロセスの終了コード（0=正常終了、非0=異常終了）を確認し、異常終了時はダッシュボードの活動ログにエラーとして記録する。
-- **ログ収集**: 標準出力・標準エラー出力を `logs/<repo>/<timestamp>.log` としてローカルに保存する。加えて、実行結果の要約をissueコメントとして投稿し、ダッシュボードの活動ログと連動させる。
+- **ヘルスチェック**: ワンショット実行のため常時稼働の監視は不要。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueに終了コード・ログパスを記載したコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与であり、オーケストレータ側では行わない。[1章](#1-データモデル状態遷移設計)参照）。
+- **ログ収集**: 標準出力・標準エラー出力を `logs/<repo>/<timestamp>.log` としてローカルに保存する。加えて、正常終了時は`--output-format json`の`result`フィールドを要約としてissueコメントに投稿し、ダッシュボードの活動ログと連動させる。
 
 ### 3-3. オーケストレータ⇔Agent Runnerのインターフェース仕様
 
