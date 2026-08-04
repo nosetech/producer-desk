@@ -11,12 +11,14 @@ from __future__ import annotations
 import threading
 
 from orchestrator.agent_runner import run_agent_runner
+from orchestrator.aggregation import AggregatedState
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.config import Project, load_projects
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
 from orchestrator.server import StateStore, make_server
+from orchestrator.slack_notifier import DecisionNotifier
 
 
 def _make_dispatch_fn(projects: list[Project]) -> DispatchFn:
@@ -43,6 +45,7 @@ def main() -> None:
     stop_event = threading.Event()
     dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects))
     comment_tracker = CommentTracker()
+    decision_notifier = DecisionNotifier()
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
         process_new_comments(
@@ -54,12 +57,16 @@ def main() -> None:
             dispatch_queue=dispatch_queue,
         )
 
+    def on_update(state: AggregatedState) -> None:
+        store.set(state)
+        decision_notifier.notify_new_decisions(state)
+
     polling_thread = threading.Thread(
         target=run_polling_loop,
         kwargs={
             "projects": projects,
             "interval_seconds": DEFAULT_INTERVAL_SECONDS,
-            "on_update": store.set,
+            "on_update": on_update,
             "on_issues_fetched": on_issues_fetched,
             "stop_event": stop_event,
         },
