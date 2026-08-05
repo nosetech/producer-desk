@@ -49,3 +49,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - PR作成時は `.github/workflows/` のCIでフォーマット・lint・テストが自動実行される（`orchestrator/**` / `dashboard/**` の変更パスに応じてジョブが分岐）。push前にローカルで以下を実行し、CI落ちを防ぐこと
   - `orchestrator/`: `ruff format .` → `ruff check .` → `pytest`（事前に `pip install -e ".[dev]"`）
   - `dashboard/`: `npm run format` → `npm run lint` → `npx tsc --noEmit`
+
+### Agent Runner自身が動作確認のためオーケストレータ・ダッシュボードを起動する場合
+
+Agent Runner（worktree内で作業しているClaude Code自身）が自分の変更を確認する目的でオーケストレータやダッシュボードを起動する際、**本番用に既に起動済みのインスタンスとポートが衝突しないよう、必ず別ポートで起動すること**。デフォルトポート（オーケストレータ8787・ダッシュボード3000）で起動すると、既存プロセスがいる場合に起動失敗、または意図せず同一プロセスに繋がってしまう。
+
+- オーケストレータ: 環境変数 `ORCHESTRATOR_PORT` で上書きする（例: `ORCHESTRATOR_PORT=8788 python -m orchestrator.main`）
+- ダッシュボード: `next dev`/`next start` の `-p <port>` オプションで上書きする（例: `npm run dev -- -p 3001`）。この確認用ダッシュボードから確認用オーケストレータを参照させる場合は、`ORCHESTRATOR_URL` 環境変数もポートを合わせて設定する（例: `ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001`）

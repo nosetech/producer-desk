@@ -8,6 +8,7 @@ config/projects.yaml を読み込み、5分間隔のポーリングループを�
 
 from __future__ import annotations
 
+import os
 import threading
 
 from orchestrator.agent_runner import run_agent_runner
@@ -17,8 +18,13 @@ from orchestrator.config import Project, load_projects
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
-from orchestrator.server import StateStore, make_server
+from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier
+
+# 環境変数 ORCHESTRATOR_PORT でbindポートを上書きできる。既に本番用インスタンスが
+# 稼働中の状態でAgent Runner自身が動作確認のために別インスタンスを起動する際、
+# ポート衝突を避けるために使う（CLAUDE.md「開発ワークフロー」参照）。
+PORT_ENV = "ORCHESTRATOR_PORT"
 
 
 def _make_dispatch_fn(projects: list[Project]) -> DispatchFn:
@@ -74,7 +80,8 @@ def main() -> None:
     )
     polling_thread.start()
 
-    server = make_server(store, projects=projects, dispatch_queue=dispatch_queue)
+    port = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
+    server = make_server(store, projects=projects, dispatch_queue=dispatch_queue, port=port)
     print(
         f"APIサーバーを起動しました: http://{server.server_address[0]}:{server.server_address[1]}/api/state"
     )
