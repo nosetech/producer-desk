@@ -12,7 +12,12 @@ from pathlib import Path
 
 from orchestrator.agent_runner import build_claude_command, run_agent_runner
 from orchestrator.config import Project
-from orchestrator.labels import STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
+from orchestrator.labels import (
+    STATUS_IN_PROGRESS,
+    STATUS_IN_REVIEW,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_TODO,
+)
 
 FIXED_NOW = lambda: datetime(2026, 8, 4, 1, 2, 3, tzinfo=UTC)  # noqa: E731
 FIXED_UUID = lambda: "11111111-1111-1111-1111-111111111111"  # noqa: E731
@@ -63,7 +68,9 @@ class FakePersistSessionId:
 
 
 def test_build_claude_command_new_session_uses_session_id_flag() -> None:
-    command = build_claude_command("hello", session_id="new-id", resume=False)
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
 
     assert command == [
         "claude",
@@ -72,13 +79,17 @@ def test_build_claude_command_new_session_uses_session_id_flag() -> None:
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        "--append-system-prompt",
+        command[7],
         "--session-id",
         "new-id",
     ]
 
 
 def test_build_claude_command_resume_uses_resume_flag() -> None:
-    command = build_claude_command("hello", session_id="existing-id", resume=True)
+    command = build_claude_command(
+        "hello", session_id="existing-id", resume=True, repo="nosetech/project-a", issue_number=12
+    )
 
     assert command == [
         "claude",
@@ -87,9 +98,32 @@ def test_build_claude_command_resume_uses_resume_flag() -> None:
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        "--append-system-prompt",
+        command[7],
         "--resume",
         "existing-id",
     ]
+
+
+def test_build_claude_command_appends_label_self_management_instruction() -> None:
+    """issue #33の再発防止テスト。
+
+    PR作成後にstatus:in-reviewへ自己付与するようAgent Runnerに指示されていな
+    かったため、issueがstatus:in-progressのまま宙に浮いた。system promptで
+    毎回明示的に指示することを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "nosetech/project-a#12" in instruction
+    assert STATUS_IN_REVIEW in instruction
+    assert STATUS_NEEDS_HUMAN_DECISION in instruction
+    assert STATUS_IN_PROGRESS in instruction
+    assert "gh issue edit 12 --repo nosetech/project-a" in instruction
 
 
 def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_path: Path) -> None:
