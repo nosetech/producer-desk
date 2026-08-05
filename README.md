@@ -27,7 +27,25 @@ npm install
 npm run dev
 ```
 
-`http://localhost:3000` で起動確認できる。Tailscale経由でのアクセスに切り替える場合は、Tailscale IPを環境変数 `TAILSCALE_IP` に設定した上で `npm run dev:tailscale` / `npm run start:tailscale` を使う（[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)）。
+`http://localhost:3000` で起動確認できる。
+
+**同一LAN内の別端末（スマートフォン等）からアクセスする場合**は、自機のLAN IPを環境変数 `LAN_IP` に設定した上で `npm run dev:lan` / `npm run start:lan` を使う（[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)）。LAN IPは以下で確認できる。
+
+```bash
+# macOS（Wi-Fi接続時の例。有線の場合はen0をen1等に読み替える）
+ipconfig getifaddr en0
+
+# Linux
+hostname -I
+```
+
+```bash
+LAN_IP=192.168.1.xx npm run dev:lan
+```
+
+同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale対応（別issue、`docs/requirements.md` 4-2参照）が必要になる。
+
+なお、オーケストレータの内部API（後述）はダッシュボードのサーバーサイドから同一マシン上で呼び出す構成のため、LANに公開する必要は無く `127.0.0.1` のままでよい。
 
 ### 2. orchestrator（Python）
 
@@ -44,7 +62,9 @@ pip install -e .
 python -m orchestrator.main
 ```
 
-5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチ、判断待ち新規発生時のSlack通知までを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章・5章）。ダッシュボードUI本体は後続issueで実装する。
+5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチ、判断待ち新規発生時のSlack通知までを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章・5章）。
+
+Agent Runnerの起動コマンドには常に `--dangerously-skip-permissions` が付与される（`orchestrator/orchestrator/agent_runner.py` の `build_claude_command`。worktreeディレクトリ内でのフル自動実行を許可し、`.claude/settings.json` 等による別途の権限モード指定は行わない。[`docs/basic-design.md` 6-1](./docs/basic-design.md#6-1-agent-runnerのサンドボックス権限設定)参照）。また、オーケストレータの内部APIにアプリケーションレベルの追加認証（Basic認証等）は実装していない（[6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）。
 
 ### 3. config/projects.yaml の作成
 

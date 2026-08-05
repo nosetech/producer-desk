@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:lan": "next dev --hostname \"$LAN_IP\"",
     "dev:tailscale": "next dev --hostname \"$TAILSCALE_IP\"",
     "build": "next build",
     "start": "next start",
+    "start:lan": "next start --hostname \"$LAN_IP\"",
     "start:tailscale": "next start --hostname \"$TAILSCALE_IP\"",
     "lint": "eslint",
     "format": "prettier --write .",
