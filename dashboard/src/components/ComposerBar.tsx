@@ -15,23 +15,23 @@ export interface IssueRef {
 export type ComposerMode = "reply" | "new";
 
 export default function ComposerBar({
+  open,
   mode,
-  onModeChange,
   replyTarget,
   onClearReplyTarget,
-  onSelectReplyTarget,
-  issues,
+  onOpen,
+  onClose,
   repos,
   newTaskRepo,
   onNewTaskRepoChange,
   onSubmitted,
 }: {
+  open: boolean;
   mode: ComposerMode;
-  onModeChange: (mode: ComposerMode) => void;
   replyTarget: IssueRef | null;
   onClearReplyTarget: () => void;
-  onSelectReplyTarget: (target: IssueRef) => void;
-  issues: IssueRef[];
+  onOpen: () => void;
+  onClose: () => void;
   repos: string[];
   newTaskRepo: string;
   onNewTaskRepoChange: (repo: string) => void;
@@ -44,14 +44,17 @@ export default function ComposerBar({
   const [error, setError] = useState<string | null>(null);
 
   const newRepo = newTaskRepo || repos[0] || "";
+  const isReply = mode === "reply";
 
-  function issueKey(issue: IssueRef): string {
-    return `${issue.repo}#${issue.number}`;
-  }
-
-  function handleSelectReply(key: string) {
-    const found = issues.find((i) => issueKey(i) === key);
-    if (found) onSelectReplyTarget(found);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setMessage("");
+      setTitle("");
+      setPrompt("");
+      setError(null);
+    }
   }
 
   function handleSendReply() {
@@ -65,9 +68,9 @@ export default function ComposerBar({
       message.trim(),
     )
       .then(() => {
-        setMessage("");
         onClearReplyTarget();
         onSubmitted();
+        onClose();
       })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "送信に失敗しました"),
@@ -81,9 +84,8 @@ export default function ComposerBar({
     setError(null);
     postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch)
       .then(() => {
-        setTitle("");
-        setPrompt("");
         onSubmitted();
+        onClose();
       })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "作成に失敗しました"),
@@ -91,27 +93,93 @@ export default function ComposerBar({
       .finally(() => setSubmitting(false));
   }
 
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className={styles.trigger}
+        onClick={onOpen}
+        aria-label="新しい指示を送る"
+      >
+        <svg
+          width="19"
+          height="19"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={styles.triggerIcon}
+        >
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+        <span className={styles.triggerLabel}>新しい指示を送る</span>
+      </button>
+    );
+  }
+
   return (
-    <div className={styles.bar}>
-      <div className={styles.tabs}>
+    <div className={styles.panel}>
+      <div className={styles.panelHeader}>
+        <div className={styles.panelTitle}>
+          <span className={styles.panelTitleIcon}>
+            {isReply ? (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M9 17 4 12l5-5" />
+                <path d="M4 12h11a5 5 0 0 1 0 10" />
+              </svg>
+            ) : (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            )}
+          </span>
+          {isReply ? "既存issueへ返信" : "新規タスク作成"}
+        </div>
         <button
           type="button"
-          className={`${styles.tab} ${mode === "reply" ? styles.tabActive : ""}`}
-          onClick={() => onModeChange("reply")}
+          className={styles.closeBtn}
+          onClick={onClose}
+          title="閉じる"
+          aria-label="閉じる"
         >
-          既存issueへの返信
-        </button>
-        <button
-          type="button"
-          className={`${styles.tab} ${mode === "new" ? styles.tabActive : ""}`}
-          onClick={() => onModeChange("new")}
-        >
-          新規タスク作成
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
         </button>
       </div>
 
-      {mode === "reply" ? (
-        <>
+      {isReply ? (
+        <div className={styles.body}>
           {replyTarget ? (
             <span className={styles.targetChip}>
               {shortRepoName(replyTarget.repo)} #{replyTarget.number}{" "}
@@ -125,29 +193,18 @@ export default function ComposerBar({
               </button>
             </span>
           ) : (
-            <select
-              className={styles.select}
-              value=""
-              onChange={(e) => handleSelectReply(e.target.value)}
-            >
-              <option value="" disabled>
-                返信先のissueを選択…
-              </option>
-              {issues.map((issue) => (
-                <option key={issueKey(issue)} value={issueKey(issue)}>
-                  {shortRepoName(issue.repo)} #{issue.number} {issue.title}
-                </option>
-              ))}
-            </select>
+            <div className={styles.noTarget}>
+              判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
+            </div>
           )}
-          <div className={styles.row}>
-            <textarea
-              className={styles.textarea}
-              placeholder="issueに指示を送る…"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              disabled={submitting || !replyTarget}
-            />
+          <textarea
+            className={styles.textarea}
+            placeholder="issueに指示を送る…"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            disabled={submitting || !replyTarget}
+          />
+          <div className={styles.sendRow}>
             <button
               type="button"
               className={styles.sendBtn}
@@ -157,10 +214,11 @@ export default function ComposerBar({
               送信
             </button>
           </div>
-        </>
+        </div>
       ) : (
-        <>
-          <div className={styles.newTaskFields}>
+        <div className={styles.body}>
+          <div>
+            <div className={styles.fieldLabel}>対象プロジェクト</div>
             <select
               className={styles.select}
               value={newRepo}
@@ -172,6 +230,9 @@ export default function ComposerBar({
                 </option>
               ))}
             </select>
+          </div>
+          <div>
+            <div className={styles.fieldLabel}>タイトル</div>
             <input
               className={styles.input}
               placeholder="タイトル"
@@ -180,13 +241,16 @@ export default function ComposerBar({
               disabled={submitting}
             />
           </div>
-          <textarea
-            className={styles.textarea}
-            placeholder="指示内容（プロンプト）"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            disabled={submitting}
-          />
+          <div>
+            <div className={styles.fieldLabel}>指示内容 / プロンプト</div>
+            <textarea
+              className={styles.textarea}
+              placeholder="指示内容（プロンプト）"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={submitting}
+            />
+          </div>
           <div className={styles.dispatchRow}>
             <button
               type="button"
@@ -209,7 +273,7 @@ export default function ComposerBar({
               あとで着手（todo登録）
             </button>
           </div>
-        </>
+        </div>
       )}
       {error && <span className={styles.error}>{error}</span>}
     </div>

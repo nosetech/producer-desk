@@ -1,50 +1,123 @@
-.bar {
-  position: sticky;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border-subtle);
-  padding: 10px 20px 14px;
+@keyframes composerRise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 14px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.trigger {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 22px;
+  border-radius: 30px;
+  border: none;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+  transition: filter 0.12s;
+}
+
+.trigger:hover {
+  filter: brightness(1.08);
+}
+
+.triggerIcon {
+  flex-shrink: 0;
+}
+
+.panel {
+  position: fixed;
+  z-index: 41;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  width: min(564px, calc(100% - 44px));
+  max-height: calc(100% - 36px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  z-index: 10;
+  gap: 13px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 16px 18px 18px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.38);
+  animation: composerRise 0.22s ease;
 }
 
-.tabs {
+.panelHeader {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.tab {
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 0.78rem;
+.panelTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
+}
+
+.panelTitleIcon {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.closeBtn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
   border: 1px solid var(--border-subtle);
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
-.tabActive {
-  background: var(--accent-blue-bg);
-  border-color: transparent;
-  color: var(--accent-blue);
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
 }
 
 .targetChip {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
   align-self: flex-start;
-  font-size: 0.78rem;
-  color: var(--text-secondary);
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--accent-blue);
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  padding: 4px 10px;
+  border-radius: 8px;
+  padding: 5px 10px;
 }
 
 .targetChip button {
@@ -52,65 +125,69 @@
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   line-height: 1;
 }
 
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
+.noTarget {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  padding: 9px 11px;
+  line-height: 1.55;
+}
+
+.fieldLabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 5px;
 }
 
 .select,
 .input {
-  border-radius: 8px;
+  width: 100%;
+  border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
+  background: var(--bg-page);
   color: var(--text-primary);
-  padding: 8px 10px;
-  font-size: 0.85rem;
+  padding: 10px 11px;
+  font-size: 13px;
   font-family: inherit;
 }
 
 .textarea {
-  flex: 1;
-  min-height: 40px;
-  max-height: 140px;
+  width: 100%;
+  min-height: 76px;
   resize: vertical;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
+  background: var(--bg-page);
   color: var(--text-primary);
-  padding: 8px 10px;
-  font-size: 0.85rem;
+  padding: 10px 11px;
+  font-size: 13px;
+  line-height: 1.55;
   font-family: inherit;
 }
 
-.newTaskFields {
+.sendRow {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.newTaskFields .select {
-  min-width: 160px;
-}
-
-.newTaskFields .input {
-  flex: 1;
-  min-width: 160px;
+  justify-content: flex-end;
 }
 
 .sendBtn {
   flex-shrink: 0;
-  padding: 9px 16px;
-  border-radius: 8px;
+  padding: 10px 18px;
+  border-radius: 10px;
   border: none;
   background: var(--accent-blue);
   color: #fff;
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 13.5px;
   cursor: pointer;
 }
 
@@ -121,18 +198,25 @@
 
 .dispatchRow {
   display: flex;
-  gap: 8px;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .dispatchBtn {
   flex: 1;
-  padding: 9px 14px;
-  border-radius: 8px;
-  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
   border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
+  background: transparent;
   color: var(--text-secondary);
 }
 
@@ -152,26 +236,36 @@
   color: var(--accent-red);
 }
 
-.hint {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
 @media (max-width: 640px) {
-  .bar {
-    padding: 8px 12px 12px;
+  .trigger {
+    left: auto;
+    right: 16px;
+    bottom: 18px;
+    transform: none;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    border-radius: 50%;
+    justify-content: center;
   }
 
-  .row {
+  .triggerLabel {
+    display: none;
+  }
+
+  .panel {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    transform: none;
+    border-radius: 20px;
+    padding: 14px 14px 16px;
+    max-height: 82%;
+  }
+
+  .dispatchRow {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .sendBtn {
-    width: 100%;
-  }
-
-  .newTaskFields {
-    flex-direction: column;
   }
 }
