@@ -17,6 +17,8 @@ from orchestrator.config import REPO_ROOT, Project
 from orchestrator.github_client import PostCommentFn
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import (
+    STATUS_IN_PROGRESS,
+    STATUS_IN_REVIEW,
     STATUS_NEEDS_HUMAN_DECISION,
     AddLabelFn,
     GetLabelsFn,
@@ -46,12 +48,45 @@ class AgentRunResult:
     success: bool
 
 
-def build_claude_command(message: str, *, session_id: str, resume: bool) -> list[str]:
+# 状態遷移のうち、正常終了時のstatus:in-review・needs-human-decisionへの遷移は
+# Agent Runner自身が`gh`コマンドで自己付与する設計（docs/basic-design.md 1章）。
+# しかし実際にはこの指示がプロンプトに含まれていないと実行されないことがあり
+# （issue #33: PR作成後もstatus:in-progressのままになり判断待ちが宙に浮いた）、
+# `--append-system-prompt`で毎回明示的に指示することで確実性を上げる。
+AGENT_RUNNER_LABEL_INSTRUCTION = (
+    "あなたはproducer-deskオーケストレータからディスパッチされたAgent Runnerとして、"
+    "GitHub issue {repo}#{issue_number} に取り組んでいます。"
+    "以下の状態ラベル遷移は、オーケストレータ側では自動的に行われないため、"
+    "該当する状況になったらあなた自身がghコマンドで実行してください"
+    "（docs/basic-design.md 1章「データモデル・状態遷移設計」参照）。\n"
+    "- 人間の判断が必要だと自ら判断した場合: "
+    f"`gh issue edit {{issue_number}} --repo {{repo}} "
+    f"--add-label {STATUS_NEEDS_HUMAN_DECISION} --remove-label {STATUS_IN_PROGRESS}`\n"
+    "- プルリクエストを作成した場合: "
+    f"`gh issue edit {{issue_number}} --repo {{repo}} "
+    f"--add-label {STATUS_IN_REVIEW} --remove-label {STATUS_IN_PROGRESS}`\n"
+    "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
+    "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
+)
+
+
+def build_claude_command(
+    message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
+) -> list[str]:
     """docs/basic-design.md 3-1の起動パラメータに従いコマンドを組み立てる。
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
     """
-    command = ["claude", "-p", message, "--output-format", "json", "--dangerously-skip-permissions"]
+    command = [
+        "claude",
+        "-p",
+        message,
+        "--output-format",
+        "json",
+        "--dangerously-skip-permissions",
+        "--append-system-prompt",
+        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number),
+    ]
     if resume:
         command += ["--resume", session_id]
     else:
@@ -125,7 +160,13 @@ def run_agent_runner(
 
     resume = project.session_id is not None
     session_id = project.session_id or new_uuid()
-    command = build_claude_command(message, session_id=session_id, resume=resume)
+    command = build_claude_command(
+        message,
+        session_id=session_id,
+        resume=resume,
+        repo=project.repo,
+        issue_number=issue_number,
+    )
 
     result = run(command, cwd=str(worktree_path), capture_output=True, text=True)
 

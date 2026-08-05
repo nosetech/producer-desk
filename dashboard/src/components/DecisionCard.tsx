@@ -9,7 +9,10 @@ import styles from "./DecisionCard.module.css";
 function latestCommentSummary(issue: IssueSummary): string | null {
   const last = issue.comments[issue.comments.length - 1];
   if (!last) return null;
-  const oneLine = last.body.replace(/\s+/g, " ").trim();
+  // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
+  // 付与されている（orchestrator/orchestrator/github_client.py参照）。表示上は不要なので取り除く。
+  const withoutMarkers = last.body.replace(/<!--[\s\S]*?-->/g, "");
+  const oneLine = withoutMarkers.replace(/\s+/g, " ").trim();
   return oneLine.length > 140 ? `${oneLine.slice(0, 140)}…` : oneLine;
 }
 

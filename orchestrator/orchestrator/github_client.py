@@ -13,6 +13,13 @@ from orchestrator.aggregation import IssueSummary
 
 ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt"
 
+# オーケストレータ自身が投稿したコメントであることを示す不可視マーカー。
+# comment_watcher（docs/basic-design.md 2-3「共通仕様」）が自分自身の投稿
+# （Agent Runnerの実行結果報告、承認/却下の定型文コメント等）を新規の人間指示
+# と誤検知し、無限に再ディスパッチし続けるのを防ぐために付与する
+# （HTMLコメントのためissue本文上には表示されない）。
+BOT_COMMENT_MARKER = "<!-- producer-desk:bot-comment -->"
+
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 PostCommentFn = Callable[[str, int, str], None]
 CreateIssueFn = Callable[[str, str, str], int]
@@ -55,9 +62,13 @@ def list_open_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSum
 
 
 def post_comment(repo: str, issue_number: int, body: str, *, run: RunFn = subprocess.run) -> None:
-    """issueにコメントを投稿する（`gh api repos/{repo}/issues/{issue_number}/comments`）。"""
+    """issueにコメントを投稿する（`gh api repos/{repo}/issues/{issue_number}/comments`）。
+
+    投稿本文には `BOT_COMMENT_MARKER` を付与する（comment_watcherによる誤検知防止）。
+    """
+    marked_body = f"{body}\n\n{BOT_COMMENT_MARKER}"
     run(
-        ["gh", "api", f"repos/{repo}/issues/{issue_number}/comments", "-f", f"body={body}"],
+        ["gh", "api", f"repos/{repo}/issues/{issue_number}/comments", "-f", f"body={marked_body}"],
         capture_output=True,
         text=True,
         check=True,

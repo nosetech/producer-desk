@@ -143,12 +143,14 @@ Content-Type: application/json
 claude -p "<指示内容>" \
   --output-format json \
   --dangerously-skip-permissions \
+  --append-system-prompt "<ラベル自己管理指示>" \
   (--session-id <new-uuid> | --resume <session-id>)
 ```
 
 - worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.run(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
 - `<session-id>` は `config/projects.yaml` にプロジェクトごとに保存する。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/projects.yaml` に書き戻し、以降の指示では `--resume <session-id>` で再開する。
 - `--output-format json` により、実行結果（`result` フィールド等）を構造化データとして取得し、3-2のissueコメント要約に利用する。
+- `--append-system-prompt` により、[1章](#1-データモデル状態遷移設計)でAgent Runner自身の責務とした`needs-human-decision`・`status:in-review`へのラベル自己付与（対象issue番号・リポジトリ名・具体的な`gh issue edit`コマンドを含む）を、指示内容の文面によらず毎回明示する（`agent_runner.py`の`AGENT_RUNNER_LABEL_INSTRUCTION`）。当初この指示が無く、PR作成後もラベルが`status:in-progress`のまま遷移しない事例が発生したため導入した（issue #33）。
 
 ### 3-2. 監視方法
 

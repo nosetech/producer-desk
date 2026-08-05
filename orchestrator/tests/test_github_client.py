@@ -6,7 +6,7 @@ import json
 import subprocess
 
 from orchestrator.aggregation import IssueSummary
-from orchestrator.github_client import list_open_issues
+from orchestrator.github_client import BOT_COMMENT_MARKER, list_open_issues, post_comment
 
 
 def _fake_run(stdout_issues: list[dict]) -> object:
@@ -72,3 +72,15 @@ def test_list_open_issues_returns_empty_list_when_no_open_issues() -> None:
     fake_run = _fake_run([])
 
     assert list_open_issues("nosetech/project-a", run=fake_run) == []
+
+
+def test_post_comment_appends_bot_marker() -> None:
+    fake_run = _fake_run([])
+
+    post_comment("nosetech/project-a", 12, "Agent Runner実行結果:\n完了しました", run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd[:4] == ["gh", "api", "repos/nosetech/project-a/issues/12/comments", "-f"]
+    posted_body = cmd[4].removeprefix("body=")
+    assert posted_body.startswith("Agent Runner実行結果:\n完了しました")
+    assert BOT_COMMENT_MARKER in posted_body
