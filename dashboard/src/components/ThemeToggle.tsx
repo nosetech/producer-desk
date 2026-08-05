@@ -22,6 +22,13 @@ export default function ThemeToggle() {
     // 参照できないため、マウント後に一度だけ実際の値へ同期する。
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(currentTheme());
+
+    // 手動で切り替えていない（data-theme未設定）場合は、OSのテーマ設定が
+    // タブを開いたまま変わったときもアイコン表示をリアルタイムに追従させる。
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const handleChange = () => setTheme(currentTheme());
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
   }, []);
 
   function toggle() {
