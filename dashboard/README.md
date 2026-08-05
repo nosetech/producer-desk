@@ -1,36 +1,28 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# producer-desk dashboard
 
-## Getting Started
+`producer-desk`（自走型AI開発オーケストレーションシステム）のダッシュボード。Next.jsで実装する。
 
-First, run the development server:
+画面設計は [`docs/design-prompt-dashboard.md`](../docs/design-prompt-dashboard.md) のClaude Designへの委譲プロンプトを元に作成された成果物に準拠する（`CLAUDE.md`「画面デザインの実装ルール」参照）。表示項目・API仕様は [`docs/basic-design.md`](../docs/basic-design.md) 2章に対応する。
+
+## セットアップ
 
 ```bash
+npm install
+cp .env.example .env.local  # ORCHESTRATOR_URL を必要に応じて変更
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+[http://localhost:3000](http://localhost:3000) を開く。オーケストレータ（`orchestrator/`）が `http://127.0.0.1:8787` で起動していないと、判断待ち一覧・活動ログ・承認/却下/指示送信は動作しない。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## アーキテクチャ
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- ダッシュボード（Next.js）はブラウザから直接オーケストレータのAPIを呼ばない。CORS設定を持たないオーケストレータ内部API（`docs/basic-design.md` 2-2・2-3）へは、Next.jsのRoute Handler（`src/app/api/**/route.ts`）がサーバーサイドでプロキシする。
+  - `GET /api/state` → オーケストレータ `GET /api/state`
+  - `POST /api/projects/[owner]/[name]/issues/[issueNumber]/instruct` → オーケストレータの指示出しAPI
+  - `POST /api/projects/[owner]/[name]/issues` → オーケストレータの新規issue作成API
+  - `GET /api/projects` → `config/projects.yaml`（オーケストレータと共有する設定ファイル）を直接読み、対象リポジトリ一覧を返す
+- 利用量／リミット表示は、現時点でオーケストレータ側にデータ取得の仕組みが無いため（`docs/basic-design.md` 2-2参照）、UIのみ実装し仮データを表示する。
 
-## Learn More
+## デプロイ
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Tailscale経由でのみアクセス可能にするため、`next start --hostname <tailscale-ip>` で起動する（`npm run start:tailscale`、`TAILSCALE_IP` 環境変数）。`docs/basic-design.md` 6-2参照。
