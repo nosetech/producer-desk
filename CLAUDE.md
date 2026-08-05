@@ -35,8 +35,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Agent Runnerは常駐プロセスではなく **`claude -p ... --resume ... --dangerously-skip-permissions` のワンショット実行**（worktreeディレクトリはCLIフラグではなくsubprocessの`cwd`引数で指定する。実CLIに`--cwd`フラグは存在しないため、`basic-design.md` 3-1参照）。プロジェクトごとにgit worktreeで隔離し、同一プロジェクトへの同時実行は行わずFIFOキューで順次処理する
 - MVPでは **LiteLLM Proxy等のモデルルーターを導入しない**。Claude Code CLIを直接利用し、Anthropic APIの従量課金ではなく**Claude Code Pro/Maxプラン等のサブスクリプション**を使う。利用リミット到達時は追加コストを払わずリセットまで待機する
 - MVPでは**Dockerを使わずネイティブ構成**（Homebrew/pip等）。PoC環境でDockerのネットワーク操作がハングする問題が確認されたため
-- コンポーネント間通信は**ポーリングに統一**（Webhookは不採用）。Tailscaleの閉域網内で完結させる前提のため、外部到達可能なエンドポイントを必要とする方式は避ける
-- ネットワーク・認証は**Tailscaleのネットワーク境界のみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない
+- コンポーネント間通信は**ポーリングに統一**（Webhookは不採用）。ローカルネットワーク内で完結させる前提のため、外部到達可能なエンドポイントを必要とする方式は避ける
+- ネットワーク・認証は**MVPでは同一LAN内アクセスのみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない。**Tailscale経由での外出先アクセス対応は別issueの将来拡張**とする（`requirements.md` 4-2、`architecture.md` 8章、`basic-design.md` 6-2参照）
 - 通知は**Slack Incoming Webhook**（一方向）。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わない
 - AIへの指示出しは**GitHub issueコメント経由**（案A）。ダッシュボードのボタン操作・自由記述テキストボックスも、内部的にはissueコメント投稿として実装する。専用API（案B）は将来拡張
 
