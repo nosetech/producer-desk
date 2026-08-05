@@ -21,7 +21,8 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [composerMode, setComposerMode] = useState<ComposerMode>("reply");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerMode, setComposerMode] = useState<ComposerMode>("new");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
 
@@ -49,33 +50,22 @@ export default function Dashboard() {
   function handleReply(repo: string, issueNumber: number, title: string) {
     setComposerMode("reply");
     setReplyTarget({ repo, number: issueNumber, title });
+    setComposerOpen(true);
   }
 
   function handleQuickCreate(repo: string) {
     setComposerMode("new");
     setNewTaskRepo(repo);
+    setComposerOpen(true);
+  }
+
+  function handleOpenComposer() {
+    setComposerMode("new");
+    setComposerOpen(true);
   }
 
   const projectStatuses = repos.map((repo) =>
     deriveProjectStatus(repo, state.decisions, state.activity),
-  );
-
-  const issueRefs: IssueRef[] = [
-    ...state.decisions.map((d) => ({
-      repo: d.repo,
-      number: d.number,
-      title: d.title,
-    })),
-    ...state.activity.map((a) => ({
-      repo: a.repo,
-      number: a.number,
-      title: a.title,
-    })),
-  ].filter(
-    (issue, index, arr) =>
-      arr.findIndex(
-        (i) => i.repo === issue.repo && i.number === issue.number,
-      ) === index,
   );
 
   return (
@@ -108,12 +98,12 @@ export default function Dashboard() {
         </div>
       </main>
       <ComposerBar
+        open={composerOpen}
         mode={composerMode}
-        onModeChange={setComposerMode}
         replyTarget={replyTarget}
         onClearReplyTarget={() => setReplyTarget(null)}
-        onSelectReplyTarget={setReplyTarget}
-        issues={issueRefs}
+        onOpen={handleOpenComposer}
+        onClose={() => setComposerOpen(false)}
         repos={repos}
         newTaskRepo={newTaskRepo}
         onNewTaskRepoChange={setNewTaskRepo}
