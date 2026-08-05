@@ -25,6 +25,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 このデザインは `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` のプロンプトを元に作成されたもの。デザインとdocs側の仕様（表示項目・API仕様等）に齟齬がある場合は、実装前にどちらを正とするか確認すること。デザインが更新された場合は、この節のURLも合わせて更新する。
 
+**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。実装・レビュー時は必ず `mcp__claude-in-chrome__*` などのブラウザ操作ツールでこのURLを開き、対象コンポーネントを実際に見て確認すること。Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。これが機能するには、Agent Runner実行ホストでChromeが起動・`claude-in-chrome`拡張がペアリング済み・`claude.ai`にログイン済みである必要がある。
+
 ## 確定済みの設計判断（変更時は要注意）
 
 以下はプロデューサーとの対話で確定し、複数ドキュメントに横断的に反映されている前提。ドキュメントを更新する際、これらと矛盾する記述を残さないよう注意する。

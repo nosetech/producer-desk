@@ -126,6 +126,24 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     assert "gh issue edit 12 --repo nosetech/project-a" in instruction
 
 
+def test_build_claude_command_appends_design_verification_instruction() -> None:
+    """issue #33の再発防止テスト。
+
+    ダッシュボードのUI実装がClaude Designの配色・アイコンを反映できていな
+    かった。ブラウザ操作ツールで実際のデザインを確認するよう毎回明示的に
+    指示することを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "claude.ai/design" in instruction
+    assert "mcp__claude-in-chrome__" in instruction
+
+
 def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_path: Path) -> None:
     project = Project(repo="nosetech/project-a", worktree_path=str(tmp_path / "does-not-exist"))
     labels = FakeLabels({STATUS_TODO})

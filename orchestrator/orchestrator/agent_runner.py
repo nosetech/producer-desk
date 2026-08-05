@@ -69,6 +69,26 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
 
+# issue #33の再発防止: ダッシュボードのUI実装がClaude Designの見た目（配色・
+# アイコン等）を反映できていなかった。原因は、CLAUDE.mdが「正」とするデザイン
+# URL（claude.ai/design/...）が認証必須でWebFetchでは403になり、テキスト指示
+# だけでは色・アイコンの詳細が伝わらないこと。ブラウザ操作ツール
+# （mcp__claude-in-chrome__*、claude.aiにログイン済みのChromeとペアリング済み
+# 前提）で実際にデザインを開いて確認するよう毎回明示的に指示する。
+AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
+    "ダッシュボード（dashboard/以下）の画面・コンポーネントを実装・修正する場合、"
+    "CLAUDE.mdの「画面デザインの実装ルール」に記載されたClaude DesignのURL"
+    "（https://claude.ai/design/...）を必ずブラウザ操作ツール"
+    "（mcp__claude-in-chrome__* ツール）で開き、対象コンポーネントの配色・アイコン・"
+    "余白・状態変化などの視覚的詳細を実際に確認したうえで実装してください。"
+    "テキストの設計文書（docs/design-prompt-dashboard.md等）にはレイアウトの要件"
+    "しか書かれておらず、色やアイコンの指定はデザインそのものにしかありません。"
+    "実装後は同じブラウザツールで実装結果とデザインを見比べ、細部が一致することを"
+    "確認してから完了としてください。ブラウザ操作ツールが利用できない場合（Chrome"
+    "が起動していない、claude.aiにログインしていない等）は、その旨を実行結果に明記し、"
+    "人間の確認を仰いでください。"
+)
+
 
 def build_claude_command(
     message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
@@ -77,6 +97,11 @@ def build_claude_command(
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
     """
+    system_prompt = (
+        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
+        + "\n\n"
+        + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
+    )
     command = [
         "claude",
         "-p",
@@ -85,7 +110,7 @@ def build_claude_command(
         "json",
         "--dangerously-skip-permissions",
         "--append-system-prompt",
-        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number),
+        system_prompt,
     ]
     if resume:
         command += ["--resume", session_id]
