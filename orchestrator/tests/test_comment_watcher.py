@@ -11,6 +11,7 @@ import time
 from orchestrator.aggregation import IssueSummary
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.dispatch_queue import DispatchQueue
+from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.labels import STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
 
 
@@ -200,3 +201,52 @@ def test_new_comment_on_needs_human_decision_issue_transitions_to_in_progress() 
 
     assert labels.labels_by_issue[5] == {STATUS_IN_PROGRESS}
     _wait_for(calls, 1)
+
+
+def test_bot_authored_comment_does_not_trigger_redispatch() -> None:
+    """issue #33の再発防止テスト。
+
+    Agent Runnerが実行結果をissueコメントとして投稿すると、そのコメント自体が
+    次回ポーリングで「新規コメント」として観測される。マーカーが無ければこれを
+    新規の人間指示と誤検知し、無限に再ディスパッチし続けてしまう。
+    """
+    tracker = CommentTracker()
+    labels = FakeLabels({1: {STATUS_IN_PROGRESS}})
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+
+    first_poll = {"nosetech/project-a": [_issue("nosetech/project-a", 1, [STATUS_IN_PROGRESS], [])]}
+    process_new_comments(
+        first_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    second_poll = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a",
+                1,
+                [STATUS_IN_PROGRESS],
+                [
+                    {
+                        "id": "c1",
+                        "body": f"Agent Runner実行結果:\n完了しました\n\n{BOT_COMMENT_MARKER}",
+                    }
+                ],
+            )
+        ]
+    }
+    process_new_comments(
+        second_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    assert calls == []
+    assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}

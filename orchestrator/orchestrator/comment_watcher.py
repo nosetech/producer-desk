@@ -7,12 +7,19 @@
 起動時点で既にissueに付いているコメントは「既知」として扱い、再処理しない
 （起動前の履歴をリプレイしないため）。起動後に新たに増えたコメントのみを
 指示として扱い、ラベル遷移・ディスパッチを行う。
+
+オーケストレータ自身が投稿したコメント（`github_client.BOT_COMMENT_MARKER` 付き。
+Agent Runnerの実行結果報告、承認/却下/自由記述の定型コメント等）は指示として
+扱わない。人間・bot問わず同一のissueコメントとしてポーリングに現れるため、
+マーカーが無い場合は自分自身の投稿を新規指示と誤検知し、無限に再ディスパッチ
+し続ける（issue #33）。
 """
 
 from __future__ import annotations
 
 from orchestrator.aggregation import IssueSummary
 from orchestrator.dispatch_queue import DispatchQueue
+from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.instruct import apply_instruction
 from orchestrator.labels import AddLabelFn, GetLabelsFn, RemoveLabelFn
 
@@ -48,10 +55,11 @@ def process_new_comments(
     for repo, issues in issues_by_repo.items():
         for issue in issues:
             new_comments = tracker.new_comments(repo, issue.number, issue.comments)
-            if not new_comments:
+            human_comments = [c for c in new_comments if BOT_COMMENT_MARKER not in c["body"]]
+            if not human_comments:
                 continue
 
-            latest = new_comments[-1]
+            latest = human_comments[-1]
             apply_instruction(
                 repo,
                 issue.number,
