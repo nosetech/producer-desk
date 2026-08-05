@@ -25,4 +25,4 @@ npm run dev
 
 ## デプロイ
 
-Tailscale経由でのみアクセス可能にするため、`next start --hostname <tailscale-ip>` で起動する（`npm run start:tailscale`、`TAILSCALE_IP` 環境変数）。`docs/basic-design.md` 6-2参照。
+MVPでは同一LAN内からのアクセスのみを前提とし、`next start --hostname <lan-ip>` のようにLANインターフェースのIPにのみbindする（`docs/basic-design.md` 6-2参照）。外出先からのTailscale経由アクセス対応（`npm run start:tailscale`、`TAILSCALE_IP` 環境変数）は将来拡張issueで対応する。

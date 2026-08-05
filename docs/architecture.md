@@ -11,12 +11,12 @@
 
 ```mermaid
 flowchart TB
-    subgraph Mobile["モバイル / PC（Tailscale経由）"]
+    subgraph Mobile["モバイル / PC（同一LAN経由。将来Tailscale経由）"]
         A["ブラウザ（ダッシュボード）"]
         N["Slack アプリ"]
     end
 
-    subgraph HomeNet["自宅ネットワーク（ローカルPC・Tailscale配下）"]
+    subgraph HomeNet["自宅ネットワーク（ローカルPC・同一LAN内）"]
         B["ダッシュボード Web UI（Next.js）"]
         C["オーケストレータ（ポーリングスクリプト）"]
         D1["Agent Runner: project-a<br/>claude -p（ワンショット、worktree隔離）"]
@@ -37,7 +37,7 @@ flowchart TB
 ```
 
 - モデルルーター（LiteLLM Proxy）はMVPでは導入しない（[5章](#5-モデルルーティング)参照）。
-- ダッシュボードへのアクセスはTailscaleのネットワーク境界のみで保護する（[8章](#8-ネットワーク構成)参照）。Slack通知はオーケストレータからのWebhook送信のみで、Tailscale網の外（Slack社インフラ）を経由する点に留意する。
+- ダッシュボードへのアクセスは**MVPでは同一LAN内アクセスのみ**で保護する（[8章](#8-ネットワーク構成)参照）。外出先からのTailscale経由アクセスは将来拡張とする。Slack通知はオーケストレータからのWebhook送信のみで、ローカルネットワークの外（Slack社インフラ）を経由する点に留意する。
 
 ### コンポーネント一覧と責務
 
@@ -52,7 +52,7 @@ flowchart TB
 ### コンポーネント間の通信方式
 
 - オーケストレータ⇄GitHub間、オーケストレータ⇄Agent Runner間ともに**ポーリングに統一**する。
-- Webhook/GitHub Appは、外部から到達可能な公開エンドポイント（またはsmee.io等のトンネル）を必要とし、「ローカルPC完結・Tailscale閉域網」という前提と相性が悪いため採用しない。
+- Webhook/GitHub Appは、外部から到達可能な公開エンドポイント（またはsmee.io等のトンネル）を必要とし、「ローカルPC完結・同一LAN内」という前提と相性が悪いため採用しない。
 
 ## 2. エージェント実行基盤
 
@@ -110,8 +110,9 @@ flowchart TB
 
 ## 8. ネットワーク構成
 
-- 同一Wi-Fi内・外出先を問わず、**Tailscaleのネットワーク境界のみ**でダッシュボード・Agent Runnerへのアクセスを保護する。mDNS/固定IPによる同一Wi-Fi内限定アクセスは採用せず、Tailscale経由に一本化する。
+- **MVPでは同一LAN（同一Wi-Fi）内からのアクセスのみ**を前提とし、ダッシュボード・Agent Runnerへのアクセスをネットワーク境界のみで保護する。外出先からの利用は想定しない。
 - アプリケーションレベルの追加認証（Basic認証等）は設けない。
+- **将来拡張**: 外出先からのアクセスが必要になった時点で、Tailscale経由のアクセスに対応する（別issueで実装。[要件定義書 4-2](./requirements.md#4-2-将来拡張とする範囲)参照）。mDNS/固定IPによる同一LAN限定アクセスの恒久化は採用せず、外出先対応はTailscale経由に一本化する想定。
 
 ## 9. 実行環境
 
