@@ -32,7 +32,7 @@ flowchart TB
     C -- "ポーリング" --> H
     C -- "検知した指示をディスパッチ" --> D1 & D2 & D3
     D1 & D2 & D3 -- "ラベル更新・コメント投稿" --> H
-    C -- "判断待ち発生を通知（Webhook POST）" --> Slack
+    C -- "判断待ち・レビュー待ち発生を通知（Webhook POST）" --> Slack
     Slack --> N
 ```
 
@@ -47,7 +47,7 @@ flowchart TB
 | オーケストレータ | GitHub Issuesのポーリング、状態集約、指示コメントの検知・ディスパッチ、Slackへの通知送信 | Pythonポーリングスクリプト（PoC-Aの`instruction_watcher.py`を発展） |
 | Agent Runner | 実際にコードを書く実行単位。プロジェクトごとにgit worktreeで隔離し、ディスパッチ時にワンショットで起動 | Claude Code CLI（`claude -p`） |
 | データ層 | タスク状態・指示履歴の正 | GitHub Issues/Projects |
-| 通知 | 判断待ち発生時にモバイルへ知らせる（ダッシュボードでの定期確認運用が基本、Slackは補完） | Slack（Incoming Webhook） |
+| 通知 | 判断待ち・レビュー待ち発生時にモバイルへ知らせる（ダッシュボードでの定期確認運用が基本、Slackは補完） | Slack（Incoming Webhook） |
 
 ### コンポーネント間の通信方式
 
@@ -99,7 +99,7 @@ flowchart TB
 ## 6. 通知・承認フロー
 
 - Claude Code Remote ControlのPush通知は実機検証で信頼性が確認できなかった（[要件定義書 2-6](./requirements.md#2-6-通知要件)）ため、Remote Controlには依存しない。
-- **Slack（Incoming Webhook）**を採用し、判断待ち発生時にオーケストレータからSlackへ通知を送信する。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わず、オーケストレータが直接Slack Incoming Webhook URLへHTTP POSTする一方向通知とする（双方向の承認操作はダッシュボード側で行うため、Slack側での応答は不要）。
+- **Slack（Incoming Webhook）**を採用し、判断待ち・レビュー待ち発生時にオーケストレータからSlackへ通知を送信する。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わず、オーケストレータが直接Slack Incoming Webhook URLへHTTP POSTする一方向通知とする（双方向の承認操作はダッシュボード側で行うため、Slack側での応答は不要）。
 - 主な利用シーン（就寝前後の確認、PC前レビュー）を踏まえ、ダッシュボードでの定期確認運用を基本としつつ、Slack通知を即時性の補完として併用する。
 
 ## 7. 権限管理・安全対策

@@ -19,7 +19,7 @@ from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
-from orchestrator.slack_notifier import DecisionNotifier
+from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
 
 # 環境変数 ORCHESTRATOR_PORT でbindポートを上書きできる。既に本番用インスタンスが
 # 稼働中の状態でAgent Runner自身が動作確認のために別インスタンスを起動する際、
@@ -52,6 +52,7 @@ def main() -> None:
     dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects))
     comment_tracker = CommentTracker()
     decision_notifier = DecisionNotifier()
+    review_notifier = ReviewNotifier()
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
         process_new_comments(
@@ -66,6 +67,7 @@ def main() -> None:
     def on_update(state: AggregatedState) -> None:
         store.set(state)
         decision_notifier.notify_new_decisions(state)
+        review_notifier.notify_new_reviews(state)
 
     polling_thread = threading.Thread(
         target=run_polling_loop,
