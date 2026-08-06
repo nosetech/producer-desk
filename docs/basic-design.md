@@ -188,7 +188,15 @@ claude -p "<指示内容>" \
 }
 ```
 
-起動時点で既に`needs-human-decision`のissueは「既知」として扱い通知しない（[2-3「共通仕様」](#2-3-指示出しapi内部api)のコメント検知と同様、オーケストレータ再起動のたびに既存の判断待ちを再通知しないための方針）。以降のポーリングで新規に判断待ちになったissueのみを通知する。`SLACK_WEBHOOK_URL`が未設定の場合は通知処理をスキップする（起動失敗にはしない）。
+レビュー待ち（`status:in-review`）が新規発生した際も、同様に以下の内容でWebhook POSTする（issue #38で、Agent Runnerがレビュー待ちにした際に通知が来ない旨の報告を受けて追加。`orchestrator/orchestrator/slack_notifier.py`の`ReviewNotifier`）。
+
+```json
+{
+  "text": ":mag: レビュー待ちになりました\n*リポジトリ*: nosetech/project-a\n*issue*: #38 ブラウザエラーの調査・対応\nhttps://github.com/nosetech/project-a/issues/38"
+}
+```
+
+起動時点で既に`needs-human-decision`・`status:in-review`のissueは「既知」として扱い通知しない（[2-3「共通仕様」](#2-3-指示出しapi内部api)のコメント検知と同様、オーケストレータ再起動のたびに既存の判断待ち・レビュー待ちを再通知しないための方針）。以降のポーリングで新規に判断待ち・レビュー待ちになったissueのみを、それぞれ独立に（`DecisionNotifier`・`ReviewNotifier`として）通知する。`SLACK_WEBHOOK_URL`が未設定の場合は通知処理をスキップする（起動失敗にはしない）。
 
 ### 5-3. ダッシュボードからの指示出し操作の内部処理フロー
 
