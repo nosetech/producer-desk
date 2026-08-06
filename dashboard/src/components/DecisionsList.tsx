@@ -4,12 +4,14 @@ import styles from "./DecisionsList.module.css";
 
 export default function DecisionsList({
   decisions,
+  onApprove,
+  onReject,
   onReply,
-  onActed,
 }: {
   decisions: IssueSummary[];
+  onApprove: (repo: string, issueNumber: number, title: string) => void;
+  onReject: (repo: string, issueNumber: number, title: string) => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
-  onActed: () => void;
 }) {
   return (
     <div className={styles.panel}>
@@ -28,8 +30,9 @@ export default function DecisionsList({
             <DecisionCard
               key={`${decision.repo}#${decision.number}`}
               decision={decision}
+              onApprove={onApprove}
+              onReject={onReject}
               onReply={onReply}
-              onActed={onActed}
             />
           ))}
         </div>
