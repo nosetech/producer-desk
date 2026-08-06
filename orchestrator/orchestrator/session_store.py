@@ -1,62 +1,57 @@
-"""config/projects.yaml へのsession_id書き戻し。
+"""issueごとのAgent Runnerセッション（Claude Codeのsession-id）の永続化。
 
 仕様: docs/basic-design.md 3-1
-「初回ディスパッチ時はオーケストレータがuuid.uuid4()を生成し--session-idで明示的に
-指定してセッションを新規作成する。生成したIDをconfig/projects.yamlに書き戻し、
-以降の指示では--resume <session-id>で再開する。」
 
-PyYAMLでの全体再シリアライズはユーザーが記載したコメント等を壊すため、対象repoの
-ブロック内にある `session_id:` 行だけを正規表現で置換するテキスト差分更新を行う。
+セッションはプロジェクト（リポジトリ）単位ではなく、issue単位で保持する。
+`config/projects.yaml` にプロジェクト単位でsession_idを1つだけ保存する旧実装では、
+同一プロジェクト内の複数issueが同じセッション（1本のClaude Code会話）を共有して
+いたため、あるissueが判断待ちで止まっている間に別issueが同じセッションで進行す
+ると、後から前者を`--resume`で再開した際に後者issueの直近の会話文脈を引きずって
+しまう不具合が発生した（issue #32: 判断待ちからの再開時に、その間に処理された
+別issue（#33・#38）の完了報告を返してしまった）。
+
+`config/sessions.json`（.gitignore対象、コミットしない）に
+`"{repo}#{issue_number}": "<session-id>"` の形でJSONとして保存する。
 """
 
 from __future__ import annotations
 
-import re
+import json
 from pathlib import Path
 
-from orchestrator.config import DEFAULT_CONFIG_PATH
+from orchestrator.config import REPO_ROOT
 
-_REPO_LINE = re.compile(r"^\s*-\s*repo:\s*(?P<value>\S+)\s*$")
-_NEXT_ENTRY_LINE = re.compile(r"^\s*-\s*repo:\s*")
-_SESSION_ID_LINE = re.compile(
-    r"^(?P<indent>\s*session_id:\s*)(?P<value>[^#\r\n]*?)(?P<trailer>\s*#.*)?$"
-)
+DEFAULT_SESSIONS_PATH = REPO_ROOT / "config" / "sessions.json"
 
 
-def update_session_id(yaml_text: str, repo: str, session_id: str) -> str:
-    """`yaml_text` 内の該当repoブロックの `session_id` 値だけを書き換えた新しいテキストを返す。"""
-    lines = yaml_text.splitlines(keepends=True)
+def _key(repo: str, issue_number: int) -> str:
+    return f"{repo}#{issue_number}"
 
-    block_start = None
-    for i, line in enumerate(lines):
-        m = _REPO_LINE.match(line.rstrip("\n"))
-        if m and m.group("value").strip("\"'") == repo:
-            block_start = i
-            break
 
-    if block_start is None:
-        raise ValueError(f"config内にrepoが見つかりません: {repo}")
+def load_sessions(sessions_path: Path = DEFAULT_SESSIONS_PATH) -> dict[str, str]:
+    if not sessions_path.exists():
+        return {}
+    with sessions_path.open(encoding="utf-8") as f:
+        return json.load(f)
 
-    block_end = len(lines)
-    for j in range(block_start + 1, len(lines)):
-        if _NEXT_ENTRY_LINE.match(lines[j]):
-            block_end = j
-            break
 
-    for k in range(block_start, block_end):
-        m = _SESSION_ID_LINE.match(lines[k].rstrip("\n"))
-        if m:
-            newline = "\n" if lines[k].endswith("\n") else ""
-            trailer = m.group("trailer") or ""
-            lines[k] = f'{m.group("indent")}"{session_id}"{trailer}{newline}'
-            return "".join(lines)
-
-    raise ValueError(f"repo={repo} のブロックにsession_idキーが見つかりません")
+def get_session_id(
+    repo: str, issue_number: int, *, sessions_path: Path = DEFAULT_SESSIONS_PATH
+) -> str | None:
+    return load_sessions(sessions_path=sessions_path).get(_key(repo, issue_number))
 
 
 def persist_session_id(
-    repo: str, session_id: str, *, config_path: Path = DEFAULT_CONFIG_PATH
+    repo: str,
+    issue_number: int,
+    session_id: str,
+    *,
+    sessions_path: Path = DEFAULT_SESSIONS_PATH,
 ) -> None:
-    text = config_path.read_text(encoding="utf-8")
-    updated = update_session_id(text, repo, session_id)
-    config_path.write_text(updated, encoding="utf-8")
+    sessions = load_sessions(sessions_path=sessions_path)
+    sessions[_key(repo, issue_number)] = session_id
+    sessions_path.parent.mkdir(parents=True, exist_ok=True)
+    sessions_path.write_text(
+        json.dumps(sessions, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )

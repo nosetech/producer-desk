@@ -18,7 +18,6 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "projects.yaml"
 class Project:
     repo: str
     worktree_path: str
-    session_id: str | None = None
 
 
 def load_projects(config_path: Path = DEFAULT_CONFIG_PATH) -> list[Project]:

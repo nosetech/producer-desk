@@ -28,14 +28,15 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
-from orchestrator.session_store import persist_session_id
+from orchestrator.session_store import get_session_id, persist_session_id
 
 DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 NowFn = Callable[[], datetime]
 UuidFn = Callable[[], str]
-PersistSessionIdFn = Callable[[str, str], None]
+GetSessionIdFn = Callable[[str, int], str | None]
+PersistSessionIdFn = Callable[[str, int, str], None]
 
 
 @dataclass
@@ -154,13 +155,22 @@ def run_agent_runner(
     add_label: AddLabelFn = gh_add_label,
     remove_label: RemoveLabelFn = gh_remove_label,
     logs_dir: Path = DEFAULT_LOGS_DIR,
+    get_session_id_fn: GetSessionIdFn = get_session_id,
     persist_session_id_fn: PersistSessionIdFn = persist_session_id,
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
 ) -> AgentRunResult:
-    """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。"""
+    """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
+
+    セッションはissue単位（`get_session_id_fn`/`persist_session_id_fn`が
+    `(repo, issue_number)`をキーに管理、[[docs/basic-design.md 3-1]]参照）で
+    保持する。プロジェクト単位で1つのセッションを共有すると、あるissueが
+    判断待ちで止まっている間に別issueが同じセッションで進行し、後から前者を
+    resumeした際に後者issueの文脈を引きずってしまう（issue #32）。
+    """
     timestamp = now().strftime("%Y%m%dT%H%M%SZ")
     worktree_path = Path(project.worktree_path)
+    existing_session_id = get_session_id_fn(project.repo, issue_number)
 
     if not worktree_path.is_dir():
         error_message = f"worktreeが見つかりません: {project.worktree_path}"
@@ -183,12 +193,12 @@ def run_agent_runner(
             issue_number=issue_number,
             exit_code=-1,
             log_path=log_path,
-            session_id=project.session_id or "",
+            session_id=existing_session_id or "",
             success=False,
         )
 
-    resume = project.session_id is not None
-    session_id = project.session_id or new_uuid()
+    resume = existing_session_id is not None
+    session_id = existing_session_id or new_uuid()
     command = build_claude_command(
         message,
         session_id=session_id,
@@ -209,8 +219,7 @@ def run_agent_runner(
     )
 
     if not resume:
-        project.session_id = session_id
-        persist_session_id_fn(project.repo, session_id)
+        persist_session_id_fn(project.repo, issue_number, session_id)
 
     success = result.returncode == 0
 
