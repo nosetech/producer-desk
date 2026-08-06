@@ -109,6 +109,10 @@ def build_claude_command(
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        # `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため、
+        # AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの
+        # 利用を指示するだけでは実際には使えない。明示的に有効化する。
+        "--chrome",
         "--append-system-prompt",
         system_prompt,
     ]

@@ -143,6 +143,7 @@ Content-Type: application/json
 claude -p "<指示内容>" \
   --output-format json \
   --dangerously-skip-permissions \
+  --chrome \
   --append-system-prompt "<ラベル自己管理指示>" \
   (--session-id <new-uuid> | --resume <session-id>)
 ```
@@ -152,6 +153,7 @@ claude -p "<指示内容>" \
 - `--output-format json` により、実行結果（`result` フィールド等）を構造化データとして取得し、3-2のissueコメント要約に利用する。
 - `--append-system-prompt` により、[1章](#1-データモデル状態遷移設計)でAgent Runner自身の責務とした`needs-human-decision`・`status:in-review`へのラベル自己付与（対象issue番号・リポジトリ名・具体的な`gh issue edit`コマンドを含む）を、指示内容の文面によらず毎回明示する（`agent_runner.py`の`AGENT_RUNNER_LABEL_INSTRUCTION`）。当初この指示が無く、PR作成後もラベルが`status:in-progress`のまま遷移しない事例が発生したため導入した（issue #33）。
 - 同様に`--append-system-prompt`で、ダッシュボードのUI実装時はCLAUDE.md記載のClaude DesignのURL（`https://claude.ai/design/...`）をブラウザ操作ツール（`mcp__claude-in-chrome__*`）で開き、配色・アイコン等の視覚的詳細を確認してから実装するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`）。デザインURLは認証必須で`WebFetch`では取得できず（403）、テキストの設計文書にも色・アイコンの指定は無いため、ブラウザ操作ツールで直接見る以外に実装が細部までデザインへ追随する手段がないことが判明したため導入した（issue #33）。
+- `--chrome` フラグにより、Claude in Chrome連携を明示的に有効化する。`claude -p`（非対話モード）はこの連携がデフォルト無効で、フラグなしでは`mcp__claude-in-chrome__*`ツール自体が存在せず、上記のブラウザ確認指示が機能しない（issue #33の追加原因調査で判明）。
   - **運用上の前提**: この指示が機能するには、Agent Runnerを実行するホスト上でChromeが起動しており、`claude-in-chrome`拡張がペアリング済みで、`claude.ai`にログイン済みである必要がある（就寝中などプロデューサーが操作しない時間帯にAgent Runnerが動く想定のため、事前にログイン状態を維持しておくこと）。ブラウザ操作ツールが利用できない場合、Agent Runnerはその旨を実行結果コメントに明記し、`needs-human-decision`として人間の確認を仰ぐ。
 
 ### 3-2. 監視方法

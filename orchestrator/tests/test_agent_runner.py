@@ -79,8 +79,9 @@ def test_build_claude_command_new_session_uses_session_id_flag() -> None:
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        "--chrome",
         "--append-system-prompt",
-        command[7],
+        command[8],
         "--session-id",
         "new-id",
     ]
@@ -98,8 +99,9 @@ def test_build_claude_command_resume_uses_resume_flag() -> None:
         "--output-format",
         "json",
         "--dangerously-skip-permissions",
+        "--chrome",
         "--append-system-prompt",
-        command[7],
+        command[8],
         "--resume",
         "existing-id",
     ]
@@ -124,6 +126,20 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     assert STATUS_NEEDS_HUMAN_DECISION in instruction
     assert STATUS_IN_PROGRESS in instruction
     assert "gh issue edit 12 --repo nosetech/project-a" in instruction
+
+
+def test_build_claude_command_enables_chrome_integration() -> None:
+    """issue #33の再発防止テスト（続報）。
+
+    AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの利用
+    を指示しても、`-p`（非対話モード）ではClaude in Chrome連携がデフォルト
+    無効なため実際には使えなかった。`--chrome`で明示的に有効化する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    assert "--chrome" in command
 
 
 def test_build_claude_command_appends_design_verification_instruction() -> None:
