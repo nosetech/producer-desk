@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { postCreateIssue, postInstruct } from "@/lib/api";
 import { shortRepoName } from "@/lib/projectStatus";
-import type { Dispatch } from "@/lib/types";
+import type { Dispatch, InstructAction } from "@/lib/types";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -13,11 +13,15 @@ export interface IssueRef {
 }
 
 export type ComposerMode = "reply" | "new";
+export type ReplyKind = "reply" | "approve" | "reject";
+
+const APPROVE_TEXT = "この方針で進めてください。承認します。";
 
 export default function ComposerBar({
   open,
   mode,
   replyTarget,
+  replyKind,
   onClearReplyTarget,
   onOpen,
   onClose,
@@ -29,6 +33,7 @@ export default function ComposerBar({
   open: boolean;
   mode: ComposerMode;
   replyTarget: IssueRef | null;
+  replyKind: ReplyKind;
   onClearReplyTarget: () => void;
   onOpen: () => void;
   onClose: () => void;
@@ -37,6 +42,7 @@ export default function ComposerBar({
   onNewTaskRepoChange: (repo: string) => void;
   onSubmitted: () => void;
 }) {
+  const [kind, setKind] = useState<ReplyKind>(replyKind);
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -50,22 +56,40 @@ export default function ComposerBar({
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setMessage("");
+      setKind(replyKind);
+      setMessage(replyKind === "approve" ? APPROVE_TEXT : "");
       setTitle("");
       setPrompt("");
       setError(null);
     }
   }
 
+  function selectQuickApprove() {
+    setKind("approve");
+    setMessage(APPROVE_TEXT);
+  }
+
+  function selectQuickReject() {
+    setKind("reject");
+    setMessage("");
+  }
+
   function handleSendReply() {
-    if (!replyTarget || !message.trim()) return;
+    if (!replyTarget) return;
+    if (kind === "reply" && !message.trim()) return;
     setSubmitting(true);
     setError(null);
+    const action: InstructAction =
+      kind === "approve"
+        ? "approve"
+        : kind === "reject"
+          ? "reject"
+          : "instruct";
     postInstruct(
       replyTarget.repo,
       replyTarget.number,
-      "instruct",
-      message.trim(),
+      action,
+      message.trim() || undefined,
     )
       .then(() => {
         onClearReplyTarget();
@@ -119,6 +143,13 @@ export default function ComposerBar({
       </button>
     );
   }
+
+  const sendLabel =
+    kind === "approve"
+      ? "承認を送信"
+      : kind === "reject"
+        ? "却下を送信"
+        : "指示を送信";
 
   return (
     <div className={styles.panel}>
@@ -182,8 +213,21 @@ export default function ComposerBar({
         <div className={styles.body}>
           {replyTarget ? (
             <span className={styles.targetChip}>
-              {shortRepoName(replyTarget.repo)} #{replyTarget.number}{" "}
-              {replyTarget.title}
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M9 17 4 12l5-5" />
+                <path d="M4 12h11a5 5 0 0 1 0 10" />
+              </svg>
+              {shortRepoName(replyTarget.repo)} #{replyTarget.number}
+              <span className={styles.targetChipSuffix}>へ指示</span>
               <button
                 type="button"
                 onClick={onClearReplyTarget}
@@ -197,9 +241,51 @@ export default function ComposerBar({
               判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
             </div>
           )}
+          <div className={styles.quickRow}>
+            <button
+              type="button"
+              className={`${styles.quickBtn} ${styles.quickApprove} ${kind === "approve" ? styles.quickActive : ""}`}
+              onClick={selectQuickApprove}
+              disabled={!replyTarget}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+              承認して進める
+            </button>
+            <button
+              type="button"
+              className={`${styles.quickBtn} ${styles.quickReject} ${kind === "reject" ? styles.quickActive : ""}`}
+              onClick={selectQuickReject}
+              disabled={!replyTarget}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+              却下（理由を記入）
+            </button>
+          </div>
           <textarea
             className={styles.textarea}
-            placeholder="issueに指示を送る…"
+            placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             disabled={submitting || !replyTarget}
@@ -209,9 +295,26 @@ export default function ComposerBar({
               type="button"
               className={styles.sendBtn}
               onClick={handleSendReply}
-              disabled={submitting || !replyTarget || !message.trim()}
+              disabled={
+                submitting ||
+                !replyTarget ||
+                (kind === "reply" && !message.trim())
+              }
             >
-              送信
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 2 11 13" />
+                <path d="M22 2 15 22l-4-9-9-4Z" />
+              </svg>
+              {sendLabel}
             </button>
           </div>
         </div>
@@ -235,7 +338,7 @@ export default function ComposerBar({
             <div className={styles.fieldLabel}>タイトル</div>
             <input
               className={styles.input}
-              placeholder="タイトル"
+              placeholder="例: 請求書の合計金額バリデーションを追加"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               disabled={submitting}
@@ -245,7 +348,7 @@ export default function ComposerBar({
             <div className={styles.fieldLabel}>指示内容 / プロンプト</div>
             <textarea
               className={styles.textarea}
-              placeholder="指示内容（プロンプト）"
+              placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               disabled={submitting}
@@ -260,6 +363,18 @@ export default function ComposerBar({
                 submitting || !newRepo || !title.trim() || !prompt.trim()
               }
             >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+              </svg>
               今すぐ着手
             </button>
             <button
@@ -270,7 +385,20 @@ export default function ComposerBar({
                 submitting || !newRepo || !title.trim() || !prompt.trim()
               }
             >
-              あとで着手（todo登録）
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="5" width="18" height="16" rx="2" />
+                <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+              </svg>
+              あとで着手（todo）
             </button>
           </div>
         </div>
