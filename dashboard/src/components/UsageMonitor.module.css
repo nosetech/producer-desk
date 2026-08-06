@@ -25,6 +25,42 @@
   color: var(--text-tertiary);
 }
 
+.titleGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mockBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--accent-gray);
+  background-color: var(--accent-gray-bg);
+}
+
+.mockNote {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.inlineCode {
+  font-family: var(--font-mono, monospace);
+  background: var(--bg-card);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.mockLink {
+  color: var(--text-tertiary);
+  text-decoration: underline;
+}
+
 .warning {
   display: flex;
   gap: 8px;

@@ -2,8 +2,8 @@ import styles from "./UsageMonitor.module.css";
 
 /**
  * Claude Codeの利用量/リミット取得方法は未実装（docs/basic-design.md 2-2で
- * 実装フェーズに設計を先送りされている）。バックエンドから配信されるまでの
- * 仮データとしてUIのみ実装する。
+ * 実装フェーズに設計を先送りされている）。実データ配信はissue #42に切り出し、
+ * ここでは仮データである旨をUIに明示した上でモックのままにする（issue #32）。
  */
 const MOCK_USAGE = {
   plan: "Max プラン",
@@ -31,9 +31,26 @@ export default function UsageMonitor() {
   return (
     <div className={styles.panel}>
       <div className={styles.headerRow}>
-        <span className={styles.title}>利用量 / リミット</span>
+        <span className={styles.titleGroup}>
+          <span className={styles.title}>利用量 / リミット</span>
+          <span className={styles.mockBadge}>仮データ表示中</span>
+        </span>
         <span className={styles.plan}>{plan}</span>
       </div>
+      <span className={styles.mockNote}>
+        実データ配信は未実装のため、以下はサンプル値です。実際の利用率は Claude
+        Code の <code className={styles.inlineCode}>/status</code> コマンドで
+        確認してください（
+        <a
+          href="https://github.com/nosetech/producer-desk/issues/42"
+          target="_blank"
+          rel="noreferrer"
+          className={styles.mockLink}
+        >
+          #42
+        </a>
+        ）。
+      </span>
 
       {nearLimit && (
         <div className={styles.warning}>
