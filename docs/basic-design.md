@@ -15,9 +15,17 @@
 | 作業中 | `status:in-progress` | Agent Runner（自己付与） | ディスパッチされ着手した時 |
 | 判断待ち | `needs-human-decision` | Agent Runner（自己付与） | 人間の判断が必要と自ら判断した時 |
 | レビュー待ち | `status:in-review` | Agent Runner（自己付与） | PRを作成した時 |
-| 完了 | （ラベルなし） | 人間 | issueをクローズした時 |
+| 完了 | `status:closed` | オーケストレータ（自己付与） | issueがクローズされたことをポーリングで検知した時 |
 
 状態ラベルは常に1つのみ付与される（[アーキテクチャ設計書 3章](./architecture.md#3-タスク状態管理)）。
+
+issueのクローズ操作自体（人間による手動クローズ、PRマージに伴う`Closes #<issue番号>`経由の自動クローズいずれも）はproducer-deskの外側で起きるため、`status:closed`はAgent Runnerではなくオーケストレータが付与する。次回ポーリング（[2-2](#2-2-データ取得仕様ポーリング)）で対象issueがクローズ済みであることを検知し、[「冪等な状態遷移フロー」](#冪等な状態遷移フロー)と同じ`transition_label`で他の状態ラベルを`status:closed`に置き換える。
+
+#### 管理対象外issueの扱い
+
+`status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review` / `status:closed` のいずれも付与されていないissueは、producer-deskの管理対象外として扱う（このシステムが起票していない素のissue、まだ`status:todo`すら付いていない起票直後のissue等）。管理対象外issueは判断待ち一覧・活動ログのいずれにも表示しない（[2-2](#2-2-データ取得仕様ポーリング)参照）。オーケストレータは管理対象外issueに対して`status:closed`を含むいかなる状態ラベルも自動付与しない（管理対象外issueがクローズされても何もしない。対象はあくまで4つの状態ラベルのいずれかが付与済み＝一度でもproducer-deskが着手したissueのみ）。
+
+過去、この管理対象外という区分が無かったため、「状態ラベルが1つも付いていない」ことを一律「完了」と誤表示していた不具合があった（[issue #45](https://github.com/nosetech/producer-desk/issues/45)）。
 
 ### 冪等な状態遷移フロー
 
@@ -26,7 +34,10 @@
 ```python
 def transition_label(repo, issue_number, new_label):
     current_labels = gh_api_get_labels(repo, issue_number)
-    status_labels = {"status:todo", "status:in-progress", "needs-human-decision", "status:in-review"}
+    status_labels = {
+        "status:todo", "status:in-progress", "needs-human-decision",
+        "status:in-review", "status:closed",
+    }
 
     # 既に目的のラベルが付いていれば何もしない（再実行しても安全）
     if new_label in current_labels:
@@ -51,6 +62,9 @@ def transition_label(repo, issue_number, new_label):
 | `needs-human-decision` | → `status:in-progress` | 同上 |
 | `status:in-progress` | 変更なし（割り込み指示として扱う） | 実行中のためキューに追加 |
 | `status:in-review` | 変更なし | 実行中でなければ即時、実行中ならキュー |
+| `status:closed` | → `status:in-progress`（再着手扱い） | 実行中でなければ即時、実行中ならキュー |
+
+- `status:closed` のissueへの自由記述指示はラベルこそ `status:in-progress` に戻すが、GitHub issue自体のクローズ状態（Open/Closed）は変更しない（issueのクローズ・再オープンはproducer-deskの操作範囲外。[アーキテクチャ設計書](./architecture.md)参照）。再着手させたい場合は、プロデューサーが別途GitHub上でissueをreopenする運用とする。
 
 ## 2. オーケストレータ／ダッシュボードAPI設計
 
@@ -73,11 +87,14 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
 ### 2-2. データ取得仕様（ポーリング）
 
 - **ポーリング間隔**: 5分。
-- 各対象リポジトリに対し `gh issue list --repo <repo> --state open --json number,title,labels,comments,updatedAt` 相当のAPI呼び出しで、Open issue一覧とラベル・コメント・更新日時を取得する。
-- 取得結果から、ダッシュボード表示用に以下を集約する。
-  - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
-  - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
-  - 利用量・リミットモニター: Claude Codeの利用量／リミット到達状況（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）。ローカルのClaude Code使用量ログ・リミット到達検知の具体的な取得方法は実装フェーズで設計する
+- 各対象リポジトリに対し `gh issue list --repo <repo> --state all --json number,title,labels,comments,updatedAt,state --limit 100` 相当のAPI呼び出しで、issue一覧（Open・Closed双方）とラベル・コメント・更新日時・クローズ状態を取得する。
+  - クローズ済みissueをタイムライン（活動ログ）に「完了」として表示するには、クローズ済みissueも取得対象に含める必要がある（[1章「完了」](#状態一覧遷移条件ラベル操作)参照）。`--state open` のみの取得では、issueがクローズされた瞬間に取得結果から消えてしまい、クローズをイベントとして検知できない（[issue #45](https://github.com/nosetech/producer-desk/issues/45)で判明）。
+  - `--limit 100` はプロデューサー1名・3〜5プロジェクト同時進行というMVPの利用規模を踏まえた簡易的な上限であり、厳密なページングは行わない（1リポジトリあたり直近100件のissueに含まれない古いクローズ済みissueは活動ログに現れなくなるが、実用上問題にならない想定。プロジェクト規模が想定を超えて増えた場合は別途見直す）。
+- 取得結果から、以下の処理を行う。
+  - **クローズ検知によるラベル遷移**: 取得したissueのうち、`state` が `CLOSED` かつ現在 `status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review` のいずれかが付与されている（＝producer-deskが管理していた）issueは、[1章「冪等な状態遷移フロー」](#冪等な状態遷移フロー)と同じ`transition_label`で `status:closed` に遷移させる。管理対象外issue（[1章「管理対象外issueの扱い」](#管理対象外issueの扱い)）はクローズされても何もしない。
+  - **判断待ち一覧**: `needs-human-decision` ラベル付きissueを横断集約
+  - **活動ログ（タイムライン）**: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる。`status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review` / `status:closed` のいずれも付与されていない管理対象外issueは、活動ログから除外する（付与ラベルが無い＝完了、という誤った表示をしていた不具合[issue #45](https://github.com/nosetech/producer-desk/issues/45)の修正）。
+  - **利用量・リミットモニター**: Claude Codeの利用量／リミット到達状況（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）。ローカルのClaude Code使用量ログ・リミット到達検知の具体的な取得方法は実装フェーズで設計する
 - **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "activity": [...]}` 形式のJSONで返す。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
 
 ### 2-3. 指示出しAPI（内部API）

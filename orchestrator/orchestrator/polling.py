@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from orchestrator.aggregation import AggregatedState, IssueSummary, aggregate
 from orchestrator.config import Project
-from orchestrator.github_client import list_open_issues
+from orchestrator.github_client import list_issues as gh_list_issues
 
 DEFAULT_INTERVAL_SECONDS = 5 * 60
 
@@ -21,7 +21,7 @@ OnIssuesFetchedFn = Callable[[dict[str, list[IssueSummary]]], None]
 def poll_once(
     projects: list[Project],
     *,
-    list_issues: ListIssuesFn = list_open_issues,
+    list_issues: ListIssuesFn = gh_list_issues,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
 ) -> AggregatedState:
     """全プロジェクトを1回ポーリングし、集約結果を返す。
@@ -40,7 +40,7 @@ def run_polling_loop(
     *,
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     on_update: Callable[[AggregatedState], None],
-    list_issues: ListIssuesFn = list_open_issues,
+    list_issues: ListIssuesFn = gh_list_issues,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     stop_event: threading.Event | None = None,
 ) -> None:

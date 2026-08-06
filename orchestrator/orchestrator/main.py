@@ -13,6 +13,7 @@ import threading
 
 from orchestrator.agent_runner import run_agent_runner
 from orchestrator.aggregation import AggregatedState
+from orchestrator.close_watcher import close_finished_issues
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.config import Project, load_projects
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
@@ -55,6 +56,12 @@ def main() -> None:
     review_notifier = ReviewNotifier()
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
+        close_finished_issues(
+            issues_by_repo,
+            get_labels=gh_get_labels,
+            add_label=gh_add_label,
+            remove_label=gh_remove_label,
+        )
         process_new_comments(
             issues_by_repo,
             comment_tracker,

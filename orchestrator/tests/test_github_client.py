@@ -6,7 +6,7 @@ import json
 import subprocess
 
 from orchestrator.aggregation import IssueSummary
-from orchestrator.github_client import BOT_COMMENT_MARKER, list_open_issues, post_comment
+from orchestrator.github_client import BOT_COMMENT_MARKER, list_issues, post_comment
 
 
 def _fake_run(stdout_issues: list[dict]) -> object:
@@ -22,7 +22,7 @@ def _fake_run(stdout_issues: list[dict]) -> object:
     return run
 
 
-def test_list_open_issues_parses_gh_output_into_issue_summaries() -> None:
+def test_list_issues_parses_gh_output_into_issue_summaries() -> None:
     fake_run = _fake_run(
         [
             {
@@ -31,11 +31,12 @@ def test_list_open_issues_parses_gh_output_into_issue_summaries() -> None:
                 "labels": [{"name": "needs-human-decision"}],
                 "comments": [{"body": "承認します。"}],
                 "updatedAt": "2026-08-03T05:27:16Z",
+                "state": "OPEN",
             }
         ]
     )
 
-    result = list_open_issues("nosetech/project-a", run=fake_run)
+    result = list_issues("nosetech/project-a", run=fake_run)
 
     assert result == [
         IssueSummary(
@@ -45,14 +46,34 @@ def test_list_open_issues_parses_gh_output_into_issue_summaries() -> None:
             labels=["needs-human-decision"],
             comments=[{"body": "承認します。"}],
             updated_at="2026-08-03T05:27:16Z",
+            state="OPEN",
         )
     ]
 
 
-def test_list_open_issues_calls_gh_with_expected_arguments() -> None:
+def test_list_issues_parses_closed_state() -> None:
+    fake_run = _fake_run(
+        [
+            {
+                "number": 5,
+                "title": "完了したタスク",
+                "labels": [{"name": "status:closed"}],
+                "comments": [],
+                "updatedAt": "2026-08-04T00:00:00Z",
+                "state": "CLOSED",
+            }
+        ]
+    )
+
+    result = list_issues("nosetech/project-a", run=fake_run)
+
+    assert result[0].state == "CLOSED"
+
+
+def test_list_issues_calls_gh_with_expected_arguments() -> None:
     fake_run = _fake_run([])
 
-    list_open_issues("nosetech/project-a", run=fake_run)
+    list_issues("nosetech/project-a", run=fake_run)
 
     [cmd] = fake_run.calls  # type: ignore[attr-defined]
     assert cmd == [
@@ -62,16 +83,18 @@ def test_list_open_issues_calls_gh_with_expected_arguments() -> None:
         "--repo",
         "nosetech/project-a",
         "--state",
-        "open",
+        "all",
         "--json",
-        "number,title,labels,comments,updatedAt",
+        "number,title,labels,comments,updatedAt,state",
+        "--limit",
+        "100",
     ]
 
 
-def test_list_open_issues_returns_empty_list_when_no_open_issues() -> None:
+def test_list_issues_returns_empty_list_when_no_issues() -> None:
     fake_run = _fake_run([])
 
-    assert list_open_issues("nosetech/project-a", run=fake_run) == []
+    assert list_issues("nosetech/project-a", run=fake_run) == []
 
 
 def test_post_comment_appends_bot_marker() -> None:

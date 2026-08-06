@@ -3,6 +3,8 @@
 仕様: docs/basic-design.md 2-2（データ取得仕様（ポーリング））
 - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
 - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
+  （5つの状態ラベルのいずれも付与されていない管理対象外issueは除外する。
+  docs/basic-design.md 1章「管理対象外issueの扱い」）
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ class IssueSummary:
     labels: list[str]
     comments: list[dict]
     updated_at: str
+    state: str = "OPEN"
 
 
 @dataclass
@@ -27,7 +30,7 @@ class ActivityEvent:
     repo: str
     number: int
     title: str
-    label: str | None
+    label: str
     updated_at: str
 
 
@@ -53,10 +56,11 @@ def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
             repo=issue.repo,
             number=issue.number,
             title=issue.title,
-            label=_current_status_label(issue),
+            label=label,
             updated_at=issue.updated_at,
         )
         for issue in all_issues
+        if (label := _current_status_label(issue)) is not None
     ]
     activity.sort(key=lambda event: event.updated_at, reverse=True)
 

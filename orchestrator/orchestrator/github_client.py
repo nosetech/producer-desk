@@ -1,4 +1,4 @@
-"""`gh` CLI経由でのOpen issue一覧取得・コメント投稿・issue作成。
+"""`gh` CLI経由でのissue一覧取得・コメント投稿・issue作成。
 
 仕様: docs/basic-design.md 2-2（データ取得仕様（ポーリング））・2-3（指示出しAPI共通仕様）
 """
@@ -11,7 +11,12 @@ from collections.abc import Callable
 
 from orchestrator.aggregation import IssueSummary
 
-ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt"
+ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state"
+
+# 1リポジトリあたりの取得件数上限（docs/basic-design.md 2-2）。
+# クローズ済みissueも活動ログに表示するための --state all 取得と合わせ、
+# プロデューサー1名・3〜5プロジェクト同時進行というMVPの規模で十分な簡易的な上限。
+ISSUE_LIST_LIMIT = 100
 
 # オーケストレータ自身が投稿したコメントであることを示す不可視マーカー。
 # comment_watcher（docs/basic-design.md 2-3「共通仕様」）が自分自身の投稿
@@ -25,10 +30,13 @@ PostCommentFn = Callable[[str, int, str], None]
 CreateIssueFn = Callable[[str, str, str], int]
 
 
-def list_open_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
-    """対象リポジトリのOpen issue一覧を取得する。
+def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
+    """対象リポジトリのissue一覧（Open・Closed双方）を取得する。
 
-    `gh issue list --json number,title,labels,comments,updatedAt` 相当。
+    `gh issue list --state all --json number,title,labels,comments,updatedAt,state
+    --limit 100` 相当。クローズ済みissueも含めて取得することで、クローズ検知による
+    `status:closed` への遷移（close_watcher.py）・活動ログでの「完了」表示
+    （docs/basic-design.md 2-2）を可能にする。
     """
     result = run(
         [
@@ -38,9 +46,11 @@ def list_open_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSum
             "--repo",
             repo,
             "--state",
-            "open",
+            "all",
             "--json",
             ISSUE_LIST_FIELDS,
+            "--limit",
+            str(ISSUE_LIST_LIMIT),
         ],
         capture_output=True,
         text=True,
@@ -56,6 +66,7 @@ def list_open_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSum
             labels=[label["name"] for label in issue["labels"]],
             comments=issue["comments"],
             updated_at=issue["updatedAt"],
+            state=issue["state"],
         )
         for issue in raw_issues
     ]
