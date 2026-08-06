@@ -5,7 +5,5 @@
 projects:
   - repo: nosetech/project-a
     worktree_path: /Users/producer/worktrees/project-a
-    session_id: null # 初回ディスパッチ後に自動採番・保存
   - repo: nosetech/project-b
     worktree_path: /Users/producer/worktrees/project-b
-    session_id: null

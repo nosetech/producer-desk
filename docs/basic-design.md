@@ -62,11 +62,11 @@ def transition_label(repo, issue_number, new_label):
 projects:
   - repo: nosetech/project-a
     worktree_path: /Users/producer/worktrees/project-a
-    session_id: null   # 初回ディスパッチ後に自動採番・保存
   - repo: nosetech/project-b
     worktree_path: /Users/producer/worktrees/project-b
-    session_id: null
 ```
+
+Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェクトではなくissue単位で管理するため、このファイルには含まれない（`config/sessions.json`。[3-1](#3-1-起動パラメータ)参照）。
 
 - プロジェクト追加時は、このファイルにエントリを追加し、対象リポジトリのworktreeを用意した上でオーケストレータを再起動する（[要件定義書 2-4](./requirements.md#2-4-agent-runnerの起動停止プロジェクト追加時の運用フロー)の「手動起動・停止」＝このファイルへの登録とオーケストレータの認識、と読み替える）。
 
@@ -149,7 +149,8 @@ claude -p "<指示内容>" \
 ```
 
 - worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.run(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
-- `<session-id>` は `config/projects.yaml` にプロジェクトごとに保存する。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/projects.yaml` に書き戻し、以降の指示では `--resume <session-id>` で再開する。
+- `<session-id>` は `config/sessions.json`（`.gitignore`対象、コミットしない）に**issueごと**に保存する（`"{repo}#{issue_number}": "<session-id>"`、`orchestrator/orchestrator/session_store.py`）。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/sessions.json` に書き込み、同一issueへの以降の指示では `--resume <session-id>` で再開する。
+  - **プロジェクト単位ではなくissue単位である理由**: 当初はプロジェクト（リポジトリ）単位で1つのセッションIDのみを`config/projects.yaml`に保存していたが、この場合同一プロジェクト内の全issueが1本のClaude Code会話を共有してしまう。あるissueが`needs-human-decision`で停止している間に別issueが同じセッションで進行・完了すると、後から前者issueを`--resume`で再開した際、セッションの直近の会話文脈（別issueの完了報告）を引きずってしまい、再開したissue本来の内容に取り組まれない不具合が発生した（issue #32）。issueごとに独立したセッションを持つことで、他issueの進行状況に文脈が左右されないようにする。
 - `--output-format json` により、実行結果（`result` フィールド等）を構造化データとして取得し、3-2のissueコメント要約に利用する。
 - `--append-system-prompt` により、[1章](#1-データモデル状態遷移設計)でAgent Runner自身の責務とした`needs-human-decision`・`status:in-review`へのラベル自己付与（対象issue番号・リポジトリ名・具体的な`gh issue edit`コマンドを含む）を、指示内容の文面によらず毎回明示する（`agent_runner.py`の`AGENT_RUNNER_LABEL_INSTRUCTION`）。当初この指示が無く、PR作成後もラベルが`status:in-progress`のまま遷移しない事例が発生したため導入した（issue #33）。
 - 同様に`--append-system-prompt`で、ダッシュボードのUI実装時はCLAUDE.md記載のClaude DesignのURL（`https://claude.ai/design/...`）をブラウザ操作ツール（`mcp__claude-in-chrome__*`）で開き、配色・アイコン等の視覚的詳細を確認してから実装するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`）。デザインURLは認証必須で`WebFetch`では取得できず（403）、テキストの設計文書にも色・アイコンの指定は無いため、ブラウザ操作ツールで直接見る以外に実装が細部までデザインへ追随する手段がないことが判明したため導入した（issue #33）。

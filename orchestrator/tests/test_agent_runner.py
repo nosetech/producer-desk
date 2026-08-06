@@ -61,10 +61,18 @@ class FakeRun:
 
 class FakePersistSessionId:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, int, str]] = []
 
-    def __call__(self, repo: str, session_id: str) -> None:
-        self.calls.append((repo, session_id))
+    def __call__(self, repo: str, issue_number: int, session_id: str) -> None:
+        self.calls.append((repo, issue_number, session_id))
+
+
+class FakeGetSessionId:
+    def __init__(self, sessions: dict[tuple[str, int], str] | None = None) -> None:
+        self.sessions = dict(sessions or {})
+
+    def __call__(self, repo: str, issue_number: int) -> str | None:
+        return self.sessions.get((repo, issue_number))
 
 
 def test_build_claude_command_new_session_uses_session_id_flag() -> None:
@@ -165,6 +173,7 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun()
+    get_session = FakeGetSessionId()
 
     result = run_agent_runner(
         project,
@@ -176,6 +185,7 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         now=FIXED_NOW,
     )
 
@@ -192,10 +202,11 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
 def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    project = Project(repo="nosetech/project-a", worktree_path=str(worktree), session_id=None)
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun(stdout='{"result": "実装しました"}', returncode=0)
+    get_session = FakeGetSessionId()
     persist = FakePersistSessionId()
 
     result = run_agent_runner(
@@ -208,6 +219,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         persist_session_id_fn=persist,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
@@ -217,8 +229,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     assert "--session-id" in run.calls[0]["cmd"]
     assert "--resume" not in run.calls[0]["cmd"]
     assert run.calls[0]["cwd"] == str(worktree)
-    assert project.session_id == FIXED_UUID()
-    assert persist.calls == [("nosetech/project-a", FIXED_UUID())]
+    assert persist.calls == [("nosetech/project-a", 1, FIXED_UUID())]
     assert result.success is True
     assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
 
@@ -226,12 +237,11 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
 def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    project = Project(
-        repo="nosetech/project-a", worktree_path=str(worktree), session_id="existing-id"
-    )
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun(stdout='{"result": "続きをやりました"}', returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 2): "existing-id"})
     persist = FakePersistSessionId()
 
     result = run_agent_runner(
@@ -244,6 +254,7 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         persist_session_id_fn=persist,
         now=FIXED_NOW,
     )
@@ -254,15 +265,54 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
     assert persist.calls == []
 
 
+def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) -> None:
+    """issue #32の再発防止テスト。
+
+    セッションがプロジェクト単位で1つだけだと、あるissueが判断待ちで止まって
+    いる間に別issueが同じセッションで進行し、後から前者をresumeした際に後者
+    issueの文脈を引きずってしまう。issue番号ごとに独立したセッションを解決
+    することを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    run = FakeRun(stdout='{"result": "ok"}', returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 38): "session-for-38"})
+    persist = FakePersistSessionId()
+
+    run_agent_runner(
+        project,
+        32,
+        "作業を再開してください",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        persist_session_id_fn=persist,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+    )
+
+    # issue #38用のセッションではなく、issue #32用に新規セッションが作られる
+    assert "--session-id" in run.calls[0]["cmd"]
+    assert "--resume" not in run.calls[0]["cmd"]
+    assert "session-for-38" not in run.calls[0]["cmd"]
+    assert persist.calls == [("nosetech/project-a", 32, FIXED_UUID())]
+
+
 def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    project = Project(
-        repo="nosetech/project-a", worktree_path=str(worktree), session_id="existing-id"
-    )
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun(stdout="not json", returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
@@ -274,6 +324,7 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         now=FIXED_NOW,
     )
 
@@ -285,12 +336,11 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
 ) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    project = Project(
-        repo="nosetech/project-a", worktree_path=str(worktree), session_id="existing-id"
-    )
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun(stdout="", stderr="boom", returncode=1)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -302,6 +352,7 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         now=FIXED_NOW,
     )
 
@@ -315,12 +366,11 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
 def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    project = Project(
-        repo="nosetech/project-a", worktree_path=str(worktree), session_id="existing-id"
-    )
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     run = FakeRun(stdout='{"result": "ok"}', stderr="warn: something", returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -332,6 +382,7 @@ def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
         now=FIXED_NOW,
     )
 
