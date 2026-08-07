@@ -28,9 +28,15 @@ export default function ProjectStatusRow({
                   className={styles.dot}
                   style={{ backgroundColor: `var(${meta.colorVar})` }}
                 />
-                <span className={styles.repoName} title={project.repo}>
+                <a
+                  className={styles.repoName}
+                  title={project.repo}
+                  href={`https://github.com/${project.repo}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   {shortRepoName(project.repo)}
-                </span>
+                </a>
                 <button
                   type="button"
                   className={styles.addButton}
