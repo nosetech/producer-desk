@@ -13,11 +13,20 @@ Agent Runnerの実行結果報告、承認/却下/自由記述の定型コメン
 扱わない。人間・bot問わず同一のissueコメントとしてポーリングに現れるため、
 マーカーが無い場合は自分自身の投稿を新規指示と誤検知し、無限に再ディスパッチ
 し続ける（issue #33）。
+
+クローズ済み（`issue.state == CLOSED_STATE`）のissueへの新規コメントもディスパッチ
+対象から除外する。`labels.INSTRUCTION_TRANSITIONS` はクローズ済みissueへの指示を
+`status:in-progress`へ遷移させる定義を持つが、これはダッシュボードの指示API
+（`instruct.handle_instruct`、明示的な再着手操作）向けであり、受動的なコメント監視
+では拾わない。拾ってしまうと、PRマージに伴うissueクローズと同時に書いた説明コメント
+（作業再開の指示ではない）を誤って指示と解釈し、Agent Runnerを不要に再起動させて
+しまう（issue #51）。
 """
 
 from __future__ import annotations
 
 from orchestrator.aggregation import IssueSummary
+from orchestrator.close_watcher import CLOSED_STATE
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.instruct import apply_instruction
@@ -55,6 +64,8 @@ def process_new_comments(
     for repo, issues in issues_by_repo.items():
         for issue in issues:
             new_comments = tracker.new_comments(repo, issue.number, issue.comments)
+            if issue.state == CLOSED_STATE:
+                continue
             human_comments = [c for c in new_comments if BOT_COMMENT_MARKER not in c["body"]]
             if not human_comments:
                 continue

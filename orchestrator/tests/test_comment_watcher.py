@@ -12,7 +12,12 @@ from orchestrator.aggregation import IssueSummary
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import BOT_COMMENT_MARKER
-from orchestrator.labels import STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
+from orchestrator.labels import (
+    STATUS_CLOSED,
+    STATUS_IN_PROGRESS,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_TODO,
+)
 
 
 class FakeLabels:
@@ -47,7 +52,14 @@ def _wait_for(calls: list, count: int, timeout: float = 2.0) -> None:
     raise AssertionError(f"expected {count} dispatch calls, got {len(calls)}")
 
 
-def _issue(repo: str, number: int, labels: list[str], comments: list[dict]) -> IssueSummary:
+def _issue(
+    repo: str,
+    number: int,
+    labels: list[str],
+    comments: list[dict],
+    *,
+    state: str = "OPEN",
+) -> IssueSummary:
     return IssueSummary(
         repo=repo,
         number=number,
@@ -55,6 +67,7 @@ def _issue(repo: str, number: int, labels: list[str], comments: list[dict]) -> I
         labels=labels,
         comments=comments,
         updated_at="2026-08-01T00:00:00Z",
+        state=state,
     )
 
 
@@ -250,3 +263,50 @@ def test_bot_authored_comment_does_not_trigger_redispatch() -> None:
 
     assert calls == []
     assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
+
+
+def test_new_comment_on_closed_issue_does_not_trigger_dispatch() -> None:
+    """issue #45の再発防止テスト。
+
+    PRマージに伴うissueクローズと同時に投稿したコメント（作業再開の指示ではない）が、
+    新規コメントとして誤って指示扱いされ、`status:closed`から`status:in-progress`への
+    遷移とAgent Runnerの再ディスパッチを引き起こしてはならない。
+    """
+    tracker = CommentTracker()
+    labels = FakeLabels({1: {STATUS_CLOSED}})
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+
+    first_poll = {
+        "nosetech/project-a": [_issue("nosetech/project-a", 1, [STATUS_CLOSED], [], state="CLOSED")]
+    }
+    process_new_comments(
+        first_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    second_poll = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a",
+                1,
+                [STATUS_CLOSED],
+                [{"id": "c1", "body": "PRをマージしたのでクローズします。"}],
+                state="CLOSED",
+            )
+        ]
+    }
+    process_new_comments(
+        second_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    assert calls == []
+    assert labels.labels_by_issue[1] == {STATUS_CLOSED}
