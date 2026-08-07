@@ -28,9 +28,22 @@
 }
 
 .title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--text-primary);
+  text-decoration: none;
+}
+
+.title:hover {
+  text-decoration: underline;
+}
+
+.titleIcon {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
 }
 
 .summary {
