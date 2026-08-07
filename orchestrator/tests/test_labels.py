@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_NEEDS_HUMAN_DECISION,
@@ -87,6 +88,17 @@ def test_normal_transition_removes_old_and_adds_new() -> None:
     assert fake.labels == {STATUS_IN_PROGRESS}
 
 
+def test_transition_to_closed_removes_in_review_label() -> None:
+    # クローズ検知によるstatus:closedへの遷移（close_watcher.py）も
+    # 同じtransition_labelを使う（docs/basic-design.md 1章）。
+    fake = FakeGitHub({STATUS_IN_REVIEW})
+
+    _transition(fake, STATUS_CLOSED)
+
+    assert fake.calls == [("get",), ("remove", STATUS_IN_REVIEW), ("add", STATUS_CLOSED)]
+    assert fake.labels == {STATUS_CLOSED}
+
+
 def test_removes_all_status_labels_present_before_adding_new() -> None:
     # PoCで判明した非atomic操作の結果、複数の状態ラベルが残ってしまうケースへの防御。
     fake = FakeGitHub({STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION})
@@ -147,6 +159,7 @@ def test_retry_converges_after_add_failure_leaves_no_status_label() -> None:
         ({STATUS_NEEDS_HUMAN_DECISION}, STATUS_IN_PROGRESS),
         ({STATUS_IN_PROGRESS}, STATUS_IN_PROGRESS),
         ({STATUS_IN_REVIEW}, STATUS_IN_REVIEW),
+        ({STATUS_CLOSED}, STATUS_IN_PROGRESS),
     ],
 )
 def test_resolve_instruction_label_follows_table(current_labels: set[str], expected: str) -> None:

@@ -14,12 +14,24 @@ STATUS_TODO = "status:todo"
 STATUS_IN_PROGRESS = "status:in-progress"
 STATUS_NEEDS_HUMAN_DECISION = "needs-human-decision"
 STATUS_IN_REVIEW = "status:in-review"
+STATUS_CLOSED = "status:closed"
 
-# 状態は常にこの4つのうちいずれか1つのみが付与される
+# 状態は常にこの5つのうちいずれか1つのみが付与される
 # （docs/basic-design.md 1章「状態一覧・遷移条件・ラベル操作」）。
 STATUS_LABELS = frozenset(
-    {STATUS_TODO, STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_IN_REVIEW}
+    {
+        STATUS_TODO,
+        STATUS_IN_PROGRESS,
+        STATUS_NEEDS_HUMAN_DECISION,
+        STATUS_IN_REVIEW,
+        STATUS_CLOSED,
+    }
 )
+
+# STATUS_CLOSEDを除く、issueが着手済み（producer-deskの管理対象）であることを示す
+# 4つのラベル。close_watcher.pyがクローズ検知時に「元々管理していたissueか」を
+# 判定するために使う（docs/basic-design.md 1章「管理対象外issueの扱い」）。
+ACTIVE_STATUS_LABELS = STATUS_LABELS - {STATUS_CLOSED}
 
 # 自由記述指示（approve/instruct）送信時の、現在の状態ラベルに応じた遷移先
 # （docs/basic-design.md 1章「自由記述指示によるラベル遷移ルール」の表）。
@@ -29,6 +41,7 @@ INSTRUCTION_TRANSITIONS: dict[str, str] = {
     STATUS_NEEDS_HUMAN_DECISION: STATUS_IN_PROGRESS,
     STATUS_IN_PROGRESS: STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW: STATUS_IN_REVIEW,
+    STATUS_CLOSED: STATUS_IN_PROGRESS,
 }
 
 GetLabelsFn = Callable[[str, int], set[str]]
@@ -90,7 +103,7 @@ def transition_label(
 def resolve_instruction_label(current_labels: Iterable[str]) -> str:
     """自由記述指示（approve/instruct）送信時の遷移先ラベルを決定する。
 
-    現在の状態ラベルが4つのいずれでもない場合（本来発生しない想定）は、
+    現在の状態ラベルが5つのいずれでもない場合（本来発生しない想定）は、
     未着手として扱い `status:in-progress` への遷移とする。
     """
     current_status = next((label for label in current_labels if label in STATUS_LABELS), None)

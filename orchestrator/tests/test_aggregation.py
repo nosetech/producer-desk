@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from orchestrator.aggregation import ActivityEvent, IssueSummary, aggregate
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_NEEDS_HUMAN_DECISION,
@@ -112,16 +113,31 @@ def test_aggregate_activity_sorted_by_updated_at_descending_across_repos() -> No
     ]
 
 
-def test_aggregate_activity_label_is_none_when_no_status_label_present() -> None:
+def test_aggregate_excludes_issues_with_no_status_label_from_activity() -> None:
+    # 状態ラベルが1つも付いていないissueは管理対象外として扱い、活動ログから除外する
+    # （docs/basic-design.md 1章「管理対象外issueの扱い」、issue #45）。
     issues_by_repo = {
         "nosetech/project-a": [
             _issue("nosetech/project-a", 1, [], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, [STATUS_IN_PROGRESS], "2026-08-02T00:00:00Z"),
         ],
     }
 
     state = aggregate(issues_by_repo)
 
-    assert state.activity[0].label is None
+    assert [e.number for e in state.activity] == [2]
+
+
+def test_aggregate_activity_includes_status_closed_issues() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_CLOSED], "2026-08-01T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.activity[0].label == STATUS_CLOSED
 
 
 def test_aggregate_with_no_projects_returns_empty_state() -> None:
