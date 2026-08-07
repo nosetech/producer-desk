@@ -5,6 +5,7 @@ export interface IssueComment {
   body: string;
   createdAt: string;
   author?: { login: string };
+  url: string;
 }
 
 /** GET /api/state の decisions 配列要素。オーケストレータのIssueSummaryに対応。 */
