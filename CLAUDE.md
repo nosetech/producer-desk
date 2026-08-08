@@ -25,7 +25,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 このデザインは `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` のプロンプトを元に作成されたもの。デザインとdocs側の仕様（表示項目・API仕様等）に齟齬がある場合は、実装前にどちらを正とするか確認すること。デザインが更新された場合は、この節のURLも合わせて更新する。
 
-**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。実装・レビュー時は必ず `mcp__claude-in-chrome__*` などのブラウザ操作ツールでこのURLを開き、対象コンポーネントを実際に見て確認すること。Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。これが機能するには、Agent Runner実行ホストでChromeが起動・`claude-in-chrome`拡張がペアリング済み・`claude.ai`にログイン済みである必要がある。
+**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。
+
+**実装・レビュー時は必ず `DesignSync` MCPツールでこのデザインの実ソース（`ProducerDesk.dc.html`）を直接取得し、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（`projectId` はURLの `/p/<uuid>` 部分、`d67961c7-d882-4efb-bac8-492338ae41c4`）。
+
+1. `DesignSync` の `get_project` で `projectId` が読めることを確認する（`list_projects` はデザインシステム種別のプロジェクトのみを返すため、このプロジェクト（`type: PROJECT_TYPE_PROJECT`）は一覧に出てこない。`get_project`/`list_files`/`get_file` は `projectId` を直接渡せば種別を問わず使える）
+2. `list_files` で対象ファイル一覧（`ProducerDesk.dc.html` 等）を確認する
+3. `get_file` でファイルの中身をそのまま取得する（256KiB上限、ページ全体が1ファイルなのでほぼこれで足りる）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn` 等）をそのテキストから直接読み取り、値をそのまま実装に反映する
+
+`DesignSync` の利用には、`claude.ai` ログインへのデザインシステムアクセス権限が必要。付与済みでない場合は、ユーザーに `/design-login`（ローカルコマンド）の実行を依頼すること。
+
+**このURLをブラウザ操作ツール（`mcp__claude-in-chrome__*`）で開いてキャンバス上の要素をクリックしてコードを選択したり、プレビューをズームしたスクリーンショットから目視でCSS値を推測したりするのは避けること。** プレビューは静的なスナップショットで状態を持つインタラクション（ダイアログ表示等）が再現されず、キャンバス上の要素クリックによるコード選択も自動操作からは機能しないことが確認済み（producer-desk PR #57）。目視推測も丸め誤差や見落としが起きやすい。
+
+`DesignSync` が権限不足等で使えない場合のフォールバックは以下の優先順で行う。
+
+1. ブラウザ操作ツールでデザインのチャット欄を開き、「変更せず、生のソースコードをそのまま出力して」と対象コンポーネントのスタイル定義を明示的に指定して依頼する（要約させると細部が欠落する。producer-desk PR #57でこの方法自体は機能することを確認済み）
+2. それも使えない場合は、その旨を実行結果コメントに明記し `needs-human-decision` として人間の確認を仰ぐ
+
+いずれの方法で値を取得した場合も、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等）。
+
+Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。
 
 ## 確定済みの設計判断（変更時は要注意）
 
