@@ -35,7 +35,6 @@ ACTIVE_STATUS_LABELS = STATUS_LABELS - {STATUS_CLOSED}
 
 # 自由記述指示（approve/instruct）送信時の、現在の状態ラベルに応じた遷移先
 # （docs/basic-design.md 1章「自由記述指示によるラベル遷移ルール」の表）。
-# rejectは常にラベル変更なし・ディスパッチなしのため、この表には含めない。
 INSTRUCTION_TRANSITIONS: dict[str, str] = {
     STATUS_TODO: STATUS_IN_PROGRESS,
     STATUS_NEEDS_HUMAN_DECISION: STATUS_IN_PROGRESS,

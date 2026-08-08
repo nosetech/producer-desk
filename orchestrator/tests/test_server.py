@@ -196,7 +196,11 @@ def test_instruct_approve_posts_comment_transitions_label_and_dispatches() -> No
         server.shutdown()
 
 
-def test_instruct_reject_only_comments_no_label_change_no_dispatch() -> None:
+def test_instruct_reject_action_no_longer_supported() -> None:
+    """rejectは設計から廃止済み（docs/basic-design.md 2-3、issue #55）。
+
+    未知のactionと同様に400を返すことを保証し、意図せず復活しないようにする。
+    """
     store = StateStore()
     labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
     comments = FakeComments()
@@ -217,10 +221,9 @@ def test_instruct_reject_only_comments_no_label_change_no_dispatch() -> None:
             {"action": "reject", "message": "設計を見直してください"},
         )
 
-        assert status == 200
-        assert body["dispatched"] is False
-        assert body["label"] is None
-        assert comments.posted == [("nosetech/project-a", 1, "設計を見直してください")]
+        assert status == 400
+        assert "error" in body
+        assert comments.posted == []
         assert labels.labels_by_issue[1] == {STATUS_NEEDS_HUMAN_DECISION}
         assert calls == []
     finally:

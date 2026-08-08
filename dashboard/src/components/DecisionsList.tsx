@@ -4,13 +4,11 @@ import styles from "./DecisionsList.module.css";
 
 export default function DecisionsList({
   decisions,
-  onApprove,
-  onReject,
+  onApproved,
   onReply,
 }: {
   decisions: IssueSummary[];
-  onApprove: (repo: string, issueNumber: number, title: string) => void;
-  onReject: (repo: string, issueNumber: number, title: string) => void;
+  onApproved: () => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
 }) {
   return (
@@ -30,8 +28,7 @@ export default function DecisionsList({
             <DecisionCard
               key={`${decision.repo}#${decision.number}`}
               decision={decision}
-              onApprove={onApprove}
-              onReject={onReject}
+              onApproved={onApproved}
               onReply={onReply}
             />
           ))}

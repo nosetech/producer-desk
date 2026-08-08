@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+import { postInstruct } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
 import styles from "./DecisionCard.module.css";
@@ -10,33 +14,95 @@ function commentSummary(comment: IssueComment): string {
   // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
   // 付与されている（orchestrator/orchestrator/github_client.py参照）。表示上は不要なので取り除く。
   const withoutMarkers = comment.body.replace(/<!--[\s\S]*?-->/g, "");
-  const oneLine = withoutMarkers.replace(/\s+/g, " ").trim();
-  return oneLine.length > 140 ? `${oneLine.slice(0, 140)}…` : oneLine;
+  return withoutMarkers.replace(/\s+/g, " ").trim();
+}
+
+function CheckIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ReplyIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9 17 4 12l5-5" />
+      <path d="M4 12h11a5 5 0 0 1 0 10" />
+    </svg>
+  );
 }
 
 export default function DecisionCard({
   decision,
-  onApprove,
-  onReject,
+  onApproved,
   onReply,
 }: {
   decision: IssueSummary;
-  onApprove: (repo: string, issueNumber: number, title: string) => void;
-  onReject: (repo: string, issueNumber: number, title: string) => void;
+  onApproved: () => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const last = latestComment(decision);
   const summary = last ? commentSummary(last) : null;
   const titleUrl =
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
+  const repoName = decision.repo.split("/")[1];
+
+  function openConfirm() {
+    setError(null);
+    setConfirmOpen(true);
+  }
+
+  function closeConfirm() {
+    if (approving) return;
+    setConfirmOpen(false);
+  }
+
+  function handleConfirmApprove() {
+    setApproving(true);
+    setError(null);
+    postInstruct(decision.repo, decision.number, "approve")
+      .then(() => {
+        setConfirmOpen(false);
+        onApproved();
+      })
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "承認に失敗しました"),
+      )
+      .finally(() => setApproving(false));
+  }
 
   return (
     <div className={styles.card}>
       <div className={styles.topRow}>
-        <span className={styles.repoNumber}>
-          {decision.repo.split("/")[1]} #{decision.number}
-        </span>
+        <div className={styles.repoGroup}>
+          <span className={styles.repoName}>{repoName}</span>
+          <span className={styles.repoNum}>#{decision.number}</span>
+        </div>
         <span className={styles.time}>
           {formatRelativeTime(decision.updated_at)}
         </span>
@@ -47,27 +113,28 @@ export default function DecisionCard({
         rel="noreferrer"
         className={styles.title}
       >
-        {decision.title}
+        <span>{decision.title}</span>
         <svg
           className={styles.titleIcon}
-          width="14"
-          height="14"
+          width="13"
+          height="13"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="2.2"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M15 3h6v6" />
-          <path d="M10 14 21 3" />
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <path d="M15 3h6v6M10 14 21 3" />
         </svg>
       </a>
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
-          <span>{summary}</span>
+          <span className={styles.summaryText} title={summary}>
+            {summary}
+          </span>
         </div>
       )}
 
@@ -75,20 +142,10 @@ export default function DecisionCard({
         <button
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
-          onClick={() =>
-            onApprove(decision.repo, decision.number, decision.title)
-          }
+          onClick={openConfirm}
         >
-          ✓ 承認
-        </button>
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.btnReject}`}
-          onClick={() =>
-            onReject(decision.repo, decision.number, decision.title)
-          }
-        >
-          ✕ 却下
+          <CheckIcon />
+          承認
         </button>
         <button
           type="button"
@@ -97,9 +154,60 @@ export default function DecisionCard({
             onReply(decision.repo, decision.number, decision.title)
           }
         >
-          ↩ 返信
+          <ReplyIcon />
+          返信
         </button>
       </div>
+
+      {confirmOpen && (
+        <div className={styles.confirmOverlay} onClick={closeConfirm}>
+          <div
+            className={styles.confirmDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`confirm-approve-${decision.repo}-${decision.number}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={styles.confirmHeadingRow}>
+              <span className={styles.confirmIconBadge}>
+                <CheckIcon size={18} />
+              </span>
+              <span
+                id={`confirm-approve-${decision.repo}-${decision.number}`}
+                className={styles.confirmMessage}
+              >
+                この提案を承認しますか？
+              </span>
+            </div>
+            <p className={styles.confirmDetail}>
+              <span className={styles.confirmDetailNumber}>
+                {repoName} #{decision.number}
+              </span>{" "}
+              — {decision.title}
+            </p>
+            {error && <span className={styles.confirmError}>{error}</span>}
+            <div className={styles.confirmActions}>
+              <button
+                type="button"
+                className={styles.confirmCancelBtn}
+                onClick={closeConfirm}
+                disabled={approving}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className={styles.confirmApproveBtn}
+                onClick={handleConfirmApprove}
+                disabled={approving}
+              >
+                <CheckIcon />
+                {approving ? "承認中…" : "承認する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-"""ダッシュボードからの指示（承認/却下/自由記述/新規タスク作成）を処理する。
+"""ダッシュボードからの指示（承認/自由記述/新規タスク作成）を処理する。
 
 仕様: docs/basic-design.md 2-3（指示出しAPI）・5-3（内部処理フロー）
 HTTPに依存しないビジネスロジックとして実装し、server.pyから呼び出す。
@@ -22,9 +22,8 @@ from orchestrator.labels import (
 )
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
-REJECT_DEFAULT_MESSAGE = "却下します。"
 
-Action = Literal["approve", "reject", "instruct"]
+Action = Literal["approve", "instruct"]
 Dispatch = Literal["immediate", "queued"]
 
 
@@ -86,8 +85,6 @@ def handle_instruct(
 ) -> InstructResult:
     if action == "approve":
         comment = message or APPROVE_DEFAULT_MESSAGE
-    elif action == "reject":
-        comment = message or REJECT_DEFAULT_MESSAGE
     elif action == "instruct":
         if not message:
             raise ValueError("instructアクションにはmessageが必須です")
@@ -96,10 +93,6 @@ def handle_instruct(
         raise ValueError(f"不明なaction: {action}")
 
     post_comment(repo, issue_number, comment)
-
-    if action == "reject":
-        # ラベルは維持し、ディスパッチも行わない（差し戻し）
-        return InstructResult(action=action, comment=comment, label=None, dispatched=False)
 
     label = apply_instruction(
         repo,

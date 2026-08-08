@@ -36,7 +36,7 @@ export interface ProjectsResponse {
   repos: string[];
 }
 
-export type InstructAction = "approve" | "reject" | "instruct";
+export type InstructAction = "approve" | "instruct";
 
 export interface InstructResult {
   action: InstructAction;

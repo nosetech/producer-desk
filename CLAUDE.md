@@ -25,7 +25,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 このデザインは `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` のプロンプトを元に作成されたもの。デザインとdocs側の仕様（表示項目・API仕様等）に齟齬がある場合は、実装前にどちらを正とするか確認すること。デザインが更新された場合は、この節のURLも合わせて更新する。
 
-**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。実装・レビュー時は必ず `mcp__claude-in-chrome__*` などのブラウザ操作ツールでこのURLを開き、対象コンポーネントを実際に見て確認すること。Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。これが機能するには、Agent Runner実行ホストでChromeが起動・`claude-in-chrome`拡張がペアリング済み・`claude.ai`にログイン済みである必要がある。
+**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。
+
+**実装・レビュー時は必ず `DesignSync` MCPツールでこのデザインの実ソース（`ProducerDesk.dc.html`）を直接取得し、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（`projectId` はURLの `/p/<uuid>` 部分、`d67961c7-d882-4efb-bac8-492338ae41c4`）。
+
+1. `DesignSync` の `get_project` で `projectId` が読めることを確認する（`list_projects` はデザインシステム種別のプロジェクトのみを返すため、このプロジェクト（`type: PROJECT_TYPE_PROJECT`）は一覧に出てこない。`get_project`/`list_files`/`get_file` は `projectId` を直接渡せば種別を問わず使える）
+2. `list_files` で対象ファイル一覧（`ProducerDesk.dc.html` 等）を確認する
+3. `get_file` でファイルの中身をそのまま取得する（256KiB上限、ページ全体が1ファイルなのでほぼこれで足りる）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn` 等）をそのテキストから直接読み取り、値をそのまま実装に反映する
+
+`DesignSync` の利用には、`claude.ai` ログインへのデザインシステムアクセス権限が必要。**この権限は一度 `/design-login`（ローカルコマンド、または通常の `claude.ai` ログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名 `Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の `claude` CLI呼び出し（Agent Runnerの `claude -p` を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フローを行う必要はない（運用開始前にホスト上で一度だけ人間が `/design-login` を実行しておけば足りる。詳細は `docs/basic-design.md` 3-1参照）。
+
+**このURLをブラウザ操作ツール（`mcp__claude-in-chrome__*`）で開いてキャンバス上の要素をクリックしてコードを選択したり、プレビューをズームしたスクリーンショットから目視でCSS値を推測したりするのは絶対に行わないこと。** プレビューは静的なスナップショットで状態を持つインタラクション（ダイアログ表示等）が再現されず、キャンバス上の要素クリックによるコード選択も自動操作からは機能しないことが確認済み（producer-desk PR #57）。目視推測も丸め誤差や見落としが起きやすく、不正確な値のまま実装を進めるくらいなら停止すべきである。
+
+**`DesignSync` が権限不足等で使えない場合はフォールバックせず、その旨を明記してそこで作業を停止し、人間の確認を仰ぐこと。** ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため、`DesignSync` の代わりとして使わない。
+
+`DesignSync` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
+
+Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。
 
 ## 確定済みの設計判断（変更時は要注意）
 

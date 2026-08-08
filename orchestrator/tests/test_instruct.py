@@ -11,7 +11,6 @@ import pytest
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE,
-    REJECT_DEFAULT_MESSAGE,
     handle_create_issue,
     handle_instruct,
 )
@@ -112,50 +111,6 @@ def test_handle_instruct_approve_with_custom_message() -> None:
     assert comments.posted == [("nosetech/project-a", 1, "承認、よろしく")]
 
 
-def test_handle_instruct_reject_keeps_label_and_does_not_dispatch() -> None:
-    labels = FakeLabels({STATUS_NEEDS_HUMAN_DECISION})
-    comments = FakeComments()
-    dispatch_queue, calls = _synchronous_dispatch_queue()
-
-    result = handle_instruct(
-        "nosetech/project-a",
-        1,
-        "reject",
-        "理由をどうぞ",
-        get_labels=labels.get_labels,
-        add_label=labels.add_label,
-        remove_label=labels.remove_label,
-        post_comment=comments.post_comment,
-        dispatch_queue=dispatch_queue,
-    )
-
-    assert result.comment == "理由をどうぞ"
-    assert result.label is None
-    assert result.dispatched is False
-    assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
-    assert calls == []
-
-
-def test_handle_instruct_reject_uses_default_message_when_omitted() -> None:
-    labels = FakeLabels({STATUS_NEEDS_HUMAN_DECISION})
-    comments = FakeComments()
-    dispatch_queue, _ = _synchronous_dispatch_queue()
-
-    result = handle_instruct(
-        "nosetech/project-a",
-        1,
-        "reject",
-        None,
-        get_labels=labels.get_labels,
-        add_label=labels.add_label,
-        remove_label=labels.remove_label,
-        post_comment=comments.post_comment,
-        dispatch_queue=dispatch_queue,
-    )
-
-    assert result.comment == REJECT_DEFAULT_MESSAGE
-
-
 def test_handle_instruct_instruct_requires_message() -> None:
     labels = FakeLabels({STATUS_IN_PROGRESS})
     comments = FakeComments()
@@ -231,6 +186,29 @@ def test_handle_instruct_unknown_action_raises() -> None:
             1,
             "unknown",  # type: ignore[arg-type]
             "x",
+            get_labels=labels.get_labels,
+            add_label=labels.add_label,
+            remove_label=labels.remove_label,
+            post_comment=comments.post_comment,
+            dispatch_queue=dispatch_queue,
+        )
+
+
+def test_handle_instruct_reject_action_no_longer_supported() -> None:
+    """rejectは設計から廃止済み（docs/basic-design.md 2-3、issue #55）。
+
+    未知のactionと同様にValueErrorになることを保証し、意図せず復活しないようにする。
+    """
+    labels = FakeLabels({STATUS_NEEDS_HUMAN_DECISION})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+
+    with pytest.raises(ValueError):
+        handle_instruct(
+            "nosetech/project-a",
+            1,
+            "reject",  # type: ignore[arg-type]
+            "理由をどうぞ",
             get_labels=labels.get_labels,
             add_label=labels.add_label,
             remove_label=labels.remove_label,

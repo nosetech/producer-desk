@@ -73,21 +73,33 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
 # issue #33の再発防止: ダッシュボードのUI実装がClaude Designの見た目（配色・
 # アイコン等）を反映できていなかった。原因は、CLAUDE.mdが「正」とするデザイン
 # URL（claude.ai/design/...）が認証必須でWebFetchでは403になり、テキスト指示
-# だけでは色・アイコンの詳細が伝わらないこと。ブラウザ操作ツール
-# （mcp__claude-in-chrome__*、claude.aiにログイン済みのChromeとペアリング済み
-# 前提）で実際にデザインを開いて確認するよう毎回明示的に指示する。
+# だけでは色・アイコンの詳細が伝わらないこと。当初はブラウザ操作ツール
+# （mcp__claude-in-chrome__*）での目視確認のみを指示していたが、キャンバス上の
+# 要素クリックが自動操作から機能しない・プレビューが状態を持つインタラクション
+# を再現しない静的スナップショットである等の理由で細部の再現性に限界があった
+# ため、DesignSync MCPでの実ソース直接取得を主手段に切り替えた（issue #55・
+# PR #57）。DesignSyncの認証（claude.aiログインへのデザインシステムアクセス
+# 権限）は、一度`/design-login`等で許可すればmacOSキーチェーン
+# （`Claude Code-credentials`）に永続化され、同一ホスト上の以降の`claude`CLI
+# 呼び出し（本Agent Runnerを含む）から自動的に利用できるため、Agent Runner
+# 自身が実行時に認証操作を行う必要はない（運用開始前にホスト上で一度だけ人間
+# が許可しておくことが前提）。
 AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
     "ダッシュボード（dashboard/以下）の画面・コンポーネントを実装・修正する場合、"
     "CLAUDE.mdの「画面デザインの実装ルール」に記載されたClaude DesignのURL"
-    "（https://claude.ai/design/...）を必ずブラウザ操作ツール"
-    "（mcp__claude-in-chrome__* ツール）で開き、対象コンポーネントの配色・アイコン・"
-    "余白・状態変化などの視覚的詳細を実際に確認したうえで実装してください。"
-    "テキストの設計文書（docs/design-prompt-dashboard.md等）にはレイアウトの要件"
-    "しか書かれておらず、色やアイコンの指定はデザインそのものにしかありません。"
-    "実装後は同じブラウザツールで実装結果とデザインを見比べ、細部が一致することを"
-    "確認してから完了としてください。ブラウザ操作ツールが利用できない場合（Chrome"
-    "が起動していない、claude.aiにログインしていない等）は、その旨を実行結果に明記し、"
-    "人間の確認を仰いでください。"
+    "（https://claude.ai/design/...）について、まずDesignSync MCPツール"
+    "（get_project→list_files→get_file、projectIdはURLの/p/<uuid>部分）でデザインの"
+    "実ソース（ProducerDesk.dc.html）を直接取得し、対象コンポーネントのスタイル"
+    "オブジェクト定義（色・余白・border-radius・アニメーション等）をそのまま読み取った"
+    "うえで実装してください。テキストの設計文書（docs/design-prompt-dashboard.md等）"
+    "にはレイアウトの要件しか書かれておらず、色やアイコンの指定はデザインそのものにしか"
+    "ありません。DesignSyncが権限不足等で使えない場合はフォールバックしないでください。"
+    "プレビュー画面のクリック操作によるコード選択、ズームしての目視推測、"
+    "mcp__claude-in-chrome__* でのチャットへの問い合わせは不正確になりうるため代替に"
+    "せず、その旨を実行結果に明記してその場で作業を停止し、needs-human-decisionラベルで"
+    "人間の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
+    "mcp__claude-in-chrome__* で実装結果とデザインのプレビューを並べて見た目が一致する"
+    "ことを確認してから完了としてください。"
 )
 
 
