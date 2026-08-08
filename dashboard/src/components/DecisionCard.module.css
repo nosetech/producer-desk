@@ -124,27 +124,40 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(6, 10, 15, 0.32);
   padding: 20px;
 }
 
 .confirmDialog {
-  width: min(360px, 100%);
+  width: min(420px, calc(100% - 40px));
   display: flex;
   flex-direction: column;
   gap: 14px;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  padding: 20px;
-  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.38);
+  border-radius: 16px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.42);
 }
 
 .confirmMessage {
-  font-size: 0.95rem;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+}
+
+.confirmDetail {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.confirmDetailNumber {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--accent-blue);
 }
 
 .confirmError {
@@ -155,7 +168,7 @@
 .confirmActions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 9px;
 }
 
 .confirmCancelBtn,

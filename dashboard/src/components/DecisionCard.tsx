@@ -136,6 +136,12 @@ export default function DecisionCard({
             >
               この提案を承認しますか？
             </p>
+            <p className={styles.confirmDetail}>
+              <span className={styles.confirmDetailNumber}>
+                {decision.repo.split("/")[1]} #{decision.number}
+              </span>{" "}
+              — {decision.title}
+            </p>
             {error && <span className={styles.confirmError}>{error}</span>}
             <div className={styles.confirmActions}>
               <button
