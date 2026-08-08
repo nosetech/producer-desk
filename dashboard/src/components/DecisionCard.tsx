@@ -17,6 +17,41 @@ function commentSummary(comment: IssueComment): string {
   return withoutMarkers.replace(/\s+/g, " ").trim();
 }
 
+function CheckIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ReplyIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9 17 4 12l5-5" />
+      <path d="M4 12h11a5 5 0 0 1 0 10" />
+    </svg>
+  );
+}
+
 export default function DecisionCard({
   decision,
   onApproved,
@@ -35,6 +70,7 @@ export default function DecisionCard({
   const titleUrl =
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
+  const repoName = decision.repo.split("/")[1];
 
   function openConfirm() {
     setError(null);
@@ -63,9 +99,10 @@ export default function DecisionCard({
   return (
     <div className={styles.card}>
       <div className={styles.topRow}>
-        <span className={styles.repoNumber}>
-          {decision.repo.split("/")[1]} #{decision.number}
-        </span>
+        <div className={styles.repoGroup}>
+          <span className={styles.repoName}>{repoName}</span>
+          <span className={styles.repoNum}>#{decision.number}</span>
+        </div>
         <span className={styles.time}>
           {formatRelativeTime(decision.updated_at)}
         </span>
@@ -76,21 +113,20 @@ export default function DecisionCard({
         rel="noreferrer"
         className={styles.title}
       >
-        {decision.title}
+        <span>{decision.title}</span>
         <svg
           className={styles.titleIcon}
-          width="14"
-          height="14"
+          width="13"
+          height="13"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="2"
+          strokeWidth="2.2"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M15 3h6v6" />
-          <path d="M10 14 21 3" />
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <path d="M15 3h6v6M10 14 21 3" />
         </svg>
       </a>
       {summary && (
@@ -108,7 +144,8 @@ export default function DecisionCard({
           className={`${styles.btn} ${styles.btnApprove}`}
           onClick={openConfirm}
         >
-          ✓ 承認
+          <CheckIcon />
+          承認
         </button>
         <button
           type="button"
@@ -117,7 +154,8 @@ export default function DecisionCard({
             onReply(decision.repo, decision.number, decision.title)
           }
         >
-          ↩ 返信
+          <ReplyIcon />
+          返信
         </button>
       </div>
 
@@ -130,15 +168,20 @@ export default function DecisionCard({
             aria-labelledby={`confirm-approve-${decision.repo}-${decision.number}`}
             onClick={(e) => e.stopPropagation()}
           >
-            <p
-              id={`confirm-approve-${decision.repo}-${decision.number}`}
-              className={styles.confirmMessage}
-            >
-              この提案を承認しますか？
-            </p>
+            <div className={styles.confirmHeadingRow}>
+              <span className={styles.confirmIconBadge}>
+                <CheckIcon size={18} />
+              </span>
+              <span
+                id={`confirm-approve-${decision.repo}-${decision.number}`}
+                className={styles.confirmMessage}
+              >
+                この提案を承認しますか？
+              </span>
+            </div>
             <p className={styles.confirmDetail}>
               <span className={styles.confirmDetailNumber}>
-                {decision.repo.split("/")[1]} #{decision.number}
+                {repoName} #{decision.number}
               </span>{" "}
               — {decision.title}
             </p>
@@ -158,6 +201,7 @@ export default function DecisionCard({
                 onClick={handleConfirmApprove}
                 disabled={approving}
               >
+                <CheckIcon />
                 {approving ? "承認中…" : "承認する"}
               </button>
             </div>
