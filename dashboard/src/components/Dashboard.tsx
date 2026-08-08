@@ -9,11 +9,7 @@ import ProjectStatusRow from "./ProjectStatusRow";
 import DecisionsList from "./DecisionsList";
 import ActivityTimeline from "./ActivityTimeline";
 import UsageMonitor from "./UsageMonitor";
-import ComposerBar, {
-  type ComposerMode,
-  type IssueRef,
-  type ReplyKind,
-} from "./ComposerBar";
+import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
 import styles from "./Dashboard.module.css";
 
 const POLL_INTERVAL_MS = 30_000;
@@ -27,7 +23,6 @@ export default function Dashboard() {
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
-  const [replyKind, setReplyKind] = useState<ReplyKind>("reply");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
 
@@ -52,28 +47,10 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  function openComposerFor(
-    repo: string,
-    issueNumber: number,
-    title: string,
-    kind: ReplyKind,
-  ) {
+  function handleReply(repo: string, issueNumber: number, title: string) {
     setComposerMode("reply");
-    setReplyKind(kind);
     setReplyTarget({ repo, number: issueNumber, title });
     setComposerOpen(true);
-  }
-
-  function handleReply(repo: string, issueNumber: number, title: string) {
-    openComposerFor(repo, issueNumber, title, "reply");
-  }
-
-  function handleApprove(repo: string, issueNumber: number, title: string) {
-    openComposerFor(repo, issueNumber, title, "approve");
-  }
-
-  function handleReject(repo: string, issueNumber: number, title: string) {
-    openComposerFor(repo, issueNumber, title, "reject");
   }
 
   function handleQuickCreate(repo: string) {
@@ -111,8 +88,7 @@ export default function Dashboard() {
         <div className={styles.left}>
           <DecisionsList
             decisions={state.decisions}
-            onApprove={handleApprove}
-            onReject={handleReject}
+            onApproved={refresh}
             onReply={handleReply}
           />
         </div>
@@ -125,7 +101,6 @@ export default function Dashboard() {
         open={composerOpen}
         mode={composerMode}
         replyTarget={replyTarget}
-        replyKind={replyKind}
         onClearReplyTarget={() => setReplyTarget(null)}
         onOpen={handleOpenComposer}
         onClose={() => setComposerOpen(false)}

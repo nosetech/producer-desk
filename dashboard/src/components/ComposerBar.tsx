@@ -13,15 +13,11 @@ export interface IssueRef {
 }
 
 export type ComposerMode = "reply" | "new";
-export type ReplyKind = "reply" | "approve" | "reject";
-
-const APPROVE_TEXT = "この方針で進めてください。承認します。";
 
 export default function ComposerBar({
   open,
   mode,
   replyTarget,
-  replyKind,
   onClearReplyTarget,
   onOpen,
   onClose,
@@ -33,7 +29,6 @@ export default function ComposerBar({
   open: boolean;
   mode: ComposerMode;
   replyTarget: IssueRef | null;
-  replyKind: ReplyKind;
   onClearReplyTarget: () => void;
   onOpen: () => void;
   onClose: () => void;
@@ -42,7 +37,6 @@ export default function ComposerBar({
   onNewTaskRepoChange: (repo: string) => void;
   onSubmitted: () => void;
 }) {
-  const [kind, setKind] = useState<ReplyKind>(replyKind);
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -56,41 +50,20 @@ export default function ComposerBar({
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setKind(replyKind);
-      setMessage(replyKind === "approve" ? APPROVE_TEXT : "");
+      setMessage("");
       setTitle("");
       setPrompt("");
       setError(null);
     }
   }
 
-  function selectQuickApprove() {
-    setKind("approve");
-    setMessage(APPROVE_TEXT);
-  }
-
-  function selectQuickReject() {
-    setKind("reject");
-    setMessage("");
-  }
-
   function handleSendReply() {
     if (!replyTarget) return;
-    if (kind === "reply" && !message.trim()) return;
+    if (!message.trim()) return;
     setSubmitting(true);
     setError(null);
-    const action: InstructAction =
-      kind === "approve"
-        ? "approve"
-        : kind === "reject"
-          ? "reject"
-          : "instruct";
-    postInstruct(
-      replyTarget.repo,
-      replyTarget.number,
-      action,
-      message.trim() || undefined,
-    )
+    const action: InstructAction = "instruct";
+    postInstruct(replyTarget.repo, replyTarget.number, action, message.trim())
       .then(() => {
         onClearReplyTarget();
         onSubmitted();
@@ -143,13 +116,6 @@ export default function ComposerBar({
       </button>
     );
   }
-
-  const sendLabel =
-    kind === "approve"
-      ? "承認を送信"
-      : kind === "reject"
-        ? "却下を送信"
-        : "指示を送信";
 
   return (
     <div className={styles.panel}>
@@ -241,48 +207,6 @@ export default function ComposerBar({
               判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
             </div>
           )}
-          <div className={styles.quickRow}>
-            <button
-              type="button"
-              className={`${styles.quickBtn} ${styles.quickApprove} ${kind === "approve" ? styles.quickActive : ""}`}
-              onClick={selectQuickApprove}
-              disabled={!replyTarget}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-              承認して進める
-            </button>
-            <button
-              type="button"
-              className={`${styles.quickBtn} ${styles.quickReject} ${kind === "reject" ? styles.quickActive : ""}`}
-              onClick={selectQuickReject}
-              disabled={!replyTarget}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-              却下（理由を記入）
-            </button>
-          </div>
           <textarea
             className={styles.textarea}
             placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
@@ -295,11 +219,7 @@ export default function ComposerBar({
               type="button"
               className={styles.sendBtn}
               onClick={handleSendReply}
-              disabled={
-                submitting ||
-                !replyTarget ||
-                (kind === "reply" && !message.trim())
-              }
+              disabled={submitting || !replyTarget || !message.trim()}
             >
               <svg
                 width="15"
@@ -314,7 +234,7 @@ export default function ComposerBar({
                 <path d="M22 2 11 13" />
                 <path d="M22 2 15 22l-4-9-9-4Z" />
               </svg>
-              {sendLabel}
+              指示を送信
             </button>
           </div>
         </div>

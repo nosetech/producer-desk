@@ -66,6 +66,15 @@
   margin-top: 2px;
 }
 
+.summaryText {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
 .actions {
   display: flex;
   gap: 8px;
@@ -91,19 +100,7 @@
   color: var(--accent-green-on);
 }
 
-.btnReject {
-  background: transparent;
-  border-color: var(--border-subtle);
-  color: var(--text-secondary);
-}
-
-.btnReject:hover:not(:disabled) {
-  border-color: var(--accent-red);
-  color: var(--accent-red);
-}
-
 .btnReply {
-  flex: 0 0 auto;
   background: transparent;
   border-color: var(--border-subtle);
   color: var(--text-secondary);
@@ -118,8 +115,77 @@
   .actions {
     flex-wrap: wrap;
   }
+}
 
-  .btnReply {
-    flex: 1;
-  }
+.confirmOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 20px;
+}
+
+.confirmDialog {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.38);
+}
+
+.confirmMessage {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.confirmError {
+  font-size: 0.78rem;
+  color: var(--accent-red);
+}
+
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirmCancelBtn,
+.confirmApproveBtn {
+  padding: 9px 16px;
+  border-radius: 9px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.confirmCancelBtn {
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.confirmCancelBtn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.confirmApproveBtn {
+  background: var(--accent-green);
+  color: var(--accent-green-on);
+}
+
+.confirmCancelBtn:disabled,
+.confirmApproveBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

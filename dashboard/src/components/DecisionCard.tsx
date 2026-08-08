@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+import { postInstruct } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
 import styles from "./DecisionCard.module.css";
@@ -10,26 +14,51 @@ function commentSummary(comment: IssueComment): string {
   // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
   // 付与されている（orchestrator/orchestrator/github_client.py参照）。表示上は不要なので取り除く。
   const withoutMarkers = comment.body.replace(/<!--[\s\S]*?-->/g, "");
-  const oneLine = withoutMarkers.replace(/\s+/g, " ").trim();
-  return oneLine.length > 140 ? `${oneLine.slice(0, 140)}…` : oneLine;
+  return withoutMarkers.replace(/\s+/g, " ").trim();
 }
 
 export default function DecisionCard({
   decision,
-  onApprove,
-  onReject,
+  onApproved,
   onReply,
 }: {
   decision: IssueSummary;
-  onApprove: (repo: string, issueNumber: number, title: string) => void;
-  onReject: (repo: string, issueNumber: number, title: string) => void;
+  onApproved: () => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const last = latestComment(decision);
   const summary = last ? commentSummary(last) : null;
   const titleUrl =
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
+
+  function openConfirm() {
+    setError(null);
+    setConfirmOpen(true);
+  }
+
+  function closeConfirm() {
+    if (approving) return;
+    setConfirmOpen(false);
+  }
+
+  function handleConfirmApprove() {
+    setApproving(true);
+    setError(null);
+    postInstruct(decision.repo, decision.number, "approve")
+      .then(() => {
+        setConfirmOpen(false);
+        onApproved();
+      })
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "承認に失敗しました"),
+      )
+      .finally(() => setApproving(false));
+  }
 
   return (
     <div className={styles.card}>
@@ -67,7 +96,9 @@ export default function DecisionCard({
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
-          <span>{summary}</span>
+          <span className={styles.summaryText} title={summary}>
+            {summary}
+          </span>
         </div>
       )}
 
@@ -75,20 +106,9 @@ export default function DecisionCard({
         <button
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
-          onClick={() =>
-            onApprove(decision.repo, decision.number, decision.title)
-          }
+          onClick={openConfirm}
         >
           ✓ 承認
-        </button>
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.btnReject}`}
-          onClick={() =>
-            onReject(decision.repo, decision.number, decision.title)
-          }
-        >
-          ✕ 却下
         </button>
         <button
           type="button"
@@ -100,6 +120,44 @@ export default function DecisionCard({
           ↩ 返信
         </button>
       </div>
+
+      {confirmOpen && (
+        <div className={styles.confirmOverlay} onClick={closeConfirm}>
+          <div
+            className={styles.confirmDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`confirm-approve-${decision.repo}-${decision.number}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p
+              id={`confirm-approve-${decision.repo}-${decision.number}`}
+              className={styles.confirmMessage}
+            >
+              この提案を承認しますか？
+            </p>
+            {error && <span className={styles.confirmError}>{error}</span>}
+            <div className={styles.confirmActions}>
+              <button
+                type="button"
+                className={styles.confirmCancelBtn}
+                onClick={closeConfirm}
+                disabled={approving}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className={styles.confirmApproveBtn}
+                onClick={handleConfirmApprove}
+                disabled={approving}
+              >
+                {approving ? "承認中…" : "承認する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
