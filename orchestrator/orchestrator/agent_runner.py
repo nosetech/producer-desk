@@ -103,6 +103,28 @@ AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
 )
 
 
+# issue #59: コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった
+# 補助用途に限り、MCP `ollama-client`経由でローカルLLMを併用する（自走タスク本体は
+# 引き続きClaude Codeのみを使う。docs/requirements.md 2-5参照）。呼び出すか否か・
+# どのモデルを使うかはAgent Runner自身の裁量とするため、タスク種別ごとの推奨モデルを
+# system promptで伝える（docs/basic-design.md 4章参照）。
+AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
+    "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
+    "コード変更そのものを伴わない補助的な作業では、必要に応じてMCP `ollama-client` "
+    "経由でローカルLLM（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを"
+    "参考に、呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
+    "（docs/basic-design.md 4章「モデルルーター設定設計」参照）。\n"
+    "- コードレビュー支援: `deepseek-coder-v2:16b`\n"
+    "- デバッグ調査の下調べ: `deepseek-coder-v2:16b`\n"
+    "- 日本語ドキュメント生成: `gemma2`\n"
+    "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
+    "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
+    "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
+    "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
+    "docs/requirements.md 2-5参照）。"
+)
+
+
 def build_claude_command(
     message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
 ) -> list[str]:
@@ -114,6 +136,8 @@ def build_claude_command(
         AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
         + "\n\n"
         + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
+        + "\n\n"
+        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION
     )
     command = [
         "claude",

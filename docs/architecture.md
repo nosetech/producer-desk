@@ -92,9 +92,10 @@ flowchart TB
 
 ## 5. モデルルーティング
 
-- MVPでは**LiteLLM Proxyを導入しない**。Agent RunnerはClaude Code CLIを直接利用し、Anthropic API従量課金ではなくClaude Code Pro/Maxプラン等のサブスクリプションを利用する（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)）。
-- 将来ローカルLLMを併用する場合、LiteLLM Proxy等によるモデルルーティング層の追加を検討する。ただしClaude Code CLIはAPIエンドポイントを経由しないサブスクリプション利用のため、モデルルーターを挟む構成自体を将来拡張時に別途設計し直す必要がある点に留意する。
-- Claude/ローカルLLMの使い分けポリシーの実装方針（オーケストレータ側 or Runner側）は、ローカルLLM併用が将来拡張のスコープであるためMVPでは決定しない。
+- コード変更を伴う自走タスク本体は**LiteLLM Proxyを導入しない**。Agent RunnerはClaude Code CLIを直接利用し、Anthropic API従量課金ではなくClaude Code Pro/Maxプラン等のサブスクリプションを利用する（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)）。
+- **ローカルLLMの補助的併用**（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は、LiteLLM Proxy等のモデルルーティング層を追加せず、Agent Runner（Claude Code CLI）が**MCP `ollama-client` を直接呼び出す**構成とする。`ollama-client` MCPサーバーはホスト単位で構成済み（`~/.claude.json`）であり、DesignSync同様に追加のインフラ・認証フローなしで`claude -p`実行時から利用できるため、モデルルーターを挟む必要がない。
+  - 検討したがMVPでは採用しない代替案: Ollama REST APIの直接呼び出し。MCP経由よりトークン数・処理時間等のメトリクスを取得できる利点はあるが、呼び出しロジックをAgent Runner外（オーケストレータ側等）に持つ必要があり構成が複雑化する。補助用途ではメトリクス収集は必須要件ではないため見送った。将来メトリクス収集が必要になった場合に再検討する。
+- Claude/ローカルLLMの使い分けポリシーの実装方針は**Agent Runner側**に持たせる。オーケストレータはモデル選択ロジックを持たず、`--append-system-prompt`でタスク種別ごとの推奨ローカルLLMをAgent Runnerに指示し、実際にMCPツールを呼ぶかどうか・どのモデルを使うかはAgent Runner自身（Claude Code）が判断する（実装は[基本設計書 4章](./basic-design.md#4-モデルルーター設定設計)、タスク種別ごとの推奨モデルは[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)参照）。
 
 ## 6. 通知・承認フロー
 

@@ -187,7 +187,26 @@ claude -p "<指示内容>" \
 
 ## 4. モデルルーター設定設計
 
-[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、MVPではLiteLLM Proxyを導入せず、Claude Code CLIを直接利用する。そのため本書では設定ファイル構成・モデル選択ポリシーの詳細設計は行わない。将来ローカルLLMを併用する際に、LiteLLM Proxyの設定ファイル構成・論理モデル名の命名規則・使い分けポリシーの実装仕様を別途設計する。
+[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、自走タスク本体はLiteLLM Proxy等のモデルルーティング層を導入せず、Claude Code CLIを直接利用する。ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）についても、モデルルーティング層は追加せず、Agent Runner（Claude Code CLI）が起動時に受け取る指示に従って自身でMCP `ollama-client` を呼び出す構成とする。
+
+### タスク種別ごとの推奨モデル
+
+[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。
+
+| タスク種別 | 推奨モデル | 選定理由 |
+| --- | --- | --- |
+| コードレビュー支援 | `deepseek-coder-v2:16b` | 検証6モデル中、指摘の網羅性・日本語安定性・実装可能な修正提案のバランスが最良 |
+| デバッグ調査の下調べ | `deepseek-coder-v2:16b` | 原因特定と動作する修正コードの提示を両立できる唯一のモデル |
+| 日本語ドキュメント生成 | `gemma2` | 中国語混入がなく日本語の一貫性が最も高い（未直接検証のため実運用開始時に品質を再確認する） |
+| 上記以外・速度優先の簡易チェック | `qwen2.5-coder:7b` | VRAM内に収まる7B級モデルの中で最速（76〜79 tok/s帯） |
+
+`granite-code:8b`（日本語出力が意味不明な単語の反復・スペイン語化に陥る）・`codestral:22b`（VRAM超過で4.6 tok/sまで速度低下）は不採用とする。
+
+### 実装方針: Agent Runnerへのsystem prompt指示
+
+- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たない。既存の`AGENT_RUNNER_LABEL_INSTRUCTION`・`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`と同様に、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`定数として上記対応表を`--append-system-prompt`で毎回Agent Runnerに渡す。
+- Agent Runnerは、コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成が必要になった場面で、指示に従い`mcp__ollama-client__ollama_chat`等のMCPツールを自身の判断で呼び出す。呼び出すか否か、結果をどう扱うかもAgent Runnerの裁量とし、オーケストレータ側での結果ハンドリングは行わない（Agent Runner内で完結する）。
+- 自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
 
 ## 5. 通知・承認フロー詳細設計
 
