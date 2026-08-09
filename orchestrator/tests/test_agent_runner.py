@@ -168,6 +168,25 @@ def test_build_claude_command_appends_design_verification_instruction() -> None:
     assert "mcp__claude-in-chrome__" in instruction
 
 
+def test_build_claude_command_appends_local_llm_instruction() -> None:
+    """issue #59: 補助用途でのローカルLLM使い分け指示がsystem promptに含まれることを確認する。
+
+    自走タスク本体には使わない旨、タスク種別ごとの推奨モデルがそれぞれ
+    system promptに含まれていることを検証する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "ollama-client" in instruction
+    assert "deepseek-coder-v2:16b" in instruction
+    assert "gemma2" in instruction
+    assert "qwen2.5-coder:7b" in instruction
+
+
 def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_path: Path) -> None:
     project = Project(repo="nosetech/project-a", worktree_path=str(tmp_path / "does-not-exist"))
     labels = FakeLabels({STATUS_TODO})

@@ -48,9 +48,17 @@
 
 ### 2-5. モデル選択方針
 
-- MVPではClaude Codeのみを利用する。Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約を利用する（[3-4](#3-4-コスト制約)参照）。Agent RunnerはClaude Code CLIプロセスとしてプロジェクトごとに起動する。
-  - ローカルLLMはツール呼び出し（Function Calling）の信頼性がモデルサイズに強く依存し不安定であることがPoC（[architecture-and-challenges.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/architecture-and-challenges.md) 2-4節）で確認されているため、コード変更を伴う自走タスクには現時点で採用しない。
-- 将来的にローカルLLMを併用する場合はLiteLLM Proxy等によるモデルルーティング層の追加を検討する。ただしMVPのClaude CodeはサブスクリプションベースでAPIエンドポイントを経由しないため、モデルルーターを挟む構成は将来拡張時に別途設計する。
+- コード変更を伴う自走タスク（Agent Runnerでのコード編集そのもの）はClaude Codeのみを利用する。Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約を利用する（[3-4](#3-4-コスト制約)参照）。Agent RunnerはClaude Code CLIプロセスとしてプロジェクトごとに起動する。
+  - ローカルLLMはツール呼び出し（Function Calling）の信頼性がモデルサイズに強く依存し不安定であることがPoC（[architecture-and-challenges.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/architecture-and-challenges.md) 2-4節）で確認されているため、自走タスク本体には引き続き採用しない。この方針は本節で後述するローカルLLM併用方針によって変更されない。
+- **ローカルLLMの補助的併用**: 自走タスク本体とは別に、Function Calling非依存または低リスクな補助用途（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）に限り、MCP `ollama-client` 経由でローカルLLM（Ollama）を併用する。Agent Runner（Claude Code CLI）自身が、後述のタスク種別ごとの推奨モデルに従って必要に応じてMCPツールを呼び出す（呼び出し方式・モデルルーティング層の要否の設計判断は[architecture.md 5章](./architecture.md#5-モデルルーティング)、実装仕様は[basic-design.md 4章](./basic-design.md#4-モデルルーター設定設計)参照）。
+  - 根拠となる調査: `research-log` [`log/2026/08/local-llm-benchmark/README.md`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md)（issue [#70](https://github.com/nosetech/research-log/issues/70)、`qwen2.5:7b` / `gemma2` / `qwen2.5-coder:7b` の検証）、[`log/2026/08/local-llm-benchmark-additional/README.md`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)（issue [#72](https://github.com/nosetech/research-log/issues/72)、`granite-code:8b` / `deepseek-coder-v2:16b` / `codestral:22b` の追加検証）
+  - タスク種別ごとの推奨モデル:
+    - コードレビュー支援 → `deepseek-coder-v2:16b`（検証6モデル中、指摘の網羅性・日本語安定性・実装可能な修正提案のバランスが最良）
+    - デバッグ調査の下調べ → `deepseek-coder-v2:16b`（原因特定と動作する修正コードの両立で最も安定）
+    - 日本語ドキュメント生成 → `gemma2`（中国語混入がなく日本語の一貫性が最も高い。ただし4例題に文書生成は含まれておらず、コードレビュー例題での説明の丁寧さからの類推であるため、実運用開始時に改めて品質を確認すること）
+    - 上記以外・速度優先の簡易チェック → `qwen2.5-coder:7b`（VRAM内に収まる7B級で最速の76〜79 tok/s帯）
+  - 不採用としたモデル: `granite-code:8b`（デバッグ・コードレビュー例題で日本語出力が意味不明な単語の反復やスペイン語化に陥り、日本語プロダクト用途に耐えない）、`codestral:22b`（RTX 3070のVRAM 8GBを大きく超過し4.6 tok/sまで速度低下、実用性が低い）
+- LiteLLM Proxy等のモデルルーティング層は導入しない。ローカルLLMはMCP `ollama-client` 経由でAgent Runnerが直接呼び出すため、モデルルーターを挟む構成は不要と判断した（詳細は[architecture.md 5章](./architecture.md#5-モデルルーティング)参照）。
 
 ### 2-6. 通知要件
 
@@ -98,7 +106,8 @@
 
 - ダッシュボード（判断待ち一覧／最近の活動ログ／利用量・リミットモニター、ワンタップ承認、自由記述による指示入力欄）
 - GitHub issueコメント経由の指示出し（案A）。既存issueへの追加指示・新規タスク（issue）作成の両方に対応
-- モデルはClaude Codeのみ（Pro/Maxプラン等のサブスクリプション、Anthropic API従量課金は使わない）
+- 自走タスク本体（コード変更）はClaude Codeのみ（Pro/Maxプラン等のサブスクリプション、Anthropic API従量課金は使わない）
+- コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成に限定した、MCP `ollama-client` 経由でのローカルLLM補助的併用（[2-5](#2-5-モデル選択方針)参照）
 - 同一LAN内アクセスのみによる保護（アプリレベルの追加認証は設けない）
 - プロジェクトごとのgit worktree隔離
 - CLIコマンドによるAgent Runnerの手動起動・停止
@@ -107,7 +116,6 @@
 
 ### 4-2. 将来拡張とする範囲
 
-- ローカルLLMの併用（LiteLLM Proxyによるモデルルーティング）
 - 専用API経由の指示出し導線（案B）
 - オーケストレータによるAgent Runnerの自動起動・停止・スケーリング
 - コンテナ（Docker）によるプロジェクト隔離
