@@ -208,6 +208,14 @@ claude -p "<指示内容>" \
 - Agent Runnerは、コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成が必要になった場面で、指示に従い`mcp__ollama-client__ollama_chat`等のMCPツールを自身の判断で呼び出す。呼び出すか否か、結果をどう扱うかもAgent Runnerの裁量とし、オーケストレータ側での結果ハンドリングは行わない（Agent Runner内で完結する）。
 - 自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
 
+### 手動ベンチマークツール（`ollama_bench.py`）
+
+Agent Runnerの本番経路（上記のMCP `ollama-client`経由）はメトリクス取得を目的としないが、モデル選定・性能検証を人間が手動で行う際は`prompt_eval_count`/`eval_count`/`total_duration`等の実測値が必要になる（issue #60）。これらはMCP `ollama-client`のレスポンスには含まれず、Ollama REST API（`POST /api/chat`、`stream: false`）を直接呼び出した場合のみ取得できるため、独立したCLIツール`orchestrator/orchestrator/ollama_bench.py`（`ollama-bench`コマンド、[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)参照）を用意した。
+
+- 接続先はOllama公式CLIと同じ環境変数`OLLAMA_HOST`（未設定時は`http://127.0.0.1:11434`）から解決する。`--host`引数で明示的に上書きもできる。
+- `--record --repo <repo> --issue-number <n>`を付けると、計測結果（`model`・`input_tokens`・`output_tokens`・`duration_seconds`）を[2-2](#2-2-データ取得仕様ポーリング)の`usage_store.py`経由で`config/usage.db`に統合して記録する。Claude Code実行分の記録では`duration_seconds`は常に`None`になる（Agent Runnerの実行結果JSONには処理時間が含まれないため）。
+- Agent Runnerの自動実行フロー・オーケストレータのポーリングループからは呼び出さない。あくまで人間が手動で実行するツールであり、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`の指示内容（MCP経由での呼び出し）は変更しない。
+
 ## 5. 通知・承認フロー詳細設計
 
 ### 5-1. Slack設定手順

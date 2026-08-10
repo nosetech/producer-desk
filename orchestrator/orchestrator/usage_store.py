@@ -7,6 +7,11 @@
 たびに得られる `usage.*` / `modelUsage.*` / `total_cost_usd` を`config/usage.db`
 （.gitignore対象、コミットしない）にSQLiteで記録し、「日単位の使用量」として
 モデル別に集計・表示する方式に転換した。
+
+`duration_seconds` はOllama REST APIの`total_duration`相当（秒）。Agent Runner
+本番経路（MCP `ollama-client`経由）では取得できず、`orchestrator/orchestrator/
+ollama_bench.py`（手動ベンチマークツール、Ollama REST APIを直接呼び出す）から
+のみ値が入る。Claude Code実行分の記録では常に`None`になる。
 """
 
 from __future__ import annotations
@@ -43,7 +48,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
     is_error INTEGER NOT NULL,
     api_error_status INTEGER,
     error_message TEXT,
-    limit_reset_text TEXT
+    limit_reset_text TEXT,
+    duration_seconds REAL
 )
 """
 
@@ -62,6 +68,7 @@ class UsageRecord:
     api_error_status: int | None = None
     error_message: str | None = None
     limit_reset_text: str | None = None
+    duration_seconds: float | None = None  # Ollama REST APIの`total_duration`相当（秒）
     recorded_at: str | None = None  # 未指定時はrecord_usage呼び出し時刻を使う
 
 
@@ -116,8 +123,8 @@ def record_usage(
             "INSERT INTO usage_records ("
             "recorded_at, repo, issue_number, model, input_tokens, output_tokens, "
             "cache_creation_input_tokens, cache_read_input_tokens, total_cost_usd, "
-            "is_error, api_error_status, error_message, limit_reset_text"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "is_error, api_error_status, error_message, limit_reset_text, duration_seconds"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     record.recorded_at or timestamp,
@@ -133,6 +140,7 @@ def record_usage(
                     record.api_error_status,
                     record.error_message,
                     record.limit_reset_text,
+                    record.duration_seconds,
                 )
                 for record in records
             ],

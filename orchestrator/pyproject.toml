@@ -15,6 +15,7 @@ dev = [
 
 [project.scripts]
 orchestrator = "orchestrator.main:main"
+ollama-bench = "orchestrator.ollama_bench:main"
 
 [build-system]
 requires = ["setuptools>=68"]
