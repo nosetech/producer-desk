@@ -19,9 +19,18 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
 }
 
 export function fetchState(): Promise<AggregatedState> {
-  return fetch("/api/state", { cache: "no-store" }).then((res) =>
-    parseJsonOrThrow<AggregatedState>(res),
-  );
+  return fetch("/api/state", { cache: "no-store" })
+    .then((res) => parseJsonOrThrow<AggregatedState>(res))
+    .then((data) => ({
+      // orchestrator・dashboardは別プロセスとして個別に再起動されるため、
+      // dashboardの再起動後もorchestratorがまだ旧コードのままの期間は
+      // レスポンスに新フィールドが含まれないことがある（issue #58デプロイ後に発生）。
+      // 欠けているフィールドは空配列にフォールバックし、両プロセスの
+      // 再起動タイミングがずれても画面がクラッシュしないようにする。
+      decisions: data.decisions ?? [],
+      reviews: data.reviews ?? [],
+      activity: data.activity ?? [],
+    }));
 }
 
 export function fetchProjects(): Promise<ProjectsResponse> {
