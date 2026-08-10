@@ -11,17 +11,34 @@ from collections.abc import Callable
 from orchestrator.aggregation import AggregatedState, IssueSummary, aggregate
 from orchestrator.config import Project
 from orchestrator.github_client import list_issues as gh_list_issues
+from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
+from orchestrator.labels import STATUS_IN_REVIEW
 
 DEFAULT_INTERVAL_SECONDS = 5 * 60
 
 ListIssuesFn = Callable[[str], list[IssueSummary]]
+ResolvePrNumberFn = Callable[[str, int], int | None]
 OnIssuesFetchedFn = Callable[[dict[str, list[IssueSummary]]], None]
+
+
+def _resolve_review_pr_numbers(
+    issues_by_repo: dict[str, list[IssueSummary]], resolve_pr_number: ResolvePrNumberFn
+) -> None:
+    """`status:in-review` のissueについてのみ紐づくPR番号を解決する（issue #58）。
+
+    全issueに対して毎回Timeline APIを叩くとポーリング負荷が増えるため、対象を絞る。
+    """
+    for issues in issues_by_repo.values():
+        for issue in issues:
+            if STATUS_IN_REVIEW in issue.labels:
+                issue.pr_number = resolve_pr_number(issue.repo, issue.number)
 
 
 def poll_once(
     projects: list[Project],
     *,
     list_issues: ListIssuesFn = gh_list_issues,
+    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
 ) -> AggregatedState:
     """全プロジェクトを1回ポーリングし、集約結果を返す。
@@ -30,6 +47,7 @@ def poll_once(
     を渡して呼び出す（直接issueにコメントされた指示の検知など、issue #14の用途）。
     """
     issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
+    _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
     if on_issues_fetched is not None:
         on_issues_fetched(issues_by_repo)
     return aggregate(issues_by_repo)
@@ -41,6 +59,7 @@ def run_polling_loop(
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     on_update: Callable[[AggregatedState], None],
     list_issues: ListIssuesFn = gh_list_issues,
+    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     stop_event: threading.Event | None = None,
 ) -> None:
@@ -53,7 +72,12 @@ def run_polling_loop(
     stop = stop_event or threading.Event()
 
     while True:
-        state = poll_once(projects, list_issues=list_issues, on_issues_fetched=on_issues_fetched)
+        state = poll_once(
+            projects,
+            list_issues=list_issues,
+            resolve_pr_number=resolve_pr_number,
+            on_issues_fetched=on_issues_fetched,
+        )
         on_update(state)
 
         if stop.wait(interval_seconds):

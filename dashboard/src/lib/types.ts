@@ -8,7 +8,7 @@ export interface IssueComment {
   url: string;
 }
 
-/** GET /api/state の decisions 配列要素。オーケストレータのIssueSummaryに対応。 */
+/** GET /api/state の decisions/reviews 配列要素。オーケストレータのIssueSummaryに対応。 */
 export interface IssueSummary {
   repo: string;
   number: number;
@@ -16,6 +16,8 @@ export interface IssueSummary {
   labels: string[];
   comments: IssueComment[];
   updated_at: string;
+  /** `status:in-review` のissueについてのみ、紐づくPR番号が入る（issue #58）。 */
+  pr_number: number | null;
 }
 
 /** GET /api/state の activity 配列要素。オーケストレータのActivityEventに対応。 */
@@ -29,6 +31,7 @@ export interface ActivityEvent {
 
 export interface AggregatedState {
   decisions: IssueSummary[];
+  reviews: IssueSummary[];
   activity: ActivityEvent[];
 }
 

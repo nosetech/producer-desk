@@ -144,4 +144,60 @@ def test_aggregate_with_no_projects_returns_empty_state() -> None:
     state = aggregate({})
 
     assert state.decisions == []
+    assert state.reviews == []
     assert state.activity == []
+
+
+def test_aggregate_collects_in_review_issues_across_repos() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_TODO], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, [STATUS_IN_REVIEW], "2026-08-02T00:00:00Z"),
+        ],
+        "nosetech/project-b": [
+            _issue("nosetech/project-b", 3, [STATUS_IN_REVIEW], "2026-08-03T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert [(i.repo, i.number) for i in state.reviews] == [
+        ("nosetech/project-b", 3),
+        ("nosetech/project-a", 2),
+    ]
+
+
+def test_aggregate_reviews_sorted_by_updated_at_descending() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, [STATUS_IN_REVIEW], "2026-08-05T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert [i.number for i in state.reviews] == [2, 1]
+
+
+def test_aggregate_excludes_issues_without_in_review_label_from_reviews() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_TODO], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, [STATUS_NEEDS_HUMAN_DECISION], "2026-08-02T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.reviews == []
+
+
+def test_aggregate_reviews_preserve_pr_number() -> None:
+    issue = _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW], "2026-08-01T00:00:00Z")
+    issue.pr_number = 33
+    issues_by_repo = {"nosetech/project-a": [issue]}
+
+    state = aggregate(issues_by_repo)
+
+    assert state.reviews[0].pr_number == 33

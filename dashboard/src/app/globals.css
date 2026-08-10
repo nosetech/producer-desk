@@ -27,6 +27,10 @@
   --accent-red-bg: rgba(255, 106, 91, 0.15);
   --accent-gray: #8493a3;
   --accent-gray-bg: rgba(132, 147, 163, 0.15);
+  /* レビュー待ちUI専用トークン（Claude Design ProducerDesk.dc.htmlの --review/--review-bg。
+     --accent-purple に近いが完全には一致しないため専用に定義する。issue #58）。 */
+  --review: #b98cf7;
+  --review-bg: rgba(185, 140, 247, 0.16);
 
   color-scheme: dark;
 }
@@ -55,6 +59,8 @@
   --accent-red-bg: rgba(217, 57, 42, 0.1);
   --accent-gray: #74828f;
   --accent-gray-bg: rgba(116, 130, 143, 0.12);
+  --review: #7a44c6;
+  --review-bg: rgba(122, 68, 198, 0.12);
 
   color-scheme: light;
 }
@@ -84,6 +90,8 @@
     --accent-red-bg: rgba(217, 57, 42, 0.1);
     --accent-gray: #74828f;
     --accent-gray-bg: rgba(116, 130, 143, 0.12);
+    --review: #7a44c6;
+    --review-bg: rgba(122, 68, 198, 0.12);
 
     color-scheme: light;
   }

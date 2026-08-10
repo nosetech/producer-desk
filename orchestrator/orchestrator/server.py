@@ -19,10 +19,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from orchestrator.aggregation import AggregatedState
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.github_client import CreateIssueFn, PostCommentFn
+from orchestrator.github_client import CreateIssueFn, MergePrFn, PostCommentFn, ResolvePrNumberFn
 from orchestrator.github_client import create_issue as gh_create_issue
+from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
-from orchestrator.instruct import handle_create_issue, handle_instruct
+from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
+from orchestrator.instruct import ReviewMergeError, handle_create_issue, handle_instruct
 from orchestrator.labels import (
     AddLabelFn,
     GetLabelsFn,
@@ -75,6 +77,8 @@ def _make_handler(
     create_issue: CreateIssueFn,
     daily_model_usage: DailyModelUsageFn,
     current_limit_status: CurrentLimitStatusFn,
+    resolve_pr_number: ResolvePrNumberFn,
+    merge_pr: MergePrFn,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -110,7 +114,7 @@ def _make_handler(
                 200,
                 dataclasses.asdict(state)
                 if state is not None
-                else {"decisions": [], "activity": []},
+                else {"decisions": [], "reviews": [], "activity": []},
             )
 
         def _handle_usage(self) -> None:
@@ -157,9 +161,14 @@ def _make_handler(
                     remove_label=remove_label,
                     post_comment=post_comment,
                     dispatch_queue=dispatch_queue,
+                    resolve_pr_number=resolve_pr_number,
+                    merge_pr=merge_pr,
                 )
             except (KeyError, ValueError) as e:
                 self._send_json(400, {"error": str(e)})
+                return
+            except ReviewMergeError as e:
+                self._send_json(502, {"error": str(e)})
                 return
             except subprocess.CalledProcessError as e:
                 self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
@@ -211,6 +220,8 @@ def make_server(
     create_issue: CreateIssueFn = gh_create_issue,
     daily_model_usage: DailyModelUsageFn = store_daily_model_usage,
     current_limit_status: CurrentLimitStatusFn = store_current_limit_status,
+    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    merge_pr: MergePrFn = gh_merge_pr,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -224,5 +235,7 @@ def make_server(
         create_issue=create_issue,
         daily_model_usage=daily_model_usage,
         current_limit_status=current_limit_status,
+        resolve_pr_number=resolve_pr_number,
+        merge_pr=merge_pr,
     )
     return ThreadingHTTPServer((host, port), handler)
