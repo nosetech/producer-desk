@@ -5,6 +5,7 @@ import type {
   InstructAction,
   InstructResult,
   ProjectsResponse,
+  UsageResponse,
 } from "./types";
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
@@ -26,6 +27,12 @@ export function fetchState(): Promise<AggregatedState> {
 export function fetchProjects(): Promise<ProjectsResponse> {
   return fetch("/api/projects", { cache: "no-store" }).then((res) =>
     parseJsonOrThrow<ProjectsResponse>(res),
+  );
+}
+
+export function fetchUsage(): Promise<UsageResponse> {
+  return fetch("/api/usage", { cache: "no-store" }).then((res) =>
+    parseJsonOrThrow<UsageResponse>(res),
   );
 }
 
