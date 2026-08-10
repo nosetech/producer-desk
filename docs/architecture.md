@@ -94,7 +94,7 @@ flowchart TB
 
 - コード変更を伴う自走タスク本体は**LiteLLM Proxyを導入しない**。Agent RunnerはClaude Code CLIを直接利用し、Anthropic API従量課金ではなくClaude Code Pro/Maxプラン等のサブスクリプションを利用する（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)）。
 - **ローカルLLMの補助的併用**（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は、LiteLLM Proxy等のモデルルーティング層を追加せず、Agent Runner（Claude Code CLI）が**MCP `ollama-client` を直接呼び出す**構成とする。`ollama-client` MCPサーバーはホスト単位で構成済み（`~/.claude.json`）であり、DesignSync同様に追加のインフラ・認証フローなしで`claude -p`実行時から利用できるため、モデルルーターを挟む必要がない。
-  - 検討したがMVPでは採用しない代替案: Ollama REST APIの直接呼び出し。MCP経由よりトークン数・処理時間等のメトリクスを取得できる利点はあるが、呼び出しロジックをAgent Runner外（オーケストレータ側等）に持つ必要があり構成が複雑化する。補助用途ではメトリクス収集は必須要件ではないため見送った。将来メトリクス収集が必要になった場合に再検討する。
+  - Agent Runnerの本番経路（MCP `ollama-client`経由）は上記の通りメトリクス取得を目的とせず、構成の単純さを優先し続ける。一方、モデル選定・性能検証のための**人間による手動ベンチマーク**では、Ollama REST API（`POST /api/chat`、`stream: false`）を直接呼び出すことで`prompt_eval_count`/`eval_count`/`total_duration`等の実測メトリクスが必要になった（issue #60）。MCP経由ではこれらのフィールドが取得できないため、`orchestrator/orchestrator/ollama_bench.py`（`ollama-bench`コマンド）を独立した手動実行ツールとして追加し、計測結果は`usage_store.py`（[基本設計書 2-2](./basic-design.md#2-2-データ取得仕様ポーリング)）の`config/usage.db`に統合して記録できるようにした。Agent Runnerの自動実行フローやオーケストレータのポーリングループからは呼び出さない。
 - Claude/ローカルLLMの使い分けポリシーの実装方針は**Agent Runner側**に持たせる。オーケストレータはモデル選択ロジックを持たず、`--append-system-prompt`でタスク種別ごとの推奨ローカルLLMをAgent Runnerに指示し、実際にMCPツールを呼ぶかどうか・どのモデルを使うかはAgent Runner自身（Claude Code）が判断する（実装は[基本設計書 4章](./basic-design.md#4-モデルルーター設定設計)、タスク種別ごとの推奨モデルは[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)参照）。
 
 ## 6. 通知・承認フロー

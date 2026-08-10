@@ -12,6 +12,7 @@ from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
 from orchestrator.server import StateStore, make_server
+from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
 PROJECT_A = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
 
@@ -151,6 +152,83 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
         assert status == 200
         assert body["decisions"][0]["number"] == 1
         assert body["activity"][0]["label"] == "needs-human-decision"
+    finally:
+        server.shutdown()
+
+
+def test_get_api_usage_returns_daily_usage_and_no_current_limit() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    daily = [
+        DailyModelUsage(
+            date="2026-08-09",
+            model="claude-sonnet-5",
+            input_tokens=1000,
+            output_tokens=200,
+            total_cost_usd=0.5,
+        ),
+        DailyModelUsage(
+            date="2026-08-09",
+            model="deepseek-coder-v2:16b",
+            input_tokens=3000,
+            output_tokens=800,
+            total_cost_usd=0.0,
+        ),
+    ]
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        daily_model_usage=lambda: daily,
+        current_limit_status=lambda: None,
+    )
+    try:
+        status, body = _get(server, "/api/usage")
+        assert status == 200
+        assert body["currentLimit"] is None
+        assert body["daily"] == [
+            {
+                "date": "2026-08-09",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "total_cost_usd": 0.5,
+            },
+            {
+                "date": "2026-08-09",
+                "model": "deepseek-coder-v2:16b",
+                "input_tokens": 3000,
+                "output_tokens": 800,
+                "total_cost_usd": 0.0,
+            },
+        ]
+    finally:
+        server.shutdown()
+
+
+def test_get_api_usage_returns_current_limit_status_when_present() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    limit_status = LimitStatus(
+        repo="nosetech/project-a",
+        issue_number=12,
+        recorded_at="2026-08-09T04:00:00+00:00",
+        api_error_status=429,
+        error_message="You've hit your session limit · resets 1pm (Asia/Tokyo)",
+        reset_at_text="resets 1pm (Asia/Tokyo)",
+    )
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        daily_model_usage=lambda: [],
+        current_limit_status=lambda: limit_status,
+    )
+    try:
+        status, body = _get(server, "/api/usage")
+        assert status == 200
+        assert body["currentLimit"]["repo"] == "nosetech/project-a"
+        assert body["currentLimit"]["reset_at_text"] == "resets 1pm (Asia/Tokyo)"
     finally:
         server.shutdown()
 

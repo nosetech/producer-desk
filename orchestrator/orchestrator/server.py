@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from orchestrator.aggregation import AggregatedState
@@ -30,6 +31,9 @@ from orchestrator.labels import (
     gh_get_labels,
     gh_remove_label,
 )
+from orchestrator.usage_store import DailyModelUsage, LimitStatus
+from orchestrator.usage_store import current_limit_status as store_current_limit_status
+from orchestrator.usage_store import daily_model_usage as store_daily_model_usage
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
@@ -38,6 +42,9 @@ INSTRUCT_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/instruct$"
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
+
+DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
+CurrentLimitStatusFn = Callable[..., LimitStatus | None]
 
 
 class StateStore:
@@ -66,6 +73,8 @@ def _make_handler(
     remove_label: RemoveLabelFn,
     post_comment: PostCommentFn,
     create_issue: CreateIssueFn,
+    daily_model_usage: DailyModelUsageFn,
+    current_limit_status: CurrentLimitStatusFn,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -85,17 +94,35 @@ def _make_handler(
             return json.loads(raw)
 
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandlerのインターフェースに合わせる)
-            if self.path != "/api/state":
-                self.send_response(404)
-                self.end_headers()
+            if self.path == "/api/state":
+                self._handle_state()
+                return
+            if self.path == "/api/usage":
+                self._handle_usage()
                 return
 
+            self.send_response(404)
+            self.end_headers()
+
+        def _handle_state(self) -> None:
             state = store.get()
             self._send_json(
                 200,
                 dataclasses.asdict(state)
                 if state is not None
                 else {"decisions": [], "activity": []},
+            )
+
+        def _handle_usage(self) -> None:
+            limit_status = current_limit_status()
+            self._send_json(
+                200,
+                {
+                    "daily": [dataclasses.asdict(record) for record in daily_model_usage()],
+                    "currentLimit": dataclasses.asdict(limit_status)
+                    if limit_status is not None
+                    else None,
+                },
             )
 
         def do_POST(self) -> None:  # noqa: N802
@@ -182,6 +209,8 @@ def make_server(
     remove_label: RemoveLabelFn = gh_remove_label,
     post_comment: PostCommentFn = gh_post_comment,
     create_issue: CreateIssueFn = gh_create_issue,
+    daily_model_usage: DailyModelUsageFn = store_daily_model_usage,
+    current_limit_status: CurrentLimitStatusFn = store_current_limit_status,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -193,5 +222,7 @@ def make_server(
         remove_label=remove_label,
         post_comment=post_comment,
         create_issue=create_issue,
+        daily_model_usage=daily_model_usage,
+        current_limit_status=current_limit_status,
     )
     return ThreadingHTTPServer((host, port), handler)

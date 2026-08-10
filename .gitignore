@@ -1,6 +1,7 @@
 # secrets / 実データ
 config/projects.yaml
 config/sessions.json
+config/usage.db
 .env
 .env.*
 !.env.*.example
