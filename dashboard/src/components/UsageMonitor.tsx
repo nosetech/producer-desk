@@ -1,105 +1,214 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { fetchUsage } from "@/lib/api";
+import {
+  assignModelColors,
+  buildChartGeometry,
+  buildLimitWarning,
+  buildModelBreakdown,
+  buildTodayUsage,
+} from "@/lib/usage";
+import type { UsageResponse } from "@/lib/types";
 import styles from "./UsageMonitor.module.css";
 
-/**
- * Claude Codeの利用量/リミット取得方法は未実装（docs/basic-design.md 2-2で
- * 実装フェーズに設計を先送りされている）。実データ配信はissue #42に切り出し、
- * ここでは仮データである旨をUIに明示した上でモックのままにする（issue #32）。
- */
-const MOCK_USAGE = {
-  plan: "Max プラン",
-  nearLimit: true,
-  session: {
-    label: "現在のセッション（5時間枠）",
-    percent: 58,
-    resetIn: "2時間14分後にリセット",
-  },
-  weekly: {
-    label: "今週の利用上限",
-    percent: 91,
-    resetAt: "木曜 09:00にリセット・残りわずか",
-  },
-};
-
-function barColor(percent: number): string {
-  if (percent >= 85) return "var(--accent-red)";
-  if (percent >= 60) return "var(--accent-amber)";
-  return "var(--accent-blue)";
-}
+const POLL_INTERVAL_MS = 30_000;
+const EMPTY_USAGE: UsageResponse = { daily: [], currentLimit: null };
 
 export default function UsageMonitor() {
-  const { plan, nearLimit, session, weekly } = MOCK_USAGE;
+  const [usage, setUsage] = useState<UsageResponse>(EMPTY_USAGE);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    fetchUsage()
+      .then((data) => {
+        setUsage(data);
+        setError(null);
+      })
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "利用量の取得に失敗しました"),
+      );
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  const { daily, currentLimit } = usage;
+  const colors = assignModelColors(daily);
+  const today = daily.length > 0 ? daily[daily.length - 1].date : "";
+  const todayUsage = buildTodayUsage(daily, today, colors);
+  const chart = buildChartGeometry(daily, colors);
+  const modelBreakdown = buildModelBreakdown(daily, colors);
+  const warn = buildLimitWarning(currentLimit);
+
   return (
     <div className={styles.panel}>
       <div className={styles.headerRow}>
-        <span className={styles.titleGroup}>
-          <span className={styles.title}>利用量 / リミット</span>
-          <span className={styles.mockBadge}>仮データ表示中</span>
-        </span>
-        <span className={styles.plan}>{plan}</span>
+        <span className={styles.title}>利用量 / トークン</span>
+        <span className={styles.endpoint}>GET /api/usage</span>
       </div>
-      <span className={styles.mockNote}>
-        実データ配信は未実装のため、以下はサンプル値です。実際の利用率は Claude
-        Code の <code className={styles.inlineCode}>/status</code> コマンドで
-        確認してください（
-        <a
-          href="https://github.com/nosetech/producer-desk/issues/42"
-          target="_blank"
-          rel="noreferrer"
-          className={styles.mockLink}
-        >
-          #42
-        </a>
-        ）。
-      </span>
 
-      {nearLimit && (
+      {error && <div className={styles.error}>{error}</div>}
+
+      {warn.active && (
         <div className={styles.warning}>
-          <span>⚠</span>
-          <span>
-            週間リミットが残りわずかです。到達すると
-            <strong>Agent Runner は次のリセットまで待機</strong>
-            します。
-          </span>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--accent-red)"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={styles.warningIcon}
+            aria-hidden="true"
+          >
+            <path d="M12 9v4M12 17h.01"></path>
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"></path>
+          </svg>
+          <div>
+            <div className={styles.warningText}>
+              利用上限に到達しました。
+              <strong>Agent Runner は待機中</strong>です。
+            </div>
+            <div className={styles.warningReset}>
+              解除予定 <strong>{warn.resetText}</strong>
+            </div>
+            <div className={styles.warningMeta}>
+              {warn.repoLabel} · HTTP {warn.statusText}
+            </div>
+          </div>
         </div>
       )}
 
-      <div className={styles.metric}>
-        <div className={styles.metricHeader}>
-          <span>{session.label}</span>
-          <span className={styles.metricValue}>{session.percent}%</span>
+      <div className={styles.todayCard}>
+        <div className={styles.todayHeader}>
+          <span className={styles.todayLabel}>
+            本日の使用量 · {todayUsage.dateText}
+          </span>
+          <span className={styles.todayCost}>{todayUsage.costText}</span>
         </div>
-        <div className={styles.track}>
-          <div
-            className={styles.fill}
-            style={{
-              width: `${session.percent}%`,
-              backgroundColor: barColor(session.percent),
-            }}
-          />
+        <div className={styles.todayTotalRow}>
+          <span className={styles.todayTotal}>{todayUsage.totalText}</span>
+          <span className={styles.todayUnit}>tokens</span>
         </div>
-        <span className={styles.footnote}>{session.resetIn}</span>
+        <div className={styles.todayModels}>
+          {todayUsage.models.map((m) => (
+            <span key={m.model} className={styles.todayModelChip}>
+              <span
+                className={styles.dot}
+                style={{ backgroundColor: `var(${m.colorVar})` }}
+              />
+              <span className={styles.todayModelName}>{m.model}</span>
+              <span className={styles.todayModelTokens}>{m.tokensText}</span>
+            </span>
+          ))}
+        </div>
       </div>
 
-      <div className={styles.metric}>
-        <div className={styles.metricHeader}>
-          <span>{weekly.label}</span>
-          <span
-            className={styles.metricValue}
-            style={{ color: barColor(weekly.percent) }}
-          >
-            {weekly.percent}%
-          </span>
+      <div className={styles.chartSection}>
+        <div className={styles.chartHeader}>
+          <span className={styles.chartLabel}>過去7日間の日次トークン</span>
+          <div className={styles.chartLegend}>
+            {chart.series.map((s) => (
+              <span key={s.model} className={styles.legendItem}>
+                <span
+                  className={styles.legendSwatch}
+                  style={{ backgroundColor: `var(${s.colorVar})` }}
+                />
+                <span className={styles.legendName}>{s.shortName}</span>
+              </span>
+            ))}
+          </div>
         </div>
-        <div className={styles.track}>
-          <div
-            className={styles.fill}
-            style={{
-              width: `${weekly.percent}%`,
-              backgroundColor: barColor(weekly.percent),
-            }}
-          />
+        <svg
+          viewBox="0 0 320 118"
+          width="100%"
+          className={styles.chartSvg}
+          role="img"
+          aria-label="過去7日間の日次トークン推移"
+        >
+          {chart.gridLines.map((y) => (
+            <line
+              key={y}
+              x1={10}
+              y1={y}
+              x2={310}
+              y2={y}
+              className={styles.chartGrid}
+            />
+          ))}
+          {chart.series.map((s) => (
+            <polyline
+              key={s.model}
+              points={s.points}
+              fill="none"
+              strokeWidth={2}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              style={{ stroke: `var(${s.colorVar})` }}
+            />
+          ))}
+          {chart.series.map((s) =>
+            s.dots.map((pt) => (
+              <circle
+                key={`${s.model}-${pt.cx}-${pt.cy}`}
+                cx={pt.cx}
+                cy={pt.cy}
+                r={2.6}
+                style={{ fill: `var(${s.colorVar})` }}
+              />
+            )),
+          )}
+          {chart.labels.map((xl) => (
+            <text
+              key={xl.x}
+              x={xl.x}
+              y={115}
+              textAnchor="middle"
+              fontSize={8}
+              className={styles.chartAxisLabel}
+            >
+              {xl.label}
+            </text>
+          ))}
+        </svg>
+      </div>
+
+      <div>
+        <div className={styles.breakdownLabel}>モデル別内訳 · 7日間累計</div>
+        <div className={styles.breakdownList}>
+          {modelBreakdown.map((m) => (
+            <div key={m.model}>
+              <div className={styles.breakdownRow}>
+                <span className={styles.breakdownName}>
+                  <span
+                    className={styles.dot}
+                    style={{ backgroundColor: `var(${m.colorVar})` }}
+                  />
+                  <span className={styles.breakdownModel}>{m.model}</span>
+                </span>
+                <span className={styles.breakdownValues}>
+                  <span className={styles.breakdownTokens}>{m.tokensText}</span>
+                  <span className={styles.breakdownCost}>{m.costText}</span>
+                </span>
+              </div>
+              <div className={styles.breakdownTrack}>
+                <div
+                  className={styles.breakdownFill}
+                  style={{
+                    width: `${m.barPercent}%`,
+                    backgroundColor: `var(${m.colorVar})`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
         </div>
-        <span className={styles.footnote}>{weekly.resetAt}</span>
       </div>
     </div>
   );

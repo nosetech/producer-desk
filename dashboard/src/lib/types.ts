@@ -51,3 +51,27 @@ export interface CreateIssueResult {
   issue_number: number;
   dispatched: boolean;
 }
+
+/** GET /api/usage の daily 配列要素。オーケストレータのDailyModelUsageに対応。 */
+export interface DailyUsage {
+  date: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_cost_usd: number;
+}
+
+/** GET /api/usage の currentLimit。オーケストレータのLimitStatusに対応。 */
+export interface CurrentLimitStatus {
+  repo: string;
+  issue_number: number;
+  recorded_at: string;
+  api_error_status: number | null;
+  error_message: string;
+  reset_at_text: string | null;
+}
+
+export interface UsageResponse {
+  daily: DailyUsage[];
+  currentLimit: CurrentLimitStatus | null;
+}
