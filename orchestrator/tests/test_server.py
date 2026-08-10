@@ -10,7 +10,12 @@ import urllib.request
 from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummary
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.labels import STATUS_IN_PROGRESS, STATUS_NEEDS_HUMAN_DECISION, STATUS_TODO
+from orchestrator.labels import (
+    STATUS_IN_PROGRESS,
+    STATUS_IN_REVIEW,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_TODO,
+)
 from orchestrator.server import StateStore, make_server
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
@@ -37,6 +42,18 @@ class FakeComments:
 
     def post_comment(self, repo: str, issue_number: int, body: str) -> None:
         self.posted.append((repo, issue_number, body))
+
+
+class FakeReviewMerge:
+    def __init__(self, pr_number: int | None) -> None:
+        self.pr_number = pr_number
+        self.merge_calls: list[tuple[str, int]] = []
+
+    def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
+        return self.pr_number
+
+    def merge_pr(self, repo: str, pr_number: int) -> None:
+        self.merge_calls.append((repo, pr_number))
 
 
 class FakeIssueCreator:
@@ -115,7 +132,7 @@ def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
     try:
         status, body = _get(server, "/api/state")
         assert status == 200
-        assert body == {"decisions": [], "activity": []}
+        assert body == {"decisions": [], "reviews": [], "activity": []}
     finally:
         server.shutdown()
 
@@ -304,6 +321,67 @@ def test_instruct_reject_action_no_longer_supported() -> None:
         assert comments.posted == []
         assert labels.labels_by_issue[1] == {STATUS_NEEDS_HUMAN_DECISION}
         assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33)
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert body["dispatched"] is False
+        assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+        assert comments.posted == []
+        assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=None)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 502
+        assert "error" in body
+        assert review_merge.merge_calls == []
     finally:
         server.shutdown()
 

@@ -11,6 +11,7 @@ import pytest
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE,
+    ReviewMergeError,
     handle_create_issue,
     handle_instruct,
 )
@@ -215,6 +216,75 @@ def test_handle_instruct_reject_action_no_longer_supported() -> None:
             post_comment=comments.post_comment,
             dispatch_queue=dispatch_queue,
         )
+
+
+class FakeReviewMerge:
+    def __init__(self, pr_number: int | None) -> None:
+        self.pr_number = pr_number
+        self.resolve_calls: list[tuple[str, int]] = []
+        self.merge_calls: list[tuple[str, int]] = []
+
+    def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
+        self.resolve_calls.append((repo, issue_number))
+        return self.pr_number
+
+    def merge_pr(self, repo: str, pr_number: int) -> None:
+        self.merge_calls.append((repo, pr_number))
+
+
+def test_handle_instruct_approve_on_in_review_merges_pr_without_comment_or_dispatch() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33)
+
+    result = handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+    )
+
+    assert result.action == "approve"
+    assert result.dispatched is False
+    assert result.label is None
+    assert review_merge.resolve_calls == [("nosetech/project-a", 30)]
+    assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+    assert comments.posted == []
+    assert labels.labels == {STATUS_IN_REVIEW}
+    assert calls == []
+
+
+def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=None)
+
+    with pytest.raises(ReviewMergeError):
+        handle_instruct(
+            "nosetech/project-a",
+            30,
+            "approve",
+            None,
+            get_labels=labels.get_labels,
+            add_label=labels.add_label,
+            remove_label=labels.remove_label,
+            post_comment=comments.post_comment,
+            dispatch_queue=dispatch_queue,
+            resolve_pr_number=review_merge.resolve_pr_number,
+            merge_pr=review_merge.merge_pr,
+        )
+
+    assert review_merge.merge_calls == []
+    assert comments.posted == []
 
 
 class FakeIssueCreator:

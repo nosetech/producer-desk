@@ -2,6 +2,7 @@
 
 仕様: docs/basic-design.md 2-2（データ取得仕様（ポーリング））
 - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
+- レビュー待ち一覧: `status:in-review` ラベル付きissueを横断集約（issue #58）
 - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
   （5つの状態ラベルのいずれも付与されていない管理対象外issueは除外する。
   docs/basic-design.md 1章「管理対象外issueの扱い」）
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from orchestrator.labels import STATUS_LABELS, STATUS_NEEDS_HUMAN_DECISION
+from orchestrator.labels import STATUS_IN_REVIEW, STATUS_LABELS, STATUS_NEEDS_HUMAN_DECISION
 
 
 @dataclass
@@ -23,6 +24,9 @@ class IssueSummary:
     comments: list[dict]
     updated_at: str
     state: str = "OPEN"
+    # `status:in-review` のissueについてのみ、ポーリング時に紐づくPR番号を解決して埋める
+    # （orchestrator.polling.poll_once参照、issue #58）。
+    pr_number: int | None = None
 
 
 @dataclass
@@ -37,6 +41,7 @@ class ActivityEvent:
 @dataclass
 class AggregatedState:
     decisions: list[IssueSummary] = field(default_factory=list)
+    reviews: list[IssueSummary] = field(default_factory=list)
     activity: list[ActivityEvent] = field(default_factory=list)
 
 
@@ -45,11 +50,14 @@ def _current_status_label(issue: IssueSummary) -> str | None:
 
 
 def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
-    """リポジトリ別のissue一覧を、判断待ち一覧・活動ログに集約する。"""
+    """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・活動ログに集約する。"""
     all_issues = [issue for issues in issues_by_repo.values() for issue in issues]
 
     decisions = [issue for issue in all_issues if STATUS_NEEDS_HUMAN_DECISION in issue.labels]
     decisions.sort(key=lambda issue: issue.updated_at, reverse=True)
+
+    reviews = [issue for issue in all_issues if STATUS_IN_REVIEW in issue.labels]
+    reviews.sort(key=lambda issue: issue.updated_at, reverse=True)
 
     activity = [
         ActivityEvent(
@@ -64,4 +72,4 @@ def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
     ]
     activity.sort(key=lambda event: event.updated_at, reverse=True)
 
-    return AggregatedState(decisions=decisions, activity=activity)
+    return AggregatedState(decisions=decisions, reviews=reviews, activity=activity)

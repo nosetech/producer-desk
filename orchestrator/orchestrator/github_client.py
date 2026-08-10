@@ -28,6 +28,8 @@ BOT_COMMENT_MARKER = "<!-- producer-desk:bot-comment -->"
 RunFn = Callable[..., subprocess.CompletedProcess[str]]
 PostCommentFn = Callable[[str, int, str], None]
 CreateIssueFn = Callable[[str, str, str], int]
+ResolvePrNumberFn = Callable[[str, int], int | None]
+MergePrFn = Callable[[str, int], None]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -95,3 +97,37 @@ def create_issue(repo: str, title: str, body: str, *, run: RunFn = subprocess.ru
         check=True,
     )
     return json.loads(result.stdout)["number"]
+
+
+def resolve_pr_number(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> int | None:
+    """issueに紐づく（`Closes #`等でリンクされた）PR番号を解決する。
+
+    `gh api repos/{repo}/issues/{issue_number}/timeline` のタイムラインイベントのうち、
+    `event == "cross-referenced"` かつ `source.issue.pull_request` が存在するものを
+    issueへリンクされたPRとみなす（issue #58）。複数紐づく場合は最後（最新）のものを採用する。
+    見つからない場合は`None`を返す。
+    """
+    result = run(
+        ["gh", "api", f"repos/{repo}/issues/{issue_number}/timeline"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    events = json.loads(result.stdout)
+    pr_numbers = [
+        event["source"]["issue"]["number"]
+        for event in events
+        if event.get("event") == "cross-referenced"
+        and event.get("source", {}).get("issue", {}).get("pull_request") is not None
+    ]
+    return pr_numbers[-1] if pr_numbers else None
+
+
+def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:
+    """PRをsquash mergeする（`gh pr merge --squash --repo {repo} {pr_number}`）。"""
+    run(
+        ["gh", "pr", "merge", "--squash", "--repo", repo, str(pr_number)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )

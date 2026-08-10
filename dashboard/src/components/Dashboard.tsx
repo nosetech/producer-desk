@@ -1,19 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchProjects, fetchState } from "@/lib/api";
 import { deriveProjectStatus } from "@/lib/projectStatus";
 import type { AggregatedState } from "@/lib/types";
 import Header from "./Header";
 import ProjectStatusRow from "./ProjectStatusRow";
 import DecisionsList from "./DecisionsList";
+import ReviewsList from "./ReviewsList";
 import ActivityTimeline from "./ActivityTimeline";
 import UsageMonitor from "./UsageMonitor";
 import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
+import Toast from "./Toast";
 import styles from "./Dashboard.module.css";
 
 const POLL_INTERVAL_MS = 30_000;
-const EMPTY_STATE: AggregatedState = { decisions: [], activity: [] };
+const TOAST_DURATION_MS = 4_600;
+const EMPTY_STATE: AggregatedState = {
+  decisions: [],
+  reviews: [],
+  activity: [],
+};
 
 export default function Dashboard() {
   const [state, setState] = useState<AggregatedState>(EMPTY_STATE);
@@ -25,6 +32,27 @@ export default function Dashboard() {
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
+
+  const [toast, setToast] = useState<{ show: boolean; text: string }>({
+    show: false,
+    text: "",
+  });
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((text: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ show: true, text });
+    toastTimer.current = setTimeout(
+      () => setToast((t) => ({ ...t, show: false })),
+      TOAST_DURATION_MS,
+    );
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, []);
 
   const refresh = useCallback(() => {
     fetchState()
@@ -90,6 +118,13 @@ export default function Dashboard() {
             decisions={state.decisions}
             onApproved={refresh}
             onReply={handleReply}
+            onToast={showToast}
+          />
+          <ReviewsList
+            reviews={state.reviews}
+            onApproved={refresh}
+            onReply={handleReply}
+            onToast={showToast}
           />
         </div>
         <div className={styles.right}>
@@ -109,6 +144,7 @@ export default function Dashboard() {
         onNewTaskRepoChange={setNewTaskRepo}
         onSubmitted={refresh}
       />
+      <Toast show={toast.show} text={toast.text} />
     </div>
   );
 }

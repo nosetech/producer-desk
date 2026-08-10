@@ -10,9 +10,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.github_client import CreateIssueFn, PostCommentFn
+from orchestrator.github_client import CreateIssueFn, MergePrFn, PostCommentFn, ResolvePrNumberFn
+from orchestrator.github_client import merge_pr as gh_merge_pr
+from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
+    STATUS_IN_REVIEW,
     STATUS_TODO,
     AddLabelFn,
     GetLabelsFn,
@@ -25,6 +28,10 @@ APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
 
 Action = Literal["approve", "instruct"]
 Dispatch = Literal["immediate", "queued"]
+
+
+class ReviewMergeError(RuntimeError):
+    """レビュー承認時、対象issueに紐づくPRが見つからない場合に送出する（issue #58）。"""
 
 
 @dataclass
@@ -82,7 +89,19 @@ def handle_instruct(
     remove_label: RemoveLabelFn,
     post_comment: PostCommentFn,
     dispatch_queue: DispatchQueue,
+    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    merge_pr: MergePrFn = gh_merge_pr,
 ) -> InstructResult:
+    if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
+        # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
+        # 紐づくPRのsquash mergeのみを行う（issue #58）。issueのクローズ・
+        # `status:closed` への遷移はclose_watcher.pyの既存ポーリングに委ねる。
+        pr_number = resolve_pr_number(repo, issue_number)
+        if pr_number is None:
+            raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
+        merge_pr(repo, pr_number)
+        return InstructResult(action="approve", comment="", label=None, dispatched=False)
+
     if action == "approve":
         comment = message or APPROVE_DEFAULT_MESSAGE
     elif action == "instruct":

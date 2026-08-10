@@ -4,15 +4,13 @@ import { useState } from "react";
 import { postInstruct } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
-import styles from "./DecisionCard.module.css";
+import styles from "./ReviewCard.module.css";
 
 function latestComment(issue: IssueSummary): IssueComment | undefined {
   return issue.comments[issue.comments.length - 1];
 }
 
 function commentSummary(comment: IssueComment): string {
-  // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
-  // 付与されている（orchestrator/orchestrator/github_client.py参照）。表示上は不要なので取り除く。
   const withoutMarkers = comment.body.replace(/<!--[\s\S]*?-->/g, "");
   return withoutMarkers.replace(/\s+/g, " ").trim();
 }
@@ -52,13 +50,53 @@ function ReplyIcon() {
   );
 }
 
-export default function DecisionCard({
-  decision,
+function PrIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="18" r="3" />
+      <path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-3" />
+      <path d="M12 3 9 6l3 3" />
+    </svg>
+  );
+}
+
+function WarningIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={styles.warningIcon}
+    >
+      <path d="M12 9v4M12 17h.01" />
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+    </svg>
+  );
+}
+
+export default function ReviewCard({
+  review,
   onApproved,
   onReply,
   onToast,
 }: {
-  decision: IssueSummary;
+  review: IssueSummary;
   onApproved: () => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
@@ -67,12 +105,15 @@ export default function DecisionCard({
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const last = latestComment(decision);
+  const last = latestComment(review);
   const summary = last ? commentSummary(last) : null;
   const titleUrl =
-    last?.url ??
-    `https://github.com/${decision.repo}/issues/${decision.number}`;
-  const repoName = decision.repo.split("/")[1];
+    last?.url ?? `https://github.com/${review.repo}/issues/${review.number}`;
+  const prUrl =
+    review.pr_number != null
+      ? `https://github.com/${review.repo}/pull/${review.pr_number}`
+      : null;
+  const repoName = review.repo.split("/")[1];
 
   function openConfirm() {
     setError(null);
@@ -87,10 +128,10 @@ export default function DecisionCard({
   function handleConfirmApprove() {
     setApproving(true);
     setError(null);
-    postInstruct(decision.repo, decision.number, "approve")
+    postInstruct(review.repo, review.number, "approve")
       .then(() => {
         setConfirmOpen(false);
-        onToast(`${repoName} #${decision.number} を承認しました。`);
+        onToast(`${repoName} #${review.number} をマージ & クローズしました。`);
         onApproved();
       })
       .catch((e) =>
@@ -104,34 +145,47 @@ export default function DecisionCard({
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
           <span className={styles.repoName}>{repoName}</span>
-          <span className={styles.repoNum}>#{decision.number}</span>
+          <span className={styles.repoNum}>#{review.number}</span>
         </div>
         <span className={styles.time}>
-          {formatRelativeTime(decision.updated_at)}
+          {formatRelativeTime(review.updated_at)}
         </span>
       </div>
-      <a
-        href={titleUrl}
-        target="_blank"
-        rel="noreferrer"
-        className={styles.title}
-      >
-        <span>{decision.title}</span>
-        <svg
-          className={styles.titleIcon}
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      <div className={styles.titleRow}>
+        <a
+          href={titleUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={styles.title}
         >
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          <path d="M15 3h6v6M10 14 21 3" />
-        </svg>
-      </a>
+          <span>{review.title}</span>
+          <svg
+            className={styles.titleIcon}
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <path d="M15 3h6v6M10 14 21 3" />
+          </svg>
+        </a>
+        {prUrl && (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={styles.prLink}
+          >
+            <PrIcon />
+            PR #{review.pr_number}
+          </a>
+        )}
+      </div>
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
@@ -153,9 +207,7 @@ export default function DecisionCard({
         <button
           type="button"
           className={`${styles.btn} ${styles.btnReply}`}
-          onClick={() =>
-            onReply(decision.repo, decision.number, decision.title)
-          }
+          onClick={() => onReply(review.repo, review.number, review.title)}
         >
           <ReplyIcon />
           返信
@@ -168,7 +220,7 @@ export default function DecisionCard({
             className={styles.confirmDialog}
             role="alertdialog"
             aria-modal="true"
-            aria-labelledby={`confirm-approve-${decision.repo}-${decision.number}`}
+            aria-labelledby={`confirm-review-${review.repo}-${review.number}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div className={styles.confirmHeadingRow}>
@@ -176,18 +228,26 @@ export default function DecisionCard({
                 <CheckIcon size={18} />
               </span>
               <span
-                id={`confirm-approve-${decision.repo}-${decision.number}`}
+                id={`confirm-review-${review.repo}-${review.number}`}
                 className={styles.confirmMessage}
               >
-                この提案を承認しますか？
+                このレビューを承認しますか？
               </span>
             </div>
             <p className={styles.confirmDetail}>
               <span className={styles.confirmDetailNumber}>
-                {repoName} #{decision.number}
+                {repoName} #{review.number}
               </span>{" "}
-              — {decision.title}
+              — {review.title}
             </p>
+            <div className={styles.warningBanner}>
+              <WarningIcon />
+              <div className={styles.warningText}>
+                承認すると、
+                <strong>対象PRのマージと該当issueのクローズ</strong>
+                まで自動で実行されます。この操作は元に戻せません。
+              </div>
+            </div>
             {error && <span className={styles.confirmError}>{error}</span>}
             <div className={styles.confirmActions}>
               <button
@@ -205,7 +265,7 @@ export default function DecisionCard({
                 disabled={approving}
               >
                 <CheckIcon />
-                {approving ? "承認中…" : "承認する"}
+                {approving ? "マージ中…" : "マージして承認"}
               </button>
             </div>
           </div>

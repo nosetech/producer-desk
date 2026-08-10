@@ -6,10 +6,12 @@ export default function DecisionsList({
   decisions,
   onApproved,
   onReply,
+  onToast,
 }: {
   decisions: IssueSummary[];
   onApproved: () => void;
   onReply: (repo: string, issueNumber: number, title: string) => void;
+  onToast: (text: string) => void;
 }) {
   return (
     <div className={styles.panel}>
@@ -30,6 +32,7 @@ export default function DecisionsList({
               decision={decision}
               onApproved={onApproved}
               onReply={onReply}
+              onToast={onToast}
             />
           ))}
         </div>

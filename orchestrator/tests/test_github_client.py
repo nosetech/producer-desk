@@ -6,7 +6,13 @@ import json
 import subprocess
 
 from orchestrator.aggregation import IssueSummary
-from orchestrator.github_client import BOT_COMMENT_MARKER, list_issues, post_comment
+from orchestrator.github_client import (
+    BOT_COMMENT_MARKER,
+    list_issues,
+    merge_pr,
+    post_comment,
+    resolve_pr_number,
+)
 
 
 def _fake_run(stdout_issues: list[dict]) -> object:
@@ -16,6 +22,19 @@ def _fake_run(stdout_issues: list[dict]) -> object:
         calls.append(cmd)
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout=json.dumps(stdout_issues), stderr=""
+        )
+
+    run.calls = calls  # type: ignore[attr-defined]
+    return run
+
+
+def _fake_run_raw(stdout: object) -> object:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps(stdout), stderr=""
         )
 
     run.calls = calls  # type: ignore[attr-defined]
@@ -107,3 +126,64 @@ def test_post_comment_appends_bot_marker() -> None:
     posted_body = cmd[4].removeprefix("body=")
     assert posted_body.startswith("Agent Runner実行結果:\n完了しました")
     assert BOT_COMMENT_MARKER in posted_body
+
+
+def test_resolve_pr_number_finds_cross_referenced_pull_request() -> None:
+    fake_run = _fake_run_raw(
+        [
+            {"event": "labeled"},
+            {
+                "event": "cross-referenced",
+                "source": {"issue": {"number": 33, "pull_request": {"url": "..."}}},
+            },
+        ]
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) == 33
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == ["gh", "api", "repos/nosetech/project-a/issues/30/timeline"]
+
+
+def test_resolve_pr_number_ignores_cross_referenced_issues_without_pull_request() -> None:
+    fake_run = _fake_run_raw(
+        [
+            {
+                "event": "cross-referenced",
+                "source": {"issue": {"number": 40, "pull_request": None}},
+            },
+        ]
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) is None
+
+
+def test_resolve_pr_number_returns_latest_when_multiple_linked() -> None:
+    fake_run = _fake_run_raw(
+        [
+            {
+                "event": "cross-referenced",
+                "source": {"issue": {"number": 33, "pull_request": {"url": "..."}}},
+            },
+            {
+                "event": "cross-referenced",
+                "source": {"issue": {"number": 40, "pull_request": {"url": "..."}}},
+            },
+        ]
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) == 40
+
+
+def test_resolve_pr_number_returns_none_when_no_events() -> None:
+    fake_run = _fake_run_raw([])
+
+    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) is None
+
+
+def test_merge_pr_calls_gh_pr_merge_squash() -> None:
+    fake_run = _fake_run_raw({})
+
+    merge_pr("nosetech/project-a", 33, run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == ["gh", "pr", "merge", "--squash", "--repo", "nosetech/project-a", "33"]
