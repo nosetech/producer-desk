@@ -18,6 +18,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.usage_store import UsageRecord
 
 FIXED_NOW = lambda: datetime(2026, 8, 4, 1, 2, 3, tzinfo=UTC)  # noqa: E731
 FIXED_UUID = lambda: "11111111-1111-1111-1111-111111111111"  # noqa: E731
@@ -73,6 +74,14 @@ class FakeGetSessionId:
 
     def __call__(self, repo: str, issue_number: int) -> str | None:
         return self.sessions.get((repo, issue_number))
+
+
+class FakeRecordUsage:
+    def __init__(self) -> None:
+        self.calls: list[list[UsageRecord]] = []
+
+    def __call__(self, records: list[UsageRecord], **kwargs: object) -> None:
+        self.calls.append(list(records))
 
 
 def test_build_claude_command_new_session_uses_session_id_flag() -> None:
@@ -410,3 +419,131 @@ def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path:
     assert "issue: #7" in content
     assert '{"result": "ok"}' in content
     assert "warn: something" in content
+
+
+def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
+    tmp_path: Path,
+) -> None:
+    """issue #60: `modelUsage`を破棄せず、モデル別の利用量として記録することを確認する。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    stdout = (
+        '{"result": "実装しました", "is_error": false, "total_cost_usd": 0.12, '
+        '"modelUsage": {"claude-sonnet-5": {"inputTokens": 100, "outputTokens": 50, '
+        '"cacheCreationInputTokens": 5, "cacheReadInputTokens": 2, "costUSD": 0.12}}}'
+    )
+    run = FakeRun(stdout=stdout, returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    record_usage_fn = FakeRecordUsage()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        record_usage_fn=record_usage_fn,
+        now=FIXED_NOW,
+    )
+
+    assert len(record_usage_fn.calls) == 1
+    [records] = record_usage_fn.calls
+    assert records == [
+        UsageRecord(
+            repo="nosetech/project-a",
+            issue_number=1,
+            model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=50,
+            cache_creation_input_tokens=5,
+            cache_read_input_tokens=2,
+            total_cost_usd=0.12,
+            is_error=False,
+            api_error_status=None,
+            error_message=None,
+            limit_reset_text=None,
+        )
+    ]
+
+
+def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path: Path) -> None:
+    """issue #60: 429到達時、`result`の自由文から解除予定時刻をパースして記録することを確認する。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    stdout = (
+        '{"is_error": true, "api_error_status": 429, '
+        '"result": "You\'ve hit your session limit · resets 1pm (Asia/Tokyo)"}'
+    )
+    run = FakeRun(stdout=stdout, returncode=1)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    record_usage_fn = FakeRecordUsage()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        record_usage_fn=record_usage_fn,
+        now=FIXED_NOW,
+    )
+
+    assert len(record_usage_fn.calls) == 1
+    [records] = record_usage_fn.calls
+    assert records == [
+        UsageRecord(
+            repo="nosetech/project-a",
+            issue_number=1,
+            model="unknown",
+            input_tokens=0,
+            output_tokens=0,
+            is_error=True,
+            api_error_status=429,
+            error_message="You've hit your session limit · resets 1pm (Asia/Tokyo)",
+            limit_reset_text="resets 1pm (Asia/Tokyo)",
+        )
+    ]
+
+
+def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    run = FakeRun(stdout="not json", returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    record_usage_fn = FakeRecordUsage()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        record_usage_fn=record_usage_fn,
+        now=FIXED_NOW,
+    )
+
+    assert record_usage_fn.calls == []

@@ -29,6 +29,14 @@ from orchestrator.labels import (
     transition_label,
 )
 from orchestrator.session_store import get_session_id, persist_session_id
+from orchestrator.usage_store import (
+    RecordUsageFn,
+    UsageRecord,
+    parse_limit_reset_text,
+)
+from orchestrator.usage_store import (
+    record_usage as store_record_usage,
+)
 
 DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 
@@ -171,13 +179,96 @@ def _write_log(
     return log_path
 
 
-def _extract_summary(stdout: str) -> str | None:
+def _parse_json_payload(stdout: str) -> dict | None:
     try:
         payload = json.loads(stdout)
     except (json.JSONDecodeError, TypeError):
         return None
-    result = payload.get("result") if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_summary(payload: dict | None) -> str | None:
+    result = payload.get("result") if payload else None
     return result if isinstance(result, str) else None
+
+
+# issue #60: `_extract_summary`は`result`フィールドしか使わず、`total_cost_usd`/
+# `usage.*`/`modelUsage.*`を破棄していたため、利用量モニターに実データを
+# 表示できなかった。ここでモデル別の利用量レコードに変換し、usage_store経由で
+# 永続化する（正確な利用率%はこの経路では取得できないため、日単位の使用量記録に
+# 転換する方針。docs/basic-design.md 2-2参照）。
+def _extract_usage_records(
+    payload: dict | None, *, repo: str, issue_number: int
+) -> list[UsageRecord]:
+    if payload is None:
+        return []
+
+    is_error = bool(payload.get("is_error"))
+    api_error_status = payload.get("api_error_status")
+    result_text = payload.get("result")
+    result_text = result_text if isinstance(result_text, str) else None
+
+    error_message = result_text if is_error else None
+    limit_reset_text = None
+    if is_error and api_error_status == 429 and result_text:
+        limit_reset_text = parse_limit_reset_text(result_text) or result_text
+
+    common_error_fields = {
+        "is_error": is_error,
+        "api_error_status": api_error_status,
+        "error_message": error_message,
+        "limit_reset_text": limit_reset_text,
+    }
+
+    model_usage = payload.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        return [
+            UsageRecord(
+                repo=repo,
+                issue_number=issue_number,
+                model=model_name,
+                input_tokens=int(stats.get("inputTokens", 0) or 0),
+                output_tokens=int(stats.get("outputTokens", 0) or 0),
+                cache_creation_input_tokens=int(stats.get("cacheCreationInputTokens", 0) or 0),
+                cache_read_input_tokens=int(stats.get("cacheReadInputTokens", 0) or 0),
+                total_cost_usd=stats.get("costUSD"),
+                **common_error_fields,
+            )
+            for model_name, stats in model_usage.items()
+            if isinstance(stats, dict)
+        ]
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        model = payload.get("model")
+        return [
+            UsageRecord(
+                repo=repo,
+                issue_number=issue_number,
+                model=model if isinstance(model, str) else "unknown",
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
+                cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+                total_cost_usd=payload.get("total_cost_usd"),
+                **common_error_fields,
+            )
+        ]
+
+    if is_error:
+        # リミット到達等でusage自体が空でも、リミット到達の事実は記録する。
+        return [
+            UsageRecord(
+                repo=repo,
+                issue_number=issue_number,
+                model="unknown",
+                input_tokens=0,
+                output_tokens=0,
+                **common_error_fields,
+            )
+        ]
+
+    return []
 
 
 def run_agent_runner(
@@ -193,6 +284,7 @@ def run_agent_runner(
     logs_dir: Path = DEFAULT_LOGS_DIR,
     get_session_id_fn: GetSessionIdFn = get_session_id,
     persist_session_id_fn: PersistSessionIdFn = persist_session_id,
+    record_usage_fn: RecordUsageFn = store_record_usage,
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
 ) -> AgentRunResult:
@@ -258,10 +350,14 @@ def run_agent_runner(
         persist_session_id_fn(project.repo, issue_number, session_id)
 
     success = result.returncode == 0
+    payload = _parse_json_payload(result.stdout)
+    usage_records = _extract_usage_records(payload, repo=project.repo, issue_number=issue_number)
+    if usage_records:
+        record_usage_fn(usage_records, now=now)
 
     if success:
         summary = (
-            _extract_summary(result.stdout)
+            _extract_summary(payload)
             or "(実行結果の要約を取得できませんでした。ログを参照してください。)"
         )
         post_comment(project.repo, issue_number, f"Agent Runner実行結果:\n{summary}")
