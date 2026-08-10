@@ -13,7 +13,17 @@ const PALETTE = [
   "--accent-amber",
 ] as const;
 
-function totalTokens(e: DailyUsage): number {
+export type ChartMetric = "total" | "in" | "out";
+
+export const METRIC_LABEL: Record<ChartMetric, string> = {
+  total: "入力+出力",
+  in: "入力",
+  out: "出力",
+};
+
+function metricValue(e: DailyUsage, metric: ChartMetric): number {
+  if (metric === "in") return e.input_tokens;
+  if (metric === "out") return e.output_tokens;
   return e.input_tokens + e.output_tokens;
 }
 
@@ -23,13 +33,22 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** チャートY軸の目盛りラベル用（Mへの丸めは行わない。デザインのfmtKに対応）。 */
+export function formatK(n: number): string {
+  return n >= 1e3 ? Math.round(n / 1e3) + "K" : String(n);
+}
+
 export function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 export function shortDate(date: string): string {
   const [, month, day] = date.split("-");
-  return `${Number(month)}/${Number(day)}`;
+  return `${pad2(Number(month))}/${pad2(Number(day))}`;
 }
 
 export function shortModelName(model: string): string {
@@ -62,40 +81,58 @@ export interface ChartSeries {
   dots: ChartPoint[];
 }
 
-export interface ChartGeometry {
-  series: ChartSeries[];
-  gridLines: number[];
-  labels: { x: number; label: string }[];
+export interface ChartTick {
+  y: number;
+  textY: number;
+  label: string;
 }
 
-const CHART_X0 = 10;
-const CHART_X1 = 310;
+export interface ChartGeometry {
+  series: ChartSeries[];
+  yTicks: ChartTick[];
+  xLabels: { x: number; label: string }[];
+}
+
+const CHART_X0 = 40;
+const CHART_X1 = 312;
 const CHART_Y0 = 12;
-const CHART_Y1 = 100;
+const CHART_Y1 = 98;
+
+/** グラフの最大値を切りのいい値（1/2/5/10のべき乗）に丸める。デザインのniceStep/niceMaxに対応。 */
+function niceScale(rawMax: number): { step: number; max: number } {
+  const rough = rawMax / 3;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const n = rough / pow;
+  const step = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow;
+  const max = Math.max(step, Math.ceil(rawMax / step) * step);
+  return { step, max };
+}
 
 export function buildChartGeometry(
   daily: DailyUsage[],
   colors: ModelColorMap,
+  metric: ChartMetric,
 ): ChartGeometry {
   const models = [...new Set(daily.map((e) => e.model))].sort();
   const dates = [...new Set(daily.map((e) => e.date))].sort();
   const byDateModel: Record<string, Record<string, number>> = {};
   daily.forEach((e) => {
-    (byDateModel[e.date] ??= {})[e.model] = totalTokens(e);
+    (byDateModel[e.date] ??= {})[e.model] = metricValue(e, metric);
   });
-  const maxTotal = Math.max(
+  const rawMax = Math.max(
     1,
     ...dates.map((date) =>
       Math.max(...models.map((model) => byDateModel[date]?.[model] ?? 0)),
     ),
   );
+  const { step: niceStep, max: niceMax } = niceScale(rawMax);
 
   const xAt = (i: number) =>
     dates.length > 1
       ? CHART_X0 + (i * (CHART_X1 - CHART_X0)) / (dates.length - 1)
       : (CHART_X0 + CHART_X1) / 2;
   const yAt = (value: number) =>
-    CHART_Y1 - (value / maxTotal) * (CHART_Y1 - CHART_Y0);
+    CHART_Y1 - (value / niceMax) * (CHART_Y1 - CHART_Y0);
 
   const series: ChartSeries[] = models.map((model) => {
     const points = dates.map((date, i) => ({
@@ -111,10 +148,16 @@ export function buildChartGeometry(
     };
   });
 
+  const yTicks: ChartTick[] = [];
+  for (let v = 0; v <= niceMax + 1; v += niceStep) {
+    const y = Number(yAt(v).toFixed(1));
+    yTicks.push({ y, textY: Number((y + 3).toFixed(1)), label: formatK(v) });
+  }
+
   return {
     series,
-    gridLines: [CHART_Y0, (CHART_Y0 + CHART_Y1) / 2, CHART_Y1],
-    labels: dates.map((date, i) => ({
+    yTicks,
+    xLabels: dates.map((date, i) => ({
       x: Number(xAt(i).toFixed(1)),
       label: shortDate(date),
     })),
@@ -123,9 +166,16 @@ export function buildChartGeometry(
 
 export interface TodayUsage {
   dateText: string;
+  inText: string;
+  outText: string;
   totalText: string;
   costText: string;
-  models: { model: string; colorVar: string; tokensText: string }[];
+  models: {
+    model: string;
+    colorVar: string;
+    inText: string;
+    outText: string;
+  }[];
 }
 
 export function buildTodayUsage(
@@ -134,19 +184,25 @@ export function buildTodayUsage(
   colors: ModelColorMap,
 ): TodayUsage {
   const entries = daily.filter((e) => e.date === today);
+  const totalIn = entries.reduce((sum, e) => sum + e.input_tokens, 0);
+  const totalOut = entries.reduce((sum, e) => sum + e.output_tokens, 0);
   return {
     dateText: today ? shortDate(today) : "-",
-    totalText: formatTokens(
-      entries.reduce((sum, e) => sum + totalTokens(e), 0),
-    ),
+    inText: formatTokens(totalIn),
+    outText: formatTokens(totalOut),
+    totalText: formatTokens(totalIn + totalOut),
     costText: formatCost(entries.reduce((sum, e) => sum + e.total_cost_usd, 0)),
     models: entries
       .slice()
-      .sort((a, b) => totalTokens(b) - totalTokens(a))
+      .sort(
+        (a, b) =>
+          b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens),
+      )
       .map((e) => ({
         model: e.model,
         colorVar: colors[e.model],
-        tokensText: formatTokens(totalTokens(e)),
+        inText: formatTokens(e.input_tokens),
+        outText: formatTokens(e.output_tokens),
       })),
   };
 }
@@ -162,11 +218,12 @@ export interface ModelBreakdown {
 export function buildModelBreakdown(
   daily: DailyUsage[],
   colors: ModelColorMap,
+  metric: ChartMetric,
 ): ModelBreakdown[] {
   const agg: Record<string, { tokens: number; cost: number }> = {};
   daily.forEach((e) => {
     const a = (agg[e.model] ??= { tokens: 0, cost: 0 });
-    a.tokens += totalTokens(e);
+    a.tokens += metricValue(e, metric);
     a.cost += e.total_cost_usd;
   });
   const models = Object.keys(agg);

@@ -3,21 +3,25 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchUsage } from "@/lib/api";
 import {
+  METRIC_LABEL,
   assignModelColors,
   buildChartGeometry,
   buildLimitWarning,
   buildModelBreakdown,
   buildTodayUsage,
+  type ChartMetric,
 } from "@/lib/usage";
 import type { UsageResponse } from "@/lib/types";
 import styles from "./UsageMonitor.module.css";
 
 const POLL_INTERVAL_MS = 30_000;
 const EMPTY_USAGE: UsageResponse = { daily: [], currentLimit: null };
+const CHART_METRICS: ChartMetric[] = ["total", "in", "out"];
 
 export default function UsageMonitor() {
   const [usage, setUsage] = useState<UsageResponse>(EMPTY_USAGE);
   const [error, setError] = useState<string | null>(null);
+  const [metric, setMetric] = useState<ChartMetric>("total");
 
   const refresh = useCallback(() => {
     fetchUsage()
@@ -40,8 +44,8 @@ export default function UsageMonitor() {
   const colors = assignModelColors(daily);
   const today = daily.length > 0 ? daily[daily.length - 1].date : "";
   const todayUsage = buildTodayUsage(daily, today, colors);
-  const chart = buildChartGeometry(daily, colors);
-  const modelBreakdown = buildModelBreakdown(daily, colors);
+  const chart = buildChartGeometry(daily, colors, metric);
+  const modelBreakdown = buildModelBreakdown(daily, colors, metric);
   const warn = buildLimitWarning(currentLimit);
 
   return (
@@ -92,19 +96,43 @@ export default function UsageMonitor() {
           </span>
           <span className={styles.todayCost}>{todayUsage.costText}</span>
         </div>
-        <div className={styles.todayTotalRow}>
-          <span className={styles.todayTotal}>{todayUsage.totalText}</span>
-          <span className={styles.todayUnit}>tokens</span>
+        <div className={styles.todayMetrics}>
+          <div>
+            <div className={styles.todayMetricLabel}>入力</div>
+            <div className={styles.todayMetricValueRow}>
+              <span className={styles.todayMetricNumber}>
+                {todayUsage.inText}
+              </span>
+              <span className={styles.todayMetricUnit}>tok</span>
+            </div>
+          </div>
+          <div>
+            <div className={styles.todayMetricLabel}>出力</div>
+            <div className={styles.todayMetricValueRow}>
+              <span className={styles.todayMetricNumber}>
+                {todayUsage.outText}
+              </span>
+              <span className={styles.todayMetricUnit}>tok</span>
+            </div>
+          </div>
+          <div className={styles.todayTotalBlock}>
+            <div className={styles.todayMetricLabel}>合計</div>
+            <div className={styles.todayTotalValue}>{todayUsage.totalText}</div>
+          </div>
         </div>
         <div className={styles.todayModels}>
           {todayUsage.models.map((m) => (
             <span key={m.model} className={styles.todayModelChip}>
-              <span
-                className={styles.dot}
-                style={{ backgroundColor: `var(${m.colorVar})` }}
-              />
-              <span className={styles.todayModelName}>{m.model}</span>
-              <span className={styles.todayModelTokens}>{m.tokensText}</span>
+              <span className={styles.todayModelChipHeader}>
+                <span
+                  className={styles.dot}
+                  style={{ backgroundColor: `var(${m.colorVar})` }}
+                />
+                <span className={styles.todayModelName}>{m.model}</span>
+              </span>
+              <span className={styles.todayModelIO}>
+                入力 {m.inText} · 出力 {m.outText}
+              </span>
             </span>
           ))}
         </div>
@@ -113,34 +141,62 @@ export default function UsageMonitor() {
       <div className={styles.chartSection}>
         <div className={styles.chartHeader}>
           <span className={styles.chartLabel}>過去7日間の日次トークン</span>
-          <div className={styles.chartLegend}>
-            {chart.series.map((s) => (
-              <span key={s.model} className={styles.legendItem}>
-                <span
-                  className={styles.legendSwatch}
-                  style={{ backgroundColor: `var(${s.colorVar})` }}
-                />
-                <span className={styles.legendName}>{s.shortName}</span>
-              </span>
+          <div className={styles.metricToggle}>
+            {CHART_METRICS.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMetric(m)}
+                className={
+                  metric === m
+                    ? styles.metricToggleBtnActive
+                    : styles.metricToggleBtn
+                }
+              >
+                {METRIC_LABEL[m]}
+              </button>
             ))}
           </div>
         </div>
+        <div className={styles.chartLegend}>
+          {chart.series.map((s) => (
+            <span key={s.model} className={styles.legendItem}>
+              <span
+                className={styles.legendSwatch}
+                style={{ backgroundColor: `var(${s.colorVar})` }}
+              />
+              <span className={styles.legendName}>{s.shortName}</span>
+            </span>
+          ))}
+        </div>
         <svg
-          viewBox="0 0 320 118"
+          viewBox="0 0 320 122"
           width="100%"
           className={styles.chartSvg}
           role="img"
           aria-label="過去7日間の日次トークン推移"
         >
-          {chart.gridLines.map((y) => (
+          {chart.yTicks.map((tick) => (
             <line
-              key={y}
-              x1={10}
-              y1={y}
-              x2={310}
-              y2={y}
+              key={tick.y}
+              x1={40}
+              y1={tick.y}
+              x2={312}
+              y2={tick.y}
               className={styles.chartGrid}
             />
+          ))}
+          {chart.yTicks.map((tick) => (
+            <text
+              key={`y-${tick.y}`}
+              x={35}
+              y={tick.textY}
+              textAnchor="end"
+              fontSize={8}
+              className={styles.chartAxisLabel}
+            >
+              {tick.label}
+            </text>
           ))}
           {chart.series.map((s) => (
             <polyline
@@ -164,11 +220,11 @@ export default function UsageMonitor() {
               />
             )),
           )}
-          {chart.labels.map((xl) => (
+          {chart.xLabels.map((xl) => (
             <text
               key={xl.x}
               x={xl.x}
-              y={115}
+              y={114}
               textAnchor="middle"
               fontSize={8}
               className={styles.chartAxisLabel}
@@ -180,7 +236,9 @@ export default function UsageMonitor() {
       </div>
 
       <div>
-        <div className={styles.breakdownLabel}>モデル別内訳 · 7日間累計</div>
+        <div className={styles.breakdownLabel}>
+          モデル別内訳 · 7日間累計（{METRIC_LABEL[metric]}）
+        </div>
         <div className={styles.breakdownList}>
           {modelBreakdown.map((m) => (
             <div key={m.model}>
