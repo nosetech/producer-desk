@@ -8,6 +8,7 @@ import subprocess
 from orchestrator.aggregation import IssueSummary
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
+    close_issue,
     list_issues,
     merge_pr,
     post_comment,
@@ -187,3 +188,12 @@ def test_merge_pr_calls_gh_pr_merge_squash() -> None:
 
     [cmd] = fake_run.calls  # type: ignore[attr-defined]
     assert cmd == ["gh", "pr", "merge", "--squash", "--repo", "nosetech/project-a", "33"]
+
+
+def test_close_issue_calls_gh_issue_close() -> None:
+    fake_run = _fake_run_raw({})
+
+    close_issue("nosetech/project-a", 58, run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == ["gh", "issue", "close", "--repo", "nosetech/project-a", "58"]

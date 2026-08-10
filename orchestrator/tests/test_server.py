@@ -48,12 +48,16 @@ class FakeReviewMerge:
     def __init__(self, pr_number: int | None) -> None:
         self.pr_number = pr_number
         self.merge_calls: list[tuple[str, int]] = []
+        self.close_calls: list[tuple[str, int]] = []
 
     def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
         return self.pr_number
 
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
+
+    def close_issue(self, repo: str, issue_number: int) -> None:
+        self.close_calls.append((repo, issue_number))
 
 
 class FakeIssueCreator:
@@ -341,6 +345,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         post_comment=comments.post_comment,
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
     )
     try:
         status, body = _post(
@@ -350,6 +355,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         assert status == 200
         assert body["dispatched"] is False
         assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+        assert review_merge.close_calls == [("nosetech/project-a", 1)]
         assert comments.posted == []
         assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
         assert calls == []
@@ -373,6 +379,7 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         post_comment=comments.post_comment,
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
     )
     try:
         status, body = _post(
@@ -382,6 +389,7 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         assert status == 502
         assert "error" in body
         assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
     finally:
         server.shutdown()
 

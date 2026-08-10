@@ -223,6 +223,7 @@ class FakeReviewMerge:
         self.pr_number = pr_number
         self.resolve_calls: list[tuple[str, int]] = []
         self.merge_calls: list[tuple[str, int]] = []
+        self.close_calls: list[tuple[str, int]] = []
 
     def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
         self.resolve_calls.append((repo, issue_number))
@@ -231,8 +232,16 @@ class FakeReviewMerge:
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
 
+    def close_issue(self, repo: str, issue_number: int) -> None:
+        self.close_calls.append((repo, issue_number))
 
-def test_handle_instruct_approve_on_in_review_merges_pr_without_comment_or_dispatch() -> None:
+
+def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> None:
+    """`Closes #`によるGitHubの自動クローズはデフォルトブランチへのマージ時にしか発動せず、
+
+    本プロジェクトのワークフロー（`develop`へマージ）では発動しないため、マージ成功後は
+    明示的にissueをクローズする必要がある（issue #58で自動クローズされない不具合が確認された）。
+    """
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     dispatch_queue, calls = _synchronous_dispatch_queue()
@@ -250,6 +259,7 @@ def test_handle_instruct_approve_on_in_review_merges_pr_without_comment_or_dispa
         dispatch_queue=dispatch_queue,
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
     )
 
     assert result.action == "approve"
@@ -257,6 +267,7 @@ def test_handle_instruct_approve_on_in_review_merges_pr_without_comment_or_dispa
     assert result.label is None
     assert review_merge.resolve_calls == [("nosetech/project-a", 30)]
     assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+    assert review_merge.close_calls == [("nosetech/project-a", 30)]
     assert comments.posted == []
     assert labels.labels == {STATUS_IN_REVIEW}
     assert calls == []
@@ -281,9 +292,11 @@ def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None
             dispatch_queue=dispatch_queue,
             resolve_pr_number=review_merge.resolve_pr_number,
             merge_pr=review_merge.merge_pr,
+            close_issue=review_merge.close_issue,
         )
 
     assert review_merge.merge_calls == []
+    assert review_merge.close_calls == []
     assert comments.posted == []
 
 

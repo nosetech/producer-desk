@@ -19,7 +19,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from orchestrator.aggregation import AggregatedState
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.github_client import CreateIssueFn, MergePrFn, PostCommentFn, ResolvePrNumberFn
+from orchestrator.github_client import (
+    CloseIssueFn,
+    CreateIssueFn,
+    MergePrFn,
+    PostCommentFn,
+    ResolvePrNumberFn,
+)
+from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import create_issue as gh_create_issue
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
@@ -79,6 +86,7 @@ def _make_handler(
     current_limit_status: CurrentLimitStatusFn,
     resolve_pr_number: ResolvePrNumberFn,
     merge_pr: MergePrFn,
+    close_issue: CloseIssueFn,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -163,6 +171,7 @@ def _make_handler(
                     dispatch_queue=dispatch_queue,
                     resolve_pr_number=resolve_pr_number,
                     merge_pr=merge_pr,
+                    close_issue=close_issue,
                 )
             except (KeyError, ValueError) as e:
                 self._send_json(400, {"error": str(e)})
@@ -222,6 +231,7 @@ def make_server(
     current_limit_status: CurrentLimitStatusFn = store_current_limit_status,
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     merge_pr: MergePrFn = gh_merge_pr,
+    close_issue: CloseIssueFn = gh_close_issue,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -237,5 +247,6 @@ def make_server(
         current_limit_status=current_limit_status,
         resolve_pr_number=resolve_pr_number,
         merge_pr=merge_pr,
+        close_issue=close_issue,
     )
     return ThreadingHTTPServer((host, port), handler)
