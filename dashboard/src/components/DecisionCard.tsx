@@ -59,7 +59,7 @@ export default function DecisionCard({
   onToast,
 }: {
   decision: IssueSummary;
-  onApproved: () => void;
+  onApproved: () => Promise<void>;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
 }) {
@@ -91,7 +91,7 @@ export default function DecisionCard({
       .then(() => {
         setConfirmOpen(false);
         onToast(`${repoName} #${decision.number} を承認しました。`);
-        onApproved();
+        return onApproved();
       })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "承認に失敗しました"),
@@ -100,7 +100,11 @@ export default function DecisionCard({
   }
 
   return (
-    <div className={styles.card}>
+    <div
+      className={styles.card}
+      aria-busy={approving}
+      style={approving ? { opacity: 0.6, pointerEvents: "none" } : undefined}
+    >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
           <span className={styles.repoName}>{repoName}</span>
@@ -146,6 +150,7 @@ export default function DecisionCard({
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
           onClick={openConfirm}
+          disabled={approving}
         >
           <CheckIcon />
           承認
@@ -156,6 +161,7 @@ export default function DecisionCard({
           onClick={() =>
             onReply(decision.repo, decision.number, decision.title)
           }
+          disabled={approving}
         >
           <ReplyIcon />
           返信
