@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.github_client import CreateIssueFn, MergePrFn, PostCommentFn, ResolvePrNumberFn
+from orchestrator.github_client import (
+    CloseIssueFn,
+    CreateIssueFn,
+    MergePrFn,
+    PostCommentFn,
+    ResolvePrNumberFn,
+)
+from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
@@ -91,15 +98,20 @@ def handle_instruct(
     dispatch_queue: DispatchQueue,
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     merge_pr: MergePrFn = gh_merge_pr,
+    close_issue: CloseIssueFn = gh_close_issue,
 ) -> InstructResult:
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
-        # 紐づくPRのsquash mergeのみを行う（issue #58）。issueのクローズ・
-        # `status:closed` への遷移はclose_watcher.pyの既存ポーリングに委ねる。
+        # 紐づくPRのsquash mergeのみを行う（issue #58）。
+        # PR本文の`Closes #`によるGitHubの自動クローズはデフォルトブランチへのマージ時
+        # にしか発動せず、本プロジェクトのワークフロー（`develop`へマージ）では発動しないため
+        # issueが開いたまま残っていた不具合が確認された。マージ成功後はここで明示的にissueを
+        # クローズする（`status:closed`への遷移はclose_watcher.pyの既存ポーリングに委ねる）。
         pr_number = resolve_pr_number(repo, issue_number)
         if pr_number is None:
             raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
         merge_pr(repo, pr_number)
+        close_issue(repo, issue_number)
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":

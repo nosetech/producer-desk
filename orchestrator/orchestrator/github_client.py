@@ -30,6 +30,7 @@ PostCommentFn = Callable[[str, int, str], None]
 CreateIssueFn = Callable[[str, str, str], int]
 ResolvePrNumberFn = Callable[[str, int], int | None]
 MergePrFn = Callable[[str, int], None]
+CloseIssueFn = Callable[[str, int], None]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -127,6 +128,23 @@ def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:
     """PRをsquash mergeする（`gh pr merge --squash --repo {repo} {pr_number}`）。"""
     run(
         ["gh", "pr", "merge", "--squash", "--repo", repo, str(pr_number)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def close_issue(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> None:
+    """issueを明示的にクローズする（`gh issue close --repo {repo} {issue_number}`）。
+
+    PR本文の`Closes #<issue番号>`によるGitHubの自動クローズは、そのPRが
+    リポジトリの**デフォルトブランチ**にマージされた場合にのみ発動する。本プロジェクトの
+    ワークフローはPRを`develop`（デフォルトブランチは`master`）にマージするため自動クローズが
+    発動せず、issueが開いたまま残る不具合が確認された（issue #58）。そのためレビュー承認時の
+    squash merge成功後は、GitHub側の自動クローズに依存せずここで明示的にクローズする。
+    """
+    run(
+        ["gh", "issue", "close", "--repo", repo, str(issue_number)],
         capture_output=True,
         text=True,
         check=True,
