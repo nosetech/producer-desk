@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import REPO_ROOT, Project
-from orchestrator.github_client import PostCommentFn
+from orchestrator.github_client import BOT_COMMENT_MARKER, PostCommentFn
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
@@ -133,6 +133,25 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
 )
 
 
+# issue #43: Agent Runnerが調査結果報告等の目的で`gh issue comment`等を生で
+# 叩いてissueにコメントを投稿すると、`github_client.post_comment`が自動付与
+# する`BOT_COMMENT_MARKER`が付かない。comment_watcher.py（新規コメント検知）
+# は`BOT_COMMENT_MARKER`が本文に無いコメントを人間からの新規指示とみなすため、
+# マーカー無しの自己投稿を誤って新規指示と検知し、同一内容を無限に再ディス
+# パッチしてしまう（ラベルもneeds-human-decision→status:in-progressに巻き戻る）。
+# AGENT_RUNNER_LABEL_INSTRUCTIONと同様、`--append-system-prompt`で毎回明示的に
+# マーカー付与を指示する。
+AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
+    "issueに調査結果・進捗等を報告するため`gh issue comment`や`gh api "
+    ".../comments`等でissueコメントを直接投稿する場合、本文の末尾に必ず次の"
+    "マーカーを付与してください（本文とマーカーの間は空行で区切る）。\n"
+    f"{BOT_COMMENT_MARKER}\n"
+    "このマーカーが無いと、オーケストレータのコメント監視処理があなた自身の"
+    "投稿を人間からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
+    "まいます（docs/basic-design.md 2-3「共通仕様」参照）。"
+)
+
+
 def build_claude_command(
     message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
 ) -> list[str]:
@@ -142,6 +161,8 @@ def build_claude_command(
     """
     system_prompt = (
         AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
+        + "\n\n"
+        + AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION
         + "\n\n"
         + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
         + "\n\n"

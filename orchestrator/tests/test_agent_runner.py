@@ -12,6 +12,7 @@ from pathlib import Path
 
 from orchestrator.agent_runner import build_claude_command, run_agent_runner
 from orchestrator.config import Project
+from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -143,6 +144,24 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     assert STATUS_NEEDS_HUMAN_DECISION in instruction
     assert STATUS_IN_PROGRESS in instruction
     assert "gh issue edit 12 --repo nosetech/project-a" in instruction
+
+
+def test_build_claude_command_appends_comment_marker_instruction() -> None:
+    """issue #43の再発防止テスト。
+
+    Agent Runnerが`gh issue comment`等でissueに直接コメント投稿する際、
+    `BOT_COMMENT_MARKER`を付与し忘れるとcomment_watcherが自分自身の投稿を
+    人間からの新規指示と誤検知し、無限に再ディスパッチしてしまう。system
+    promptで毎回マーカー付与を明示的に指示することを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert BOT_COMMENT_MARKER in instruction
 
 
 def test_build_claude_command_enables_chrome_integration() -> None:
