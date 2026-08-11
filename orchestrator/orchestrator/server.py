@@ -22,12 +22,16 @@ from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
+    DeleteBranchFn,
+    GetPrBranchFn,
     MergePrFn,
     PostCommentFn,
     ResolvePrNumberFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import create_issue as gh_create_issue
+from orchestrator.github_client import delete_branch as gh_delete_branch
+from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
@@ -87,6 +91,8 @@ def _make_handler(
     resolve_pr_number: ResolvePrNumberFn,
     merge_pr: MergePrFn,
     close_issue: CloseIssueFn,
+    get_pr_branch: GetPrBranchFn,
+    delete_branch: DeleteBranchFn,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -172,6 +178,8 @@ def _make_handler(
                     resolve_pr_number=resolve_pr_number,
                     merge_pr=merge_pr,
                     close_issue=close_issue,
+                    get_pr_branch=get_pr_branch,
+                    delete_branch=delete_branch,
                 )
             except (KeyError, ValueError) as e:
                 self._send_json(400, {"error": str(e)})
@@ -232,6 +240,8 @@ def make_server(
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     merge_pr: MergePrFn = gh_merge_pr,
     close_issue: CloseIssueFn = gh_close_issue,
+    get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
+    delete_branch: DeleteBranchFn = gh_delete_branch,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -248,5 +258,7 @@ def make_server(
         resolve_pr_number=resolve_pr_number,
         merge_pr=merge_pr,
         close_issue=close_issue,
+        get_pr_branch=get_pr_branch,
+        delete_branch=delete_branch,
     )
     return ThreadingHTTPServer((host, port), handler)

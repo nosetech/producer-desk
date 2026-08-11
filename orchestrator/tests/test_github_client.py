@@ -9,6 +9,8 @@ from orchestrator.aggregation import IssueSummary
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     close_issue,
+    delete_branch,
+    get_pr_branch,
     list_issues,
     merge_pr,
     post_comment,
@@ -197,3 +199,28 @@ def test_close_issue_calls_gh_issue_close() -> None:
 
     [cmd] = fake_run.calls  # type: ignore[attr-defined]
     assert cmd == ["gh", "issue", "close", "--repo", "nosetech/project-a", "58"]
+
+
+def test_get_pr_branch_returns_head_ref() -> None:
+    fake_run = _fake_run_raw({"head": {"ref": "feature/issue-72-delete-branch"}})
+
+    result = get_pr_branch("nosetech/project-a", 33, run=fake_run)
+
+    assert result == "feature/issue-72-delete-branch"
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == ["gh", "api", "repos/nosetech/project-a/pulls/33"]
+
+
+def test_delete_branch_calls_gh_api_delete_ref() -> None:
+    fake_run = _fake_run_raw({})
+
+    delete_branch("nosetech/project-a", "feature/issue-72-delete-branch", run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == [
+        "gh",
+        "api",
+        "-X",
+        "DELETE",
+        "repos/nosetech/project-a/git/refs/heads/feature/issue-72-delete-branch",
+    ]

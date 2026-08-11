@@ -6,6 +6,8 @@ gh呼び出し・ディスパッチキューはフェイクに差し替える。
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from orchestrator.dispatch_queue import DispatchQueue
@@ -219,11 +221,23 @@ def test_handle_instruct_reject_action_no_longer_supported() -> None:
 
 
 class FakeReviewMerge:
-    def __init__(self, pr_number: int | None) -> None:
+    def __init__(
+        self,
+        pr_number: int | None,
+        *,
+        branch: str = "feature/issue-30-something",
+        fail_get_pr_branch: bool = False,
+        fail_delete_branch: bool = False,
+    ) -> None:
         self.pr_number = pr_number
+        self.branch = branch
+        self.fail_get_pr_branch = fail_get_pr_branch
+        self.fail_delete_branch = fail_delete_branch
         self.resolve_calls: list[tuple[str, int]] = []
         self.merge_calls: list[tuple[str, int]] = []
         self.close_calls: list[tuple[str, int]] = []
+        self.get_pr_branch_calls: list[tuple[str, int]] = []
+        self.delete_branch_calls: list[tuple[str, str]] = []
 
     def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
         self.resolve_calls.append((repo, issue_number))
@@ -235,6 +249,17 @@ class FakeReviewMerge:
     def close_issue(self, repo: str, issue_number: int) -> None:
         self.close_calls.append((repo, issue_number))
 
+    def get_pr_branch(self, repo: str, pr_number: int) -> str:
+        self.get_pr_branch_calls.append((repo, pr_number))
+        if self.fail_get_pr_branch:
+            raise subprocess.CalledProcessError(1, ["gh", "api"])
+        return self.branch
+
+    def delete_branch(self, repo: str, branch: str) -> None:
+        self.delete_branch_calls.append((repo, branch))
+        if self.fail_delete_branch:
+            raise subprocess.CalledProcessError(1, ["gh", "api"])
+
 
 def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> None:
     """`Closes #`によるGitHubの自動クローズはデフォルトブランチへのマージ時にしか発動せず、
@@ -245,7 +270,7 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     dispatch_queue, calls = _synchronous_dispatch_queue()
-    review_merge = FakeReviewMerge(pr_number=33)
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
 
     result = handle_instruct(
         "nosetech/project-a",
@@ -260,6 +285,8 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
     )
 
     assert result.action == "approve"
@@ -268,9 +295,79 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
     assert review_merge.resolve_calls == [("nosetech/project-a", 30)]
     assert review_merge.merge_calls == [("nosetech/project-a", 33)]
     assert review_merge.close_calls == [("nosetech/project-a", 30)]
+    assert review_merge.get_pr_branch_calls == [("nosetech/project-a", 33)]
+    assert review_merge.delete_branch_calls == [
+        ("nosetech/project-a", "feature/issue-30-something")
+    ]
     assert comments.posted == []
     assert labels.labels == {STATUS_IN_REVIEW}
     assert calls == []
+
+
+def test_handle_instruct_approve_on_in_review_swallows_get_pr_branch_failure() -> None:
+    """ブランチ名解決の失敗は後始末の失敗に過ぎず、承認自体は成功として扱う（issue #72）。"""
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, fail_get_pr_branch=True)
+
+    result = handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+    )
+
+    assert result.action == "approve"
+    assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+    assert review_merge.close_calls == [("nosetech/project-a", 30)]
+    assert review_merge.delete_branch_calls == []
+
+
+def test_handle_instruct_approve_on_in_review_swallows_delete_branch_failure() -> None:
+    """ブランチ削除自体の失敗（保護ブランチ設定・削除済み等）も承認の成功を損なわない（issue #72）。
+
+    `--delete-branch`をマージと同一コマンドに含めた場合、ブランチ削除だけの失敗で
+    `close_issue`が実行されなくなる不具合の再発を避けるため、分離したステップで検証する。
+    """
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, fail_delete_branch=True)
+
+    result = handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+    )
+
+    assert result.action == "approve"
+    assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+    assert review_merge.close_calls == [("nosetech/project-a", 30)]
+    assert review_merge.delete_branch_calls == [
+        ("nosetech/project-a", "feature/issue-30-something")
+    ]
 
 
 def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None:
