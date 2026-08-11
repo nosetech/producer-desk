@@ -114,8 +114,9 @@ Content-Type: application/json
 ```
 
 - `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。
-- `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ラベル遷移・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。
-  - **紐づくPRの解決方法**: `gh api repos/{repo}/issues/{issue_number}/timeline`のタイムラインイベントから`event == "cross-referenced"`かつPRであるものを収集し、**最後（最新）にcross-referenceされた1件だけ**を対象とする（`github_client.resolve_pr_number`）。同一issueに複数のPRが紐づいている場合、承認操作はその最後の1件のみをマージ・クローズ対象とし、**それ以外のPRには一切処理を行わない**（マージもされず、エラーや警告も出ない）。この判定は`Closes #`等のクローズキーワードの有無を見ておらず単なる`#<issue番号>`への言及でもcross-referenceイベントは発生するため、無関係な参照用PRが「最新」として誤って選ばれる可能性がある。ダッシュボードのレビュー待ちカードに表示されるPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）も同じ関数の解決結果を使うため、表示されているPRと実際に承認時にマージされるPRは常に一致する。
+- `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ラベル遷移・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。issueクローズに続けて、マージ済みPRのheadブランチ（`feature/*`）も`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`で削除する（issue #72）。ブランチ削除はマージ・issueクローズ成功後の後始末に過ぎないため、`gh pr merge --squash --delete-branch`のようにマージと同一コマンドには含めず分離したステップとし、削除の失敗（保護ブランチ設定・既に削除済み等）は握りつぶしてログ出力のみに留める（マージ・issueクローズが既に成功している以上、承認レスポンスとしては成功を返す。`--delete-branch`を同一コマンドに含めた場合、ブランチ削除だけの失敗でコマンド全体が非0終了扱いとなり後続の`close_issue`が実行されなくなる、というissue #58と同種の不具合を再発させるリスクがあるため）。
+  - **紐づくPRの解決方法**: `gh api repos/{repo}/issues/{issue_number}/timeline`のタイムラインイベントから`event == "cross-referenced"`かつPRであるものを収集し、**最後（最新）にcross-referenceされた1件だけ**を対象とする（`github_client.resolve_pr_number`）。同一issueに複数のPRが紐づいている場合、承認操作はその最後の1件のみをマージ・クローズ・ブランチ削除対象とし、**それ以外のPRには一切処理を行わない**（マージもされず、エラーや警告も出ない）。この判定は`Closes #`等のクローズキーワードの有無を見ておらず単なる`#<issue番号>`への言及でもcross-referenceイベントは発生するため、無関係な参照用PRが「最新」として誤って選ばれる可能性がある。ダッシュボードのレビュー待ちカードに表示されるPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）も同じ関数の解決結果を使うため、表示されているPRと実際に承認時にマージされるPRは常に一致する。
+  - **削除対象ブランチの制約**: 削除するのはPRのhead（マージされる側の`feature/*`ブランチ）であり、マージ先の`develop`が誤って削除されることはない。ただし同一ブランチから複数のPRが作られている場合（通常のAgent Runner運用では発生しない想定）、削除すると他のPRが壊れる可能性がある点は既知の制約として残る。
 - `instruct`: ダッシュボードのテキストボックスから入力した**自由記述のメッセージ**をコメント投稿する。issueの状態を問わず送信可能（作業中issueへの割り込み指示を含む）。
 - `approve`/`instruct` はいずれも、[1章「自由記述指示によるラベル遷移ルール」](#自由記述指示によるラベル遷移ルール)に従ってラベルを更新した上で、[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを行う（対象プロジェクトが実行中でなければ即時、実行中ならプロジェクト単位のキューに追加し実行完了後に処理）。上記の`status:in-review`での`approve`はこの限りではない。
 - 却下（差し戻し）操作は設けない。判断待ちのissueに対して人間が取れる操作は「承認」と「自由記述での指示」のみとする。方針を変えたい場合も、却下という専用アクションではなく自由記述（`instruct`）でその旨を伝える（issue #55の設計検討で、`reject`は`instruct`と同様コメント投稿する点は同じで、ディスパッチせずAgent Runnerを起こさないだけの違いしかなく、UI上の区別も誤操作の元になるため廃止）。
@@ -256,7 +257,7 @@ Agent Runnerの本番経路（上記のMCP `ollama-client`経由）はメトリ�
 5. [1章「自由記述指示によるラベル遷移ルール」](#自由記述指示によるラベル遷移ルール)に従いラベルを更新し、対象プロジェクトが実行中でなければ[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを即時実行、実行中なら[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)に追加する。
 6. 処理結果をダッシュボードのレスポンスとして返し、UIの判断待ち一覧・活動ログを更新する。
 
-対象issueが`status:in-review`の状態で「承認」した場合はこのフローに乗らず、[2-3「既存issueへの指示」](#既存issueへの指示)記載の通り紐づくPRのsquash merge・issueクローズのみを行う特別処理となる（コメント投稿・ラベル遷移・Agent Runnerディスパッチはいずれも行わない）。
+対象issueが`status:in-review`の状態で「承認」した場合はこのフローに乗らず、[2-3「既存issueへの指示」](#既存issueへの指示)記載の通り紐づくPRのsquash merge・issueクローズ・headブランチ削除のみを行う特別処理となる（コメント投稿・ラベル遷移・Agent Runnerディスパッチはいずれも行わない）。
 
 **新規タスク（新規issue）の作成**
 

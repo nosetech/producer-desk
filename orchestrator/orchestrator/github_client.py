@@ -31,6 +31,8 @@ CreateIssueFn = Callable[[str, str, str], int]
 ResolvePrNumberFn = Callable[[str, int], int | None]
 MergePrFn = Callable[[str, int], None]
 CloseIssueFn = Callable[[str, int], None]
+GetPrBranchFn = Callable[[str, int], str]
+DeleteBranchFn = Callable[[str, str], None]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -128,6 +130,32 @@ def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:
     """PRをsquash mergeする（`gh pr merge --squash --repo {repo} {pr_number}`）。"""
     run(
         ["gh", "pr", "merge", "--squash", "--repo", repo, str(pr_number)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def get_pr_branch(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> str:
+    """PRのheadブランチ名を取得する（`gh api repos/{repo}/pulls/{pr_number}`のhead.ref）。"""
+    result = run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)["head"]["ref"]
+
+
+def delete_branch(repo: str, branch: str, *, run: RunFn = subprocess.run) -> None:
+    """ブランチを削除する（`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`）。
+
+    squash merge済みPRのheadブランチの後始末として、レビュー承認時のマージ・issueクローズ
+    成功後に呼び出される想定（issue #72）。この処理自体の失敗（保護ブランチ設定・既に削除済み
+    等）は呼び出し元（instruct.py）で握りつぶされ、マージ・issueクローズの成功には影響しない。
+    """
+    run(
+        ["gh", "api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}"],
         capture_output=True,
         text=True,
         check=True,

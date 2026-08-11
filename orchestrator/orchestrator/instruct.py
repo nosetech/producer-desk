@@ -6,6 +6,8 @@ HTTPに依存しないビジネスロジックとして実装し、server.pyか�
 
 from __future__ import annotations
 
+import logging
+import subprocess
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,11 +15,15 @@ from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
+    DeleteBranchFn,
+    GetPrBranchFn,
     MergePrFn,
     PostCommentFn,
     ResolvePrNumberFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
+from orchestrator.github_client import delete_branch as gh_delete_branch
+from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
@@ -32,6 +38,8 @@ from orchestrator.labels import (
 )
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
+
+logger = logging.getLogger(__name__)
 
 Action = Literal["approve", "instruct"]
 Dispatch = Literal["immediate", "queued"]
@@ -99,6 +107,8 @@ def handle_instruct(
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     merge_pr: MergePrFn = gh_merge_pr,
     close_issue: CloseIssueFn = gh_close_issue,
+    get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
+    delete_branch: DeleteBranchFn = gh_delete_branch,
 ) -> InstructResult:
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
@@ -112,6 +122,19 @@ def handle_instruct(
             raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
         merge_pr(repo, pr_number)
         close_issue(repo, issue_number)
+        # ブランチ削除はマージ・issueクローズの後始末に過ぎない（issue #72）。
+        # ここで失敗（保護ブランチ設定・既に削除済み等）しても、本質的な処理である
+        # マージ・issueクローズが既に成功している以上、承認自体は成功として扱う
+        # （--delete-branchをマージと同一コマンドに含めた場合、ブランチ削除だけの失敗で
+        # 例外が送出されclose_issueが実行されなくなる不具合の再発を避けるため、
+        # あえて分離したステップにしている）。
+        try:
+            branch = get_pr_branch(repo, pr_number)
+            delete_branch(repo, branch)
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                "%s#%s (PR #%s) のブランチ削除に失敗しました: %s", repo, issue_number, pr_number, e
+            )
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":
