@@ -9,7 +9,7 @@ export default function ReviewsList({
   onToast,
 }: {
   reviews: IssueSummary[];
-  onApproved: () => void;
+  onApproved: () => Promise<void>;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
 }) {

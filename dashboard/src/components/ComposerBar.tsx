@@ -35,7 +35,7 @@ export default function ComposerBar({
   repos: string[];
   newTaskRepo: string;
   onNewTaskRepoChange: (repo: string) => void;
-  onSubmitted: () => void;
+  onSubmitted: () => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
@@ -66,8 +66,8 @@ export default function ComposerBar({
     postInstruct(replyTarget.repo, replyTarget.number, action, message.trim())
       .then(() => {
         onClearReplyTarget();
-        onSubmitted();
         onClose();
+        return onSubmitted();
       })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "送信に失敗しました"),
@@ -81,8 +81,8 @@ export default function ComposerBar({
     setError(null);
     postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch)
       .then(() => {
-        onSubmitted();
         onClose();
+        return onSubmitted();
       })
       .catch((e) =>
         setError(e instanceof Error ? e.message : "作成に失敗しました"),
