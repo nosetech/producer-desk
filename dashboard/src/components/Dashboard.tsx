@@ -54,16 +54,16 @@ export default function Dashboard() {
     };
   }, []);
 
-  const refresh = useCallback(() => {
-    fetchState()
+  const refresh = useCallback((): Promise<void> => {
+    return fetchState()
       .then((data) => {
         setState(data);
         setLastUpdated(new Date());
         setError(null);
       })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "状態の取得に失敗しました"),
-      );
+      .catch((e) => {
+        setError(e instanceof Error ? e.message : "状態の取得に失敗しました");
+      });
   }, []);
 
   useEffect(() => {

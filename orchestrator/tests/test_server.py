@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -45,15 +46,29 @@ class FakeComments:
 
 
 class FakeReviewMerge:
-    def __init__(self, pr_number: int | None) -> None:
+    def __init__(self, pr_number: int | None, *, branch: str = "feature/issue-1-something") -> None:
         self.pr_number = pr_number
+        self.branch = branch
         self.merge_calls: list[tuple[str, int]] = []
+        self.close_calls: list[tuple[str, int]] = []
+        self.get_pr_branch_calls: list[tuple[str, int]] = []
+        self.delete_branch_calls: list[tuple[str, str]] = []
 
     def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
         return self.pr_number
 
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
+
+    def close_issue(self, repo: str, issue_number: int) -> None:
+        self.close_calls.append((repo, issue_number))
+
+    def get_pr_branch(self, repo: str, pr_number: int) -> str:
+        self.get_pr_branch_calls.append((repo, pr_number))
+        return self.branch
+
+    def delete_branch(self, repo: str, branch: str) -> None:
+        self.delete_branch_calls.append((repo, branch))
 
 
 class FakeIssueCreator:
@@ -82,6 +97,9 @@ def _recording_dispatch_queue() -> tuple[
 
 
 def _run_server(store: StateStore, **kwargs) -> tuple:
+    # list_issuesを指定しないテストは、instruct/create_issue成功後の同期state再取得
+    # （issue #70）で実際の`gh`コマンドを叩かないよう、空リストを返すフェイクを既定にする。
+    kwargs.setdefault("list_issues", lambda repo: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -291,6 +309,126 @@ def test_instruct_approve_posts_comment_transitions_label_and_dispatches() -> No
         server.shutdown()
 
 
+def test_instruct_approve_refreshes_store_synchronously() -> None:
+    """instruct成功直後にStateStoreが最新化され、5分間隔の背景ポーリングを待たない（issue #70）。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        return [
+            IssueSummary(
+                repo=repo,
+                number=2,
+                title="次の判断待ち",
+                labels=[STATUS_NEEDS_HUMAN_DECISION],
+                comments=[],
+                updated_at="2026-08-10T00:00:00Z",
+            )
+        ]
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=list_issues,
+    )
+    try:
+        assert store.get() is None
+
+        status, _ = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert event.wait(timeout=2)
+        state = store.get()
+        assert state is not None
+        assert [d.number for d in state.decisions] == [2]
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        # マージ・クローズによりレビュー待ち一覧から消えたことを模す
+        return []
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        list_issues=list_issues,
+    )
+    try:
+        status, _ = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        state = store.get()
+        assert state is not None
+        assert state.reviews == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_returns_200_even_if_store_refresh_fails() -> None:
+    """state再取得の失敗は、既に成功している指示操作のレスポンスを損なわない（issue #70）。
+
+    再取得はログ警告に留め、最新化は次回の背景ポーリング（5分間隔）に委ねる。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+
+    def failing_list_issues(repo: str) -> list[IssueSummary]:
+        raise subprocess.CalledProcessError(1, ["gh", "issue", "list"])
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=failing_list_issues,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert body["label"] == STATUS_IN_PROGRESS
+        assert store.get() is None
+        assert event.wait(timeout=2)
+    finally:
+        server.shutdown()
+
+
 def test_instruct_reject_action_no_longer_supported() -> None:
     """rejectは設計から廃止済み（docs/basic-design.md 2-3、issue #55）。
 
@@ -329,7 +467,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
     store = StateStore()
     labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
     comments = FakeComments()
-    review_merge = FakeReviewMerge(pr_number=33)
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
     dispatch_queue, calls, _ = _recording_dispatch_queue()
     server, _ = _run_server(
         store,
@@ -341,6 +479,9 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         post_comment=comments.post_comment,
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
     )
     try:
         status, body = _post(
@@ -350,6 +491,11 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         assert status == 200
         assert body["dispatched"] is False
         assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+        assert review_merge.close_calls == [("nosetech/project-a", 1)]
+        assert review_merge.get_pr_branch_calls == [("nosetech/project-a", 33)]
+        assert review_merge.delete_branch_calls == [
+            ("nosetech/project-a", "feature/issue-1-something")
+        ]
         assert comments.posted == []
         assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
         assert calls == []
@@ -373,6 +519,7 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         post_comment=comments.post_comment,
         resolve_pr_number=review_merge.resolve_pr_number,
         merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
     )
     try:
         status, body = _post(
@@ -382,6 +529,50 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         assert status == 502
         assert "error" in body
         assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_on_in_review_returns_200_even_if_branch_deletion_fails() -> None:
+    """ブランチ削除の失敗はマージ・issueクローズの成功に影響しない（issue #72）。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+
+    def failing_delete_branch(repo: str, branch: str) -> None:
+        review_merge.delete_branch_calls.append((repo, branch))
+        raise subprocess.CalledProcessError(1, ["gh", "api"])
+
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=failing_delete_branch,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert body["dispatched"] is False
+        assert review_merge.merge_calls == [("nosetech/project-a", 33)]
+        assert review_merge.close_calls == [("nosetech/project-a", 1)]
+        assert review_merge.delete_branch_calls == [
+            ("nosetech/project-a", "feature/issue-1-something")
+        ]
+        assert calls == []
     finally:
         server.shutdown()
 
@@ -438,6 +629,51 @@ def test_create_issue_immediate_dispatch() -> None:
         assert labels.labels_by_issue[42] == {STATUS_IN_PROGRESS}
         assert event.wait(timeout=2)
         assert calls == [("nosetech/project-a", 42, "実装してください")]
+    finally:
+        server.shutdown()
+
+
+def test_create_issue_refreshes_store_synchronously() -> None:
+    """create_issue成功直後にもStateStoreが最新化される（issue #70）。"""
+    store = StateStore()
+    labels = FakeLabels()
+    issue_creator = FakeIssueCreator(start_number=42)
+    dispatch_queue, _, event = _recording_dispatch_queue()
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        return [
+            IssueSummary(
+                repo=repo,
+                number=42,
+                title="新機能",
+                labels=[STATUS_IN_PROGRESS],
+                comments=[],
+                updated_at="2026-08-10T00:00:00Z",
+            )
+        ]
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        create_issue=issue_creator.create_issue,
+        list_issues=list_issues,
+    )
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "新機能", "prompt": "実装してください", "dispatch": "immediate"},
+        )
+
+        assert status == 201
+        assert event.wait(timeout=2)
+        state = store.get()
+        assert state is not None
+        assert [e.number for e in state.activity] == [42]
     finally:
         server.shutdown()
 
