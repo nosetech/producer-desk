@@ -164,6 +164,26 @@ def test_build_claude_command_appends_comment_marker_instruction() -> None:
     assert BOT_COMMENT_MARKER in instruction
 
 
+def test_build_claude_command_instructs_not_to_duplicate_completion_report() -> None:
+    """issue #84の再発防止テスト。
+
+    セッション終了時の最終応答は`run_agent_runner`がオーケストレータ側で
+    無条件に「Agent Runner実行結果:」としてissueコメント投稿するため、AI
+    自身が対応完了時に重ねて完了報告コメントを投稿するとほぼ同内容のコメン
+    トが2つ連続で並んでしまう（issue #80・#70・#77で確認）。system promptで
+    その旨と、能動的投稿を限定すべき場面を明示的に指示することを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "Agent Runner実行結果:" in instruction
+    assert "重ねて完了報告コメントとして投稿する必要はありません" in instruction
+
+
 def test_build_claude_command_enables_chrome_integration() -> None:
     """issue #33の再発防止テスト（続報）。
 

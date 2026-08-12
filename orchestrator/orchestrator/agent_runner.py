@@ -141,6 +141,14 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
 # パッチしてしまう（ラベルもneeds-human-decision→status:in-progressに巻き戻る）。
 # AGENT_RUNNER_LABEL_INSTRUCTIONと同様、`--append-system-prompt`で毎回明示的に
 # マーカー付与を指示する。
+#
+# issue #84: `run_agent_runner`はセッション終了時、`claude -p`の最終応答
+# （`result`）を無条件に「Agent Runner実行結果:」としてissueコメント投稿する
+# （本モジュール後方の`post_comment(..., f"Agent Runner実行結果:\n{summary}")`）。
+# この投稿経路の存在をAgent Runnerに伝えていなかったため、対応完了時にAI自身が
+# 能動的にも完了報告コメントを投稿してしまい、ほぼ同内容のコメントが2つ連続で
+# 投稿される重複が発生していた（issue #80・#70・#77で確認）。能動的投稿は
+# 「最終応答を待たずに人間へ可視化する価値がある場合」に限定するよう指示する。
 AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     "issueに調査結果・進捗等を報告するため`gh issue comment`や`gh api "
     ".../comments`等でissueコメントを直接投稿する場合、本文の末尾に必ず次の"
@@ -148,7 +156,14 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     f"{BOT_COMMENT_MARKER}\n"
     "このマーカーが無いと、オーケストレータのコメント監視処理があなた自身の"
     "投稿を人間からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
-    "まいます（docs/basic-design.md 2-3「共通仕様」参照）。"
+    "まいます（docs/basic-design.md 2-3「共通仕様」参照）。\n"
+    "なお、あなたのセッション終了時の最終応答（このメッセージへの最後の"
+    "返信）は、オーケストレータが自動的に「Agent Runner実行結果:」という"
+    "見出しを付けてissueコメントに投稿します。そのため、対応が完了した"
+    "旨をあなた自身が重ねて完了報告コメントとして投稿する必要はありません"
+    "（投稿すると同内容のコメントが2つ連続で並ぶ重複が発生します）。"
+    "能動的なissueコメント投稿は、長時間かかる作業の途中経過など、最終応答を"
+    "待たずに人間へ可視化する価値がある場合に限定してください。"
 )
 
 
