@@ -7,6 +7,7 @@ gh呼び出し・ディスパッチキューはフェイクに差し替える。
 from __future__ import annotations
 
 import subprocess
+import threading
 
 import pytest
 
@@ -374,6 +375,161 @@ def test_handle_instruct_approve_on_in_review_swallows_delete_branch_failure() -
         ("nosetech/project-a", "feature/issue-30-something")
     ]
     assert labels.labels == {STATUS_CLOSED}
+
+
+def test_handle_instruct_approve_on_in_review_syncs_worktree_after_branch_delete() -> None:
+    """ブランチ削除成功後、worktreeを`develop`へ同期する（issue #80）。"""
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
+    sync_calls: list[tuple[str, str]] = []
+
+    def sync_worktree(worktree_path: str, branch: str) -> None:
+        sync_calls.append((worktree_path, branch))
+
+    result = handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        worktree_path="/path/to/worktree",
+        sync_worktree=sync_worktree,
+    )
+
+    assert result.action == "approve"
+    assert sync_calls == [("/path/to/worktree", "feature/issue-30-something")]
+
+
+def test_handle_instruct_approve_on_in_review_skips_worktree_sync_without_worktree_path() -> None:
+    """worktree_pathが渡されない（未配線の）呼び出し元では同期処理を行わない。"""
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
+    sync_calls: list[tuple[str, str]] = []
+
+    def sync_worktree(worktree_path: str, branch: str) -> None:
+        sync_calls.append((worktree_path, branch))
+
+    handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=sync_worktree,
+    )
+
+    assert sync_calls == []
+
+
+def test_handle_instruct_approve_on_in_review_skips_worktree_sync_when_delete_branch_fails() -> (
+    None
+):
+    """ブランチ削除が失敗した場合、worktree同期も行わない（リモートに削除対象が残るため）。"""
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, fail_delete_branch=True)
+    sync_calls: list[tuple[str, str]] = []
+
+    def sync_worktree(worktree_path: str, branch: str) -> None:
+        sync_calls.append((worktree_path, branch))
+
+    handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        worktree_path="/path/to/worktree",
+        sync_worktree=sync_worktree,
+    )
+
+    assert sync_calls == []
+
+
+def test_handle_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running() -> None:
+    """同じプロジェクトの別issueでAgent Runnerが実行中の間はworktree同期をスキップする。
+
+    実行中のAgent Runnerの作業ディレクトリを横から書き換えてセッションを破壊しないよう
+    にするための配慮（issue #80）。
+    """
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
+    sync_calls: list[tuple[str, str]] = []
+
+    def sync_worktree(worktree_path: str, branch: str) -> None:
+        sync_calls.append((worktree_path, branch))
+
+    # 同一リポジトリの別issueが実行中の状態を、実際にディスパッチをブロックして作る。
+    release_event = threading.Event()
+    started_event = threading.Event()
+
+    def blocking_dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started_event.set()
+        release_event.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=blocking_dispatch_fn)
+    dispatch_queue.enqueue("nosetech/project-a", 2, "別issueが実行中")
+    assert started_event.wait(timeout=2)
+
+    try:
+        handle_instruct(
+            "nosetech/project-a",
+            30,
+            "approve",
+            None,
+            get_labels=labels.get_labels,
+            add_label=labels.add_label,
+            remove_label=labels.remove_label,
+            post_comment=comments.post_comment,
+            dispatch_queue=dispatch_queue,
+            resolve_pr_number=review_merge.resolve_pr_number,
+            merge_pr=review_merge.merge_pr,
+            close_issue=review_merge.close_issue,
+            get_pr_branch=review_merge.get_pr_branch,
+            delete_branch=review_merge.delete_branch,
+            worktree_path="/path/to/worktree",
+            sync_worktree=sync_worktree,
+        )
+    finally:
+        release_event.set()
+
+    assert review_merge.delete_branch_calls == [
+        ("nosetech/project-a", "feature/issue-30-something")
+    ]
+    assert sync_calls == []
 
 
 def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None:
