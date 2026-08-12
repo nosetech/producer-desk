@@ -54,6 +54,7 @@ class FakeReviewMerge:
         self.close_calls: list[tuple[str, int]] = []
         self.get_pr_branch_calls: list[tuple[str, int]] = []
         self.delete_branch_calls: list[tuple[str, str]] = []
+        self.sync_worktree_calls: list[tuple[str, str]] = []
 
     def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
         return self.pr_number
@@ -70,6 +71,9 @@ class FakeReviewMerge:
 
     def delete_branch(self, repo: str, branch: str) -> None:
         self.delete_branch_calls.append((repo, branch))
+
+    def sync_worktree(self, worktree_path: str, branch: str) -> None:
+        self.sync_worktree_calls.append((worktree_path, branch))
 
 
 class FakeIssueCreator:
@@ -393,6 +397,7 @@ def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
         delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
         list_issues=list_issues,
     )
     try:
@@ -404,6 +409,9 @@ def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
         state = store.get()
         assert state is not None
         assert state.reviews == []
+        assert review_merge.sync_worktree_calls == [
+            (PROJECT_A.worktree_path, "feature/issue-1-something")
+        ]
     finally:
         server.shutdown()
 
@@ -497,6 +505,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
         delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
     )
     try:
         status, body = _post(
@@ -514,7 +523,63 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         assert comments.posted == []
         assert labels.labels_by_issue[1] == {STATUS_CLOSED}
         assert calls == []
+        assert review_merge.sync_worktree_calls == [
+            (PROJECT_A.worktree_path, "feature/issue-1-something")
+        ]
     finally:
+        server.shutdown()
+
+
+def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running() -> None:
+    """同じプロジェクトの別issueでAgent Runnerが実行中の場合、worktree同期をスキップする。
+
+    実行中にworktreeを横から`git checkout`すると、実行中セッションの作業ディレクトリを
+    書き換えてしまうため（issue #80）。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+
+    release_event = threading.Event()
+    started_event = threading.Event()
+
+    def blocking_dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started_event.set()
+        release_event.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=blocking_dispatch_fn)
+    dispatch_queue.enqueue("nosetech/project-a", 2, "別issueが実行中")
+    assert started_event.wait(timeout=2)
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+        assert body["dispatched"] is False
+        assert review_merge.delete_branch_calls == [
+            ("nosetech/project-a", "feature/issue-1-something")
+        ]
+        assert review_merge.sync_worktree_calls == []
+    finally:
+        release_event.set()
         server.shutdown()
 
 
@@ -574,6 +639,7 @@ def test_instruct_approve_on_in_review_returns_200_even_if_branch_deletion_fails
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
         delete_branch=failing_delete_branch,
+        sync_worktree=review_merge.sync_worktree,
     )
     try:
         status, body = _post(
@@ -588,6 +654,7 @@ def test_instruct_approve_on_in_review_returns_200_even_if_branch_deletion_fails
             ("nosetech/project-a", "feature/issue-1-something")
         ]
         assert calls == []
+        assert review_merge.sync_worktree_calls == []
     finally:
         server.shutdown()
 

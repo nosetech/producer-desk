@@ -51,6 +51,8 @@ from orchestrator.polling import ListIssuesFn, poll_once
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 from orchestrator.usage_store import current_limit_status as store_current_limit_status
 from orchestrator.usage_store import daily_model_usage as store_daily_model_usage
+from orchestrator.worktree import SyncWorktreeFn
+from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
@@ -101,7 +103,10 @@ def _make_handler(
     get_pr_branch: GetPrBranchFn,
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
+    sync_worktree: SyncWorktreeFn,
 ) -> type[BaseHTTPRequestHandler]:
+    projects_by_repo = {project.repo: project for project in projects}
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             pass  # アクセスログはoff（オーケストレータ本体のログ設計は別issue）
@@ -205,6 +210,8 @@ def _make_handler(
                     close_issue=close_issue,
                     get_pr_branch=get_pr_branch,
                     delete_branch=delete_branch,
+                    worktree_path=projects_by_repo[repo].worktree_path,
+                    sync_worktree=sync_worktree,
                 )
             except (KeyError, ValueError) as e:
                 self._send_json(400, {"error": str(e)})
@@ -270,6 +277,7 @@ def make_server(
     get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
     delete_branch: DeleteBranchFn = gh_delete_branch,
     list_issues: ListIssuesFn = gh_list_issues,
+    sync_worktree: SyncWorktreeFn = gh_sync_worktree,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -290,5 +298,6 @@ def make_server(
         get_pr_branch=get_pr_branch,
         delete_branch=delete_branch,
         list_issues=list_issues,
+        sync_worktree=sync_worktree,
     )
     return ThreadingHTTPServer((host, port), handler)

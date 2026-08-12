@@ -37,6 +37,8 @@ from orchestrator.labels import (
     resolve_instruction_label,
     transition_label,
 )
+from orchestrator.worktree import SyncWorktreeFn
+from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
 
@@ -110,6 +112,8 @@ def handle_instruct(
     close_issue: CloseIssueFn = gh_close_issue,
     get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
     delete_branch: DeleteBranchFn = gh_delete_branch,
+    worktree_path: str | None = None,
+    sync_worktree: SyncWorktreeFn = gh_sync_worktree,
 ) -> InstructResult:
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
@@ -141,6 +145,7 @@ def handle_instruct(
         # （--delete-branchをマージと同一コマンドに含めた場合、ブランチ削除だけの失敗で
         # 例外が送出されclose_issueが実行されなくなる不具合の再発を避けるため、
         # あえて分離したステップにしている）。
+        branch: str | None = None
         try:
             branch = get_pr_branch(repo, pr_number)
             delete_branch(repo, branch)
@@ -148,6 +153,20 @@ def handle_instruct(
             logger.warning(
                 "%s#%s (PR #%s) のブランチ削除に失敗しました: %s", repo, issue_number, pr_number, e
             )
+            branch = None
+
+        # worktree同期はリモートブランチ削除の後始末に過ぎない（issue #80）。実行中の
+        # Agent Runnerが同じプロジェクトの別issueで動いている場合、worktreeを横から
+        # 書き換えるとそのセッションを破壊するおそれがあるためスキップする。
+        if branch is not None and worktree_path is not None:
+            if dispatch_queue.is_running(repo):
+                logger.info(
+                    "%s は実行中のためworktree同期をスキップしました（対象ブランチ: %s）",
+                    repo,
+                    branch,
+                )
+            else:
+                sync_worktree(worktree_path, branch)
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":
