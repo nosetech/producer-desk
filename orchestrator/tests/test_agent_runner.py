@@ -450,6 +450,77 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
     assert "1" in comments.posted[0][2]
 
 
+def test_run_agent_runner_success_without_label_self_transition_falls_back_to_needs_human_decision(
+    tmp_path: Path,
+) -> None:
+    """issue #78の再発防止テスト。
+
+    プロセスは正常終了（exit 0）したが、Agent Runnerがラベルの自己遷移
+    （AGENT_RUNNER_LABEL_INSTRUCTION）を怠り status:in-progress のまま
+    変化しなかった場合、オーケストレータ側の決定的フォールバックで
+    needs-human-decision へ強制的に遷移させることを確認する（issue #70で
+    実際に発生した「判断待ちが宙に浮く」不具合の再発防止）。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    run = FakeRun(stdout='{"result": "このままpushしてPRを作成してよろしいですか？"}', returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 70): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        70,
+        "作業を進めてください",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+
+
+def test_run_agent_runner_success_with_self_transition_does_not_double_transition(
+    tmp_path: Path,
+) -> None:
+    """Agent Runnerが自らstatus:in-reviewへ正しく自己遷移済みの場合、
+
+    オーケストレータ側のフォールバックが余計な二重遷移を起こさないことを
+    確認する（issue #78）。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    run = FakeRun(stdout='{"result": "PRを作成しました"}', returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        71,
+        "作業を進めてください",
+        run=run,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_REVIEW}
+
+
 def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()

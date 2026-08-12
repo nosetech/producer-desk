@@ -415,6 +415,25 @@ def run_agent_runner(
             or "(実行結果の要約を取得できませんでした。ログを参照してください。)"
         )
         post_comment(project.repo, issue_number, f"Agent Runner実行結果:\n{summary}")
+
+        # issue #78: プロセスは正常終了（exit 0）したが、Agent Runnerが
+        # AGENT_RUNNER_LABEL_INSTRUCTIONの自己申告ラベル遷移を怠るケースが
+        # あり、その場合`success = True`のこの分岐しか通らないため放置される
+        # と判断待ちが宙に浮く（issue #70で発生）。正常終了時、issueは必ず
+        # 「PR作成済み（status:in-review）」「人間への確認が必要
+        # （needs-human-decision）」のいずれかに到達している設計のため、
+        # status:in-progressのまま変化がなければ常に異常とみなし、
+        # needs-human-decisionへ強制的にフォールバックさせる。
+        current_labels = get_labels(project.repo, issue_number)
+        if STATUS_IN_PROGRESS in current_labels:
+            transition_label(
+                project.repo,
+                issue_number,
+                STATUS_NEEDS_HUMAN_DECISION,
+                get_labels=get_labels,
+                add_label=add_label,
+                remove_label=remove_label,
+            )
     else:
         error_comment = (
             f":warning: Agent Runnerが異常終了しました"
