@@ -12,6 +12,7 @@ from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummar
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_NEEDS_HUMAN_DECISION,
@@ -355,6 +356,12 @@ def test_instruct_approve_refreshes_store_synchronously() -> None:
 
 
 def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
+    """承認直後の同期state再取得時点で、レビュー待ち一覧からカードが消えている必要がある。
+
+    `list_issues`をラベルの実際の状態と連動させることで、`status:in-review`ラベルを
+    `status:closed`へ遷移させ忘れると（=マージ・クローズはするがラベルを変えないと）
+    このテストが失敗する回帰テストになっている（issue #70フォローアップ）。
+    """
     store = StateStore()
     labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
     comments = FakeComments()
@@ -362,8 +369,16 @@ def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
     dispatch_queue, _, _ = _recording_dispatch_queue()
 
     def list_issues(repo: str) -> list[IssueSummary]:
-        # マージ・クローズによりレビュー待ち一覧から消えたことを模す
-        return []
+        return [
+            IssueSummary(
+                repo=repo,
+                number=1,
+                title="レビュー待ちissue",
+                labels=sorted(labels.labels_by_issue.get(1, set())),
+                comments=[],
+                updated_at="2026-08-10T00:00:00Z",
+            )
+        ]
 
     server, _ = _run_server(
         store,
@@ -497,7 +512,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
             ("nosetech/project-a", "feature/issue-1-something")
         ]
         assert comments.posted == []
-        assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
+        assert labels.labels_by_issue[1] == {STATUS_CLOSED}
         assert calls == []
     finally:
         server.shutdown()
