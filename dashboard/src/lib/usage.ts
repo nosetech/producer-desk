@@ -51,6 +51,13 @@ export function shortDate(date: string): string {
   return `${pad2(Number(month))}/${pad2(Number(day))}`;
 }
 
+/** 実行環境のOS/ロケール設定に依存せず、JST（Asia/Tokyo）基準の「本日」をYYYY-MM-DD形式で返す。 */
+export function todayJst(): string {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(
+    new Date(),
+  );
+}
+
 export function shortModelName(model: string): string {
   return model.startsWith("claude-")
     ? model.replace("claude-", "")

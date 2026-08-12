@@ -2,11 +2,13 @@
 
 issue #60: Agent Runner実行結果から得られるモデル別トークン数・コストの
 永続化・日次集計・リミット到達検知を検証する。
+issue #71: 日次集計の「本日」判定・日付グルーピングがJST（Asia/Tokyo）基準に
+なっていることを検証する。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from orchestrator.usage_store import (
@@ -86,6 +88,60 @@ def test_record_usage_and_daily_model_usage_aggregates_by_day_and_model(tmp_path
             input_tokens=3000,
             output_tokens=800,
             total_cost_usd=0.0,
+        ),
+    ]
+
+
+def test_daily_model_usage_groups_by_jst_date_not_utc_date(tmp_path: Path) -> None:
+    """UTC深夜帯（JST日付変更後・UTC日付変更前）のレコードがJST基準の日付で集計されることを検証する。
+
+    recorded_atは常にUTCで保存されるが、JSTはUTC+9のため、UTC上ではまだ
+    前日でもJSTでは既に日付が変わっているケースがある（issue #71）。
+    """
+    db_path = tmp_path / "usage.db"
+    record_usage(
+        [
+            UsageRecord(
+                repo="nosetech/project-a",
+                issue_number=1,
+                model="claude-sonnet-5",
+                input_tokens=100,
+                output_tokens=10,
+                total_cost_usd=0.1,
+                # UTC 2026-08-08 20:00 = JST 2026-08-09 05:00（JSTでは既に08-09）
+                recorded_at="2026-08-08T20:00:00+00:00",
+            ),
+            UsageRecord(
+                repo="nosetech/project-a",
+                issue_number=1,
+                model="claude-sonnet-5",
+                input_tokens=200,
+                output_tokens=20,
+                total_cost_usd=0.2,
+                # UTC 2026-08-08 14:59 = JST 2026-08-08 23:59（JSTでもまだ08-08）
+                recorded_at="2026-08-08T14:59:00+00:00",
+            ),
+        ],
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+
+    result = daily_model_usage(db_path=db_path, days=2, today=date(2026, 8, 9))
+
+    assert result == [
+        DailyModelUsage(
+            date="2026-08-08",
+            model="claude-sonnet-5",
+            input_tokens=200,
+            output_tokens=20,
+            total_cost_usd=0.2,
+        ),
+        DailyModelUsage(
+            date="2026-08-09",
+            model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=10,
+            total_cost_usd=0.1,
         ),
     ]
 
