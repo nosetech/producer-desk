@@ -10,9 +10,17 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
-from orchestrator.labels import STATUS_IN_REVIEW, STATUS_LABELS, STATUS_NEEDS_HUMAN_DECISION
+from orchestrator.labels import (
+    STATUS_IN_REVIEW,
+    STATUS_LABEL_PRIORITY,
+    STATUS_LABELS,
+    STATUS_NEEDS_HUMAN_DECISION,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -46,7 +54,24 @@ class AggregatedState:
 
 
 def _current_status_label(issue: IssueSummary) -> str | None:
-    return next((label for label in issue.labels if label in STATUS_LABELS), None)
+    """issueに付与された状態ラベルのうち、表示に採用する1つを決定する。
+
+    `issue.labels`（gh CLIが返す任意の順序）の先頭一致に依存すると、状態ラベルが
+    一時的に複数付与された際に`reviews`（membership check）と食い違う表示になる
+    （issue #77）。`STATUS_LABEL_PRIORITY`に基づき順序に依存しない決定的な優先順位
+    で解決し、複数共存を検知した場合は警告ログを出す。
+    """
+    present = [label for label in issue.labels if label in STATUS_LABELS]
+    if len(present) > 1:
+        logger.warning(
+            "issue %s#%s に複数の状態ラベルが同時に付与されています: %s "
+            "(優先順位: %s に基づき解決します)",
+            issue.repo,
+            issue.number,
+            sorted(present),
+            STATUS_LABEL_PRIORITY,
+        )
+    return next((label for label in STATUS_LABEL_PRIORITY if label in present), None)
 
 
 def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
