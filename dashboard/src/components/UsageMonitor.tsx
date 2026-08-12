@@ -9,6 +9,7 @@ import {
   buildLimitWarning,
   buildModelBreakdown,
   buildTodayUsage,
+  todayJst,
   type ChartMetric,
 } from "@/lib/usage";
 import type { UsageResponse } from "@/lib/types";
@@ -42,7 +43,7 @@ export default function UsageMonitor() {
 
   const { daily, currentLimit } = usage;
   const colors = assignModelColors(daily);
-  const today = daily.length > 0 ? daily[daily.length - 1].date : "";
+  const today = todayJst();
   const todayUsage = buildTodayUsage(daily, today, colors);
   const chart = buildChartGeometry(daily, colors, metric);
   const modelBreakdown = buildModelBreakdown(daily, colors, metric);

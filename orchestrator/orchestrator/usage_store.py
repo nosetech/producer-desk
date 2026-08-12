@@ -22,10 +22,16 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from orchestrator.config import REPO_ROOT
 
 DEFAULT_USAGE_DB_PATH = REPO_ROOT / "config" / "usage.db"
+
+# 利用量の日次集計はJST（Asia/Tokyo）基準で行う。record_usage()が保存する
+# recorded_at自体はUTCのまま（絶対時刻として一意）だが、daily_model_usage()の
+# 「本日」判定・日付グルーピングはJSTへ変換してから行う（issue #71）。
+_JST = ZoneInfo("Asia/Tokyo")
 
 # リミット到達時、`result`の自由文（例: "You've hit your session limit ·
 # resets 1pm (Asia/Tokyo)"）から解除予定時刻の記述部分を抜き出す。
@@ -158,14 +164,14 @@ def daily_model_usage(
     リミット到達等のエラー実行（トークン消費が実質無い、または不正確な）は
     集計対象から除外する。
     """
-    today = today or datetime.now(UTC).date()
+    today = today or datetime.now(_JST).date()
     since = (today - timedelta(days=days - 1)).isoformat()
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT substr(recorded_at, 1, 10) AS day, model, "
+            "SELECT substr(datetime(recorded_at, '+9 hours'), 1, 10) AS day, model, "
             "SUM(input_tokens), SUM(output_tokens), SUM(COALESCE(total_cost_usd, 0)) "
             "FROM usage_records "
-            "WHERE substr(recorded_at, 1, 10) >= ? AND is_error = 0 "
+            "WHERE substr(datetime(recorded_at, '+9 hours'), 1, 10) >= ? AND is_error = 0 "
             "GROUP BY day, model "
             "ORDER BY day ASC, model ASC",
             (since,),
