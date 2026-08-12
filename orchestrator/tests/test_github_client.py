@@ -183,6 +183,107 @@ def test_resolve_pr_number_returns_none_when_no_events() -> None:
     assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) is None
 
 
+def _fake_run_dispatch(responses: dict[str, object]) -> object:
+    """呼び出すgh subcommand（`timeline`/`pr list`）に応じて異なるレスポンスを返すフェイク。"""
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        key = "timeline" if "timeline" in cmd[2] else "pr_list"
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps(responses[key]), stderr=""
+        )
+
+    run.calls = calls  # type: ignore[attr-defined]
+    return run
+
+
+def test_resolve_pr_number_falls_back_to_open_pr_search_when_no_cross_reference() -> None:
+    """issue #82の再発防止テスト。
+
+    issue番号の直後にCJK文字が続く（`#77で`のような）記法だとGitHub側の自動
+    リンク解析がissue参照として認識せず、cross-referenceイベントが生成されない
+    ことがある。その場合でもOPEN PR本文検索でPRを解決できることを確認する。
+    """
+    fake_run = _fake_run_dispatch(
+        {
+            "timeline": [],
+            "pr_list": [
+                {
+                    "number": 81,
+                    "title": "fix: 判断待ちの不具合を修正する",
+                    "body": "issue #77で報告された不具合を修正しました。",
+                    "updatedAt": "2026-08-10T00:00:00Z",
+                }
+            ],
+        }
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) == 81
+    [timeline_cmd, pr_list_cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert timeline_cmd == ["gh", "api", "repos/nosetech/project-a/issues/77/timeline"]
+    assert pr_list_cmd == [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "nosetech/project-a",
+        "--state",
+        "open",
+        "--json",
+        "number,title,body,updatedAt",
+    ]
+
+
+def test_resolve_pr_number_fallback_avoids_matching_longer_issue_numbers() -> None:
+    """`#770`のような別issue番号への誤マッチを避けることを確認する。"""
+    fake_run = _fake_run_dispatch(
+        {
+            "timeline": [],
+            "pr_list": [
+                {
+                    "number": 90,
+                    "title": "無関係な変更",
+                    "body": "issue #770について対応",
+                    "updatedAt": "2026-08-10T00:00:00Z",
+                }
+            ],
+        }
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) is None
+
+
+def test_resolve_pr_number_fallback_returns_none_when_no_match() -> None:
+    fake_run = _fake_run_dispatch({"timeline": [], "pr_list": []})
+
+    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) is None
+
+
+def test_resolve_pr_number_fallback_returns_most_recently_updated_when_multiple_match() -> None:
+    fake_run = _fake_run_dispatch(
+        {
+            "timeline": [],
+            "pr_list": [
+                {
+                    "number": 81,
+                    "title": "古い方の対応",
+                    "body": "issue #77で報告された不具合を修正",
+                    "updatedAt": "2026-08-08T00:00:00Z",
+                },
+                {
+                    "number": 85,
+                    "title": "新しい方の対応",
+                    "body": "issue #77で報告された不具合を再修正",
+                    "updatedAt": "2026-08-10T00:00:00Z",
+                },
+            ],
+        }
+    )
+
+    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) == 85
+
+
 def test_merge_pr_calls_gh_pr_merge_squash() -> None:
     fake_run = _fake_run_raw({})
 

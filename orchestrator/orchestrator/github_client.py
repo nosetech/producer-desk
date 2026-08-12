@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable
 
@@ -108,7 +109,14 @@ def resolve_pr_number(repo: str, issue_number: int, *, run: RunFn = subprocess.r
     `gh api repos/{repo}/issues/{issue_number}/timeline` のタイムラインイベントのうち、
     `event == "cross-referenced"` かつ `source.issue.pull_request` が存在するものを
     issueへリンクされたPRとみなす（issue #58）。複数紐づく場合は最後（最新）のものを採用する。
-    見つからない場合は`None`を返す。
+
+    このcross-referenceイベントは、issue番号の直後に区切り文字（半角スペース・改行・
+    句読点等）を挟まず日本語テキストが続く形（`#77で`等）だとGitHub側の自動リンク
+    解析がissue参照として認識せず、生成されないことがある（issue #82）。日本語で
+    PR本文を書く場合に構造的に起こりやすいため、cross-referenceイベントで解決でき
+    ない場合はフォールバックとして、対象リポジトリのOPEN PR一覧のタイトル・本文を
+    直接検索する（`_resolve_pr_number_from_open_prs`）。どちらでも見つからない場合は
+    `None`を返す。
     """
     result = run(
         ["gh", "api", f"repos/{repo}/issues/{issue_number}/timeline"],
@@ -123,7 +131,52 @@ def resolve_pr_number(repo: str, issue_number: int, *, run: RunFn = subprocess.r
         if event.get("event") == "cross-referenced"
         and event.get("source", {}).get("issue", {}).get("pull_request") is not None
     ]
-    return pr_numbers[-1] if pr_numbers else None
+    if pr_numbers:
+        return pr_numbers[-1]
+
+    return _resolve_pr_number_from_open_prs(repo, issue_number, run=run)
+
+
+def _resolve_pr_number_from_open_prs(
+    repo: str, issue_number: int, *, run: RunFn = subprocess.run
+) -> int | None:
+    """OPEN PR一覧のタイトル・本文から`#{issue_number}`への言及を直接探すフォールバック。
+
+    GitHub側のcross-referenceイベント生成（issue参照パーサーのCJK境界問題）に依存
+    しないため、`#77で`のような日本語直後の参照でも検出できる。`#770`のような別issue
+    番号への誤マッチを避けるため、直後に数字が続かない形のみを対象とする。複数件
+    ヒットする場合は、`resolve_pr_number`本体（cross-reference方式）と同じ方針で
+    最も更新が新しいものを採用する。
+    """
+    result = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,updatedAt",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    prs = json.loads(result.stdout)
+    reference_pattern = re.compile(rf"#{issue_number}(?!\d)")
+    matched_prs = [
+        pr
+        for pr in prs
+        if reference_pattern.search(pr.get("title", ""))
+        or reference_pattern.search(pr.get("body") or "")
+    ]
+    if not matched_prs:
+        return None
+
+    latest_pr = max(matched_prs, key=lambda pr: pr["updatedAt"])
+    return latest_pr["number"]
 
 
 def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:

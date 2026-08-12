@@ -152,6 +152,22 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
 )
 
 
+# issue #82: Agent Runnerが日本語でPR本文を書く際、`issue #77で報告された...`の
+# ように issue番号の直後に区切り文字を挟まず日本語が続く形だと、GitHub側の自動
+# リンク解析がissue参照として認識せずcross-referenceイベントが生成されない
+# （PR #81で発生。resolve_pr_numberはフォールバックを備えたが、そもそも正しい
+# 記法で書けば発生しない問題のため、CLAUDE.mdの既存規約を`--append-system-prompt`
+# でも重ねて明示する）。
+AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
+    "プルリクエストを作成する場合、本文に対応するissue番号への参照を"
+    "`Closes #<issue番号>`という形で、前後を空行で区切った独立した行として必ず"
+    "含めてください。issue番号の直後に半角スペース・改行等の区切り文字を挟まず"
+    "日本語（「で」「の」「を」等）を続けて書くと、GitHubの自動リンク解析が"
+    "issue参照として認識せず、レビュー承認時にPRを自動解決できなくなります"
+    "（issue #82）。「issue #77で報告された...」のような書き方は避けてください。"
+)
+
+
 def build_claude_command(
     message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
 ) -> list[str]:
@@ -167,6 +183,8 @@ def build_claude_command(
         + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
         + "\n\n"
         + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION
+        + "\n\n"
+        + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
     )
     command = [
         "claude",

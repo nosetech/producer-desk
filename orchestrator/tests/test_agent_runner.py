@@ -212,6 +212,26 @@ def test_build_claude_command_appends_local_llm_instruction() -> None:
     assert "ollama-client" in instruction
     assert "deepseek-coder-v2:16b" in instruction
     assert "gemma2" in instruction
+
+
+def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
+    """issue #82の再発防止テスト。
+
+    PR本文で`issue #77で報告された...`のように issue番号の直後に区切り文字なく
+    日本語が続く記法だと、GitHubの自動リンク解析がissue参照として認識せず
+    cross-referenceイベントが生成されず、レビュー承認時にPRを解決できなかった。
+    `Closes #<issue番号>`を独立行として書くようsystem promptで明示することを
+    確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "Closes #<issue番号>" in instruction
+    assert "issue #82" in instruction
     assert "qwen2.5-coder:7b" in instruction
 
 
