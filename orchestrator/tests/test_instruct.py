@@ -18,6 +18,7 @@ from orchestrator.instruct import (
     handle_instruct,
 )
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_NEEDS_HUMAN_DECISION,
@@ -266,6 +267,9 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
 
     本プロジェクトのワークフロー（`develop`へマージ）では発動しないため、マージ成功後は
     明示的にissueをクローズする必要がある（issue #58で自動クローズされない不具合が確認された）。
+    ラベルも`status:closed`へ即時遷移させる必要がある。`status:in-review`のまま残すと、
+    承認直後のStateStore同期更新（issue #70）でもレビュー待ち一覧からカードが消えない
+    不具合になる（issue #70フォローアップ）。
     """
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
@@ -300,7 +304,7 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
         ("nosetech/project-a", "feature/issue-30-something")
     ]
     assert comments.posted == []
-    assert labels.labels == {STATUS_IN_REVIEW}
+    assert labels.labels == {STATUS_CLOSED}
     assert calls == []
 
 
@@ -332,6 +336,7 @@ def test_handle_instruct_approve_on_in_review_swallows_get_pr_branch_failure() -
     assert review_merge.merge_calls == [("nosetech/project-a", 33)]
     assert review_merge.close_calls == [("nosetech/project-a", 30)]
     assert review_merge.delete_branch_calls == []
+    assert labels.labels == {STATUS_CLOSED}
 
 
 def test_handle_instruct_approve_on_in_review_swallows_delete_branch_failure() -> None:
@@ -368,6 +373,7 @@ def test_handle_instruct_approve_on_in_review_swallows_delete_branch_failure() -
     assert review_merge.delete_branch_calls == [
         ("nosetech/project-a", "feature/issue-30-something")
     ]
+    assert labels.labels == {STATUS_CLOSED}
 
 
 def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None:

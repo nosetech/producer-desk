@@ -27,6 +27,7 @@ from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_TODO,
@@ -116,12 +117,24 @@ def handle_instruct(
         # PR本文の`Closes #`によるGitHubの自動クローズはデフォルトブランチへのマージ時
         # にしか発動せず、本プロジェクトのワークフロー（`develop`へマージ）では発動しないため
         # issueが開いたまま残っていた不具合が確認された。マージ成功後はここで明示的にissueを
-        # クローズする（`status:closed`への遷移はclose_watcher.pyの既存ポーリングに委ねる）。
+        # クローズする。
         pr_number = resolve_pr_number(repo, issue_number)
         if pr_number is None:
             raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
         merge_pr(repo, pr_number)
         close_issue(repo, issue_number)
+        # ラベルもここで`status:closed`へ即時遷移させる。close_watcher.pyの背景ポーリング
+        # （5分間隔）に委ねると、承認直後にserver.pyが行うStateStore同期更新（issue #70）の
+        # 時点では`status:in-review`のままのため、aggregate()のreviews判定
+        # （ラベルのみを見る）に引っかかり続け、カードが一覧からすぐ消えない不具合になる。
+        transition_label(
+            repo,
+            issue_number,
+            STATUS_CLOSED,
+            get_labels=get_labels,
+            add_label=add_label,
+            remove_label=remove_label,
+        )
         # ブランチ削除はマージ・issueクローズの後始末に過ぎない（issue #72）。
         # ここで失敗（保護ブランチ設定・既に削除済み等）しても、本質的な処理である
         # マージ・issueクローズが既に成功している以上、承認自体は成功として扱う
