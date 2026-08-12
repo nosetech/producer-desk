@@ -33,6 +33,18 @@ STATUS_LABELS = frozenset(
 # 判定するために使う（docs/basic-design.md 1章「管理対象外issueの扱い」）。
 ACTIVE_STATUS_LABELS = STATUS_LABELS - {STATUS_CLOSED}
 
+# transition_labelの非atomic性やAgent Runnerの自己ラベル遷移の指示漏れにより、
+# 1つのissueに状態ラベルが一時的に複数付与された状態が観測されることがある
+# （issue #77）。issue.labelsの並び順（gh CLIが返す任意の順序）に依存せず「現在の
+# 状態」を一意に決定するため、進行が進んだ状態ほど優先する順序を明文化する。
+STATUS_LABEL_PRIORITY: tuple[str, ...] = (
+    STATUS_CLOSED,
+    STATUS_IN_REVIEW,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_IN_PROGRESS,
+    STATUS_TODO,
+)
+
 # 自由記述指示（approve/instruct）送信時の、現在の状態ラベルに応じた遷移先
 # （docs/basic-design.md 1章「自由記述指示によるラベル遷移ルール」の表）。
 INSTRUCTION_TRANSITIONS: dict[str, str] = {
