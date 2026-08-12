@@ -40,7 +40,7 @@ from orchestrator.usage_store import (
 
 DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 
-RunFn = Callable[..., subprocess.CompletedProcess[str]]
+PopenFn = Callable[..., subprocess.Popen]
 NowFn = Callable[[], datetime]
 UuidFn = Callable[[], str]
 GetSessionIdFn = Callable[[str, int], str | None]
@@ -206,7 +206,11 @@ def build_claude_command(
         "-p",
         message,
         "--output-format",
-        "json",
+        "stream-json",
+        # issue #49: `stream-json`はツール呼び出し・メッセージ単位でNDJSON（1行1JSON）
+        # を逐次標準出力に書き出す。`-p`（非対話モード）で`stream-json`を使う場合、
+        # CLIは`--verbose`の指定を必須とする。
+        "--verbose",
         "--dangerously-skip-permissions",
         # `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため、
         # AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの
@@ -222,23 +226,65 @@ def build_claude_command(
     return command
 
 
-def _write_log(
-    repo: str, issue_number: int, stdout: str, stderr: str, *, logs_dir: Path, timestamp: str
-) -> Path:
+def _init_log_file(repo: str, issue_number: int, *, logs_dir: Path, timestamp: str) -> Path:
+    """ログファイルを実行開始時点で作成する（issue #49）。
+
+    以降は`_stream_process_output`がプロセスの標準出力を1行読むたびに都度
+    このファイルへappendする。実行完了を待たずログが逐次伸びていくことで、
+    `tail -f`での実行中の進捗確認を可能にする。
+    """
     log_dir = logs_dir / repo
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{timestamp}.log"
-    content = f"issue: #{issue_number}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n"
-    log_path.write_text(content, encoding="utf-8")
+    log_path.write_text(f"issue: #{issue_number}\n", encoding="utf-8")
     return log_path
 
 
-def _parse_json_payload(stdout: str) -> dict | None:
-    try:
-        payload = json.loads(stdout)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+def _write_error_log(
+    repo: str, issue_number: int, error_message: str, *, logs_dir: Path, timestamp: str
+) -> Path:
+    log_path = _init_log_file(repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(error_message + "\n")
+    return log_path
+
+
+def _stream_process_output(process: subprocess.Popen, log_path: Path) -> str:
+    """プロセスの標準出力を1行読むたびにログファイルへflushしながら全文を返す。
+
+    `run_agent_runner`は`stderr=subprocess.STDOUT`でプロセスを起動するため、
+    標準エラー出力もこのストリームに混在する（別スレッドでの並行読み取りは
+    実装を複雑にする割に、取りこぼし防止という目的に対しては`STDOUT`への
+    合流で十分なため採用しなかった）。
+    """
+    lines: list[str] = []
+    assert process.stdout is not None
+    with log_path.open("a", encoding="utf-8") as log_file:
+        for line in process.stdout:
+            log_file.write(line)
+            log_file.flush()
+            lines.append(line)
+    return "".join(lines)
+
+
+def _parse_result_payload(stdout: str) -> dict | None:
+    """NDJSON（`stream-json`）出力から、最後の`"type":"result"`イベントを取り出す。
+
+    stderrが同一ストリームに合流しJSONとして解釈できない行が混ざり得るため、
+    各行を個別にパースし解釈できない行はスキップする。
+    """
+    payload: dict | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and data.get("type") == "result":
+            payload = data
+    return payload
 
 
 def _extract_summary(payload: dict | None) -> str | None:
@@ -330,7 +376,7 @@ def run_agent_runner(
     issue_number: int,
     message: str,
     *,
-    run: RunFn = subprocess.run,
+    popen: PopenFn = subprocess.Popen,
     post_comment: PostCommentFn = gh_post_comment,
     get_labels: GetLabelsFn = gh_get_labels,
     add_label: AddLabelFn = gh_add_label,
@@ -367,8 +413,8 @@ def run_agent_runner(
             add_label=add_label,
             remove_label=remove_label,
         )
-        log_path = _write_log(
-            project.repo, issue_number, "", error_message, logs_dir=logs_dir, timestamp=timestamp
+        log_path = _write_error_log(
+            project.repo, issue_number, error_message, logs_dir=logs_dir, timestamp=timestamp
         )
         return AgentRunResult(
             repo=project.repo,
@@ -389,22 +435,23 @@ def run_agent_runner(
         issue_number=issue_number,
     )
 
-    result = run(command, cwd=str(worktree_path), capture_output=True, text=True)
-
-    log_path = _write_log(
-        project.repo,
-        issue_number,
-        result.stdout,
-        result.stderr,
-        logs_dir=logs_dir,
-        timestamp=timestamp,
+    log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
+    process = popen(
+        command,
+        cwd=str(worktree_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
+    stdout_text = _stream_process_output(process, log_path)
+    returncode = process.wait()
 
     if not resume:
         persist_session_id_fn(project.repo, issue_number, session_id)
 
-    success = result.returncode == 0
-    payload = _parse_json_payload(result.stdout)
+    success = returncode == 0
+    payload = _parse_result_payload(stdout_text)
     usage_records = _extract_usage_records(payload, repo=project.repo, issue_number=issue_number)
     if usage_records:
         record_usage_fn(usage_records, now=now)
@@ -437,7 +484,7 @@ def run_agent_runner(
     else:
         error_comment = (
             f":warning: Agent Runnerが異常終了しました"
-            f"（終了コード: {result.returncode}）。ログ: {log_path}"
+            f"（終了コード: {returncode}）。ログ: {log_path}"
         )
         post_comment(project.repo, issue_number, error_comment)
         transition_label(
@@ -452,7 +499,7 @@ def run_agent_runner(
     return AgentRunResult(
         repo=project.repo,
         issue_number=issue_number,
-        exit_code=result.returncode,
+        exit_code=returncode,
         log_path=log_path,
         session_id=session_id,
         success=success,
