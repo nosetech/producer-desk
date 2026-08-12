@@ -1,11 +1,17 @@
 """orchestrator.agent_runner の単体テスト。
 
 docs/basic-design.md 3章（Agent Runner連携設計）の起動パラメータ・ログ収集・
-異常終了時の扱いを、フェイクのsubprocess/gh呼び出しで検証する。
+異常終了時の扱いを、フェイクのPopen/gh呼び出しで検証する。
+
+issue #49: `claude -p`の出力形式を`--output-format json`（完了後に一括取得）
+から`--output-format stream-json --verbose`（NDJSONを逐次出力）へ変更したため、
+`subprocess.run`を模倣する`FakeRun`ではなく、行イテレータを持つ
+`subprocess.Popen`を模倣する`FakePopen`/`FakePopenFactory`でテストする。
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +29,11 @@ from orchestrator.usage_store import UsageRecord
 
 FIXED_NOW = lambda: datetime(2026, 8, 4, 1, 2, 3, tzinfo=UTC)  # noqa: E731
 FIXED_UUID = lambda: "11111111-1111-1111-1111-111111111111"  # noqa: E731
+
+
+def result_line(payload: dict) -> str:
+    """NDJSON出力中の`"type":"result"`イベント1行分を組み立てる。"""
+    return json.dumps({"type": "result", **payload}) + "\n"
 
 
 class FakeLabels:
@@ -47,18 +58,26 @@ class FakeComments:
         self.posted.append((repo, issue_number, body))
 
 
-class FakeRun:
-    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.stderr = stderr
+class FakePopen:
+    """`subprocess.Popen`の必要最小限（`stdout`の行イテレータ・`wait()`）を模倣する。"""
+
+    def __init__(self, lines: list[str], returncode: int = 0) -> None:
+        self.stdout = iter(lines)
+        self._returncode = returncode
+
+    def wait(self) -> int:
+        return self._returncode
+
+
+class FakePopenFactory:
+    def __init__(self, lines: list[str] | None = None, returncode: int = 0) -> None:
+        self.lines = lines if lines is not None else []
         self.returncode = returncode
         self.calls: list[dict] = []
 
-    def __call__(self, cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def __call__(self, cmd: list[str], **kwargs: object) -> FakePopen:
         self.calls.append({"cmd": cmd, **kwargs})
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=self.returncode, stdout=self.stdout, stderr=self.stderr
-        )
+        return FakePopen(self.lines, self.returncode)
 
 
 class FakePersistSessionId:
@@ -95,11 +114,12 @@ def test_build_claude_command_new_session_uses_session_id_flag() -> None:
         "-p",
         "hello",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
         "--chrome",
         "--append-system-prompt",
-        command[8],
+        command[9],
         "--session-id",
         "new-id",
     ]
@@ -115,11 +135,12 @@ def test_build_claude_command_resume_uses_resume_flag() -> None:
         "-p",
         "hello",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
         "--chrome",
         "--append-system-prompt",
-        command[8],
+        command[9],
         "--resume",
         "existing-id",
     ]
@@ -255,18 +276,35 @@ def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
     assert "qwen2.5-coder:7b" in instruction
 
 
+def test_build_claude_command_uses_stream_json_output_format() -> None:
+    """issue #49の再発防止テスト。
+
+    実行時間の長いタスクで完了までログが一切伸びない問題への対応として、
+    `--output-format json`（完了後に一括出力）ではなく`--output-format
+    stream-json --verbose`（NDJSONを逐次出力）を使うことを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    output_format_index = command.index("--output-format")
+    assert command[output_format_index + 1] == "stream-json"
+    assert "--verbose" in command
+    assert "json" not in command
+
+
 def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_path: Path) -> None:
     project = Project(repo="nosetech/project-a", worktree_path=str(tmp_path / "does-not-exist"))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun()
+    popen = FakePopenFactory()
     get_session = FakeGetSessionId()
 
     result = run_agent_runner(
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -278,7 +316,7 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
 
     assert result.success is False
     assert result.exit_code == -1
-    assert run.calls == []
+    assert popen.calls == []
     assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
     assert len(comments.posted) == 1
     assert "worktreeが見つかりません" in comments.posted[0][2]
@@ -292,7 +330,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "実装しました"}', returncode=0)
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
     get_session = FakeGetSessionId()
     persist = FakePersistSessionId()
 
@@ -300,7 +338,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -313,9 +351,9 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     )
 
     assert result.session_id == FIXED_UUID()
-    assert "--session-id" in run.calls[0]["cmd"]
-    assert "--resume" not in run.calls[0]["cmd"]
-    assert run.calls[0]["cwd"] == str(worktree)
+    assert "--session-id" in popen.calls[0]["cmd"]
+    assert "--resume" not in popen.calls[0]["cmd"]
+    assert popen.calls[0]["cwd"] == str(worktree)
     assert persist.calls == [("nosetech/project-a", 1, FIXED_UUID())]
     assert result.success is True
     assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
@@ -327,7 +365,7 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "続きをやりました"}', returncode=0)
+    popen = FakePopenFactory(lines=[result_line({"result": "続きをやりました"})], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 2): "existing-id"})
     persist = FakePersistSessionId()
 
@@ -335,7 +373,7 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
         project,
         2,
         "続けて",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -347,8 +385,8 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
     )
 
     assert result.session_id == "existing-id"
-    assert "--resume" in run.calls[0]["cmd"]
-    assert "--session-id" not in run.calls[0]["cmd"]
+    assert "--resume" in popen.calls[0]["cmd"]
+    assert "--session-id" not in popen.calls[0]["cmd"]
     assert persist.calls == []
 
 
@@ -365,7 +403,7 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "ok"}', returncode=0)
+    popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 38): "session-for-38"})
     persist = FakePersistSessionId()
 
@@ -373,7 +411,7 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
         project,
         32,
         "作業を再開してください",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -386,9 +424,9 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     )
 
     # issue #38用のセッションではなく、issue #32用に新規セッションが作られる
-    assert "--session-id" in run.calls[0]["cmd"]
-    assert "--resume" not in run.calls[0]["cmd"]
-    assert "session-for-38" not in run.calls[0]["cmd"]
+    assert "--session-id" in popen.calls[0]["cmd"]
+    assert "--resume" not in popen.calls[0]["cmd"]
+    assert "session-for-38" not in popen.calls[0]["cmd"]
     assert persist.calls == [("nosetech/project-a", 32, FIXED_UUID())]
 
 
@@ -398,14 +436,14 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout="not json", returncode=0)
+    popen = FakePopenFactory(lines=["not json\n"], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -426,14 +464,14 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout="", stderr="boom", returncode=1)
+    popen = FakePopenFactory(lines=["boom\n"], returncode=1)
     get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -466,14 +504,17 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_IN_PROGRESS})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "このままpushしてPRを作成してよろしいですか？"}', returncode=0)
+    popen = FakePopenFactory(
+        lines=[result_line({"result": "このままpushしてPRを作成してよろしいですか？"})],
+        returncode=0,
+    )
     get_session = FakeGetSessionId({("nosetech/project-a", 70): "existing-id"})
 
     result = run_agent_runner(
         project,
         70,
         "作業を進めてください",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -500,14 +541,14 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "PRを作成しました"}', returncode=0)
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
 
     result = run_agent_runner(
         project,
         71,
         "作業を進めてください",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -521,20 +562,31 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
     assert labels.labels == {STATUS_IN_REVIEW}
 
 
-def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path: Path) -> None:
+def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output(
+    tmp_path: Path,
+) -> None:
+    """issue #49の再発防止テスト。
+
+    ログファイルは実行開始時点で作成され、NDJSON出力を1行読むたびに追記
+    される（プロセス終了後の一括書き出しではない）ことを、フェイクの
+    `Popen.stdout`イテレータから供給される各行がログファイルへ反映されて
+    いることで確認する。
+    """
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout='{"result": "ok"}', stderr="warn: something", returncode=0)
+    popen = FakePopenFactory(
+        lines=[result_line({"result": "ok"}), "warn: something\n"], returncode=0
+    )
     get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
 
     result = run_agent_runner(
         project,
         7,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -547,8 +599,38 @@ def test_run_agent_runner_writes_log_file_with_issue_number_and_output(tmp_path:
     assert result.log_path == tmp_path / "logs" / "nosetech/project-a" / "20260804T010203Z.log"
     content = result.log_path.read_text(encoding="utf-8")
     assert "issue: #7" in content
-    assert '{"result": "ok"}' in content
+    assert '"result": "ok"' in content
     assert "warn: something" in content
+
+
+def test_run_agent_runner_passes_stdout_and_merged_stderr_to_popen(tmp_path: Path) -> None:
+    """issue #49: `Popen`をPIPE/STDOUTで起動し、標準エラーの取りこぼしを防ぐことを確認する。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
+
+    run_agent_runner(
+        project,
+        7,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    call_kwargs = popen.calls[0]
+    assert call_kwargs["stdout"] == subprocess.PIPE
+    assert call_kwargs["stderr"] == subprocess.STDOUT
+    assert call_kwargs["text"] is True
 
 
 def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
@@ -560,12 +642,23 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    stdout = (
-        '{"result": "実装しました", "is_error": false, "total_cost_usd": 0.12, '
-        '"modelUsage": {"claude-sonnet-5": {"inputTokens": 100, "outputTokens": 50, '
-        '"cacheCreationInputTokens": 5, "cacheReadInputTokens": 2, "costUSD": 0.12}}}'
+    payload_line = result_line(
+        {
+            "result": "実装しました",
+            "is_error": False,
+            "total_cost_usd": 0.12,
+            "modelUsage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 50,
+                    "cacheCreationInputTokens": 5,
+                    "cacheReadInputTokens": 2,
+                    "costUSD": 0.12,
+                }
+            },
+        }
     )
-    run = FakeRun(stdout=stdout, returncode=0)
+    popen = FakePopenFactory(lines=[payload_line], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
@@ -573,7 +666,7 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -611,11 +704,14 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    stdout = (
-        '{"is_error": true, "api_error_status": 429, '
-        '"result": "You\'ve hit your session limit · resets 1pm (Asia/Tokyo)"}'
+    payload_line = result_line(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "You've hit your session limit · resets 1pm (Asia/Tokyo)",
+        }
     )
-    run = FakeRun(stdout=stdout, returncode=1)
+    popen = FakePopenFactory(lines=[payload_line], returncode=1)
     get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
@@ -623,7 +719,7 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,
@@ -657,7 +753,7 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
-    run = FakeRun(stdout="not json", returncode=0)
+    popen = FakePopenFactory(lines=["not json\n"], returncode=0)
     get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
@@ -665,7 +761,7 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
         project,
         1,
         "実装して",
-        run=run,
+        popen=popen,
         post_comment=comments.post_comment,
         get_labels=labels.get_labels,
         add_label=labels.add_label,

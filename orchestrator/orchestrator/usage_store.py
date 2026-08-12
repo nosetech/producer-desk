@@ -3,7 +3,8 @@
 仕様: docs/basic-design.md 2-2「利用量・リミットモニター」、issue #60
 
 正確な利用率(%)（セッション5時間枠・週間上限に対する消費率）はAgent Runnerの
-実行結果（`claude -p ... --output-format json`）からは取得できないため、実行の
+実行結果（`claude -p ... --output-format stream-json --verbose`のNDJSON出力から
+取り出した最後の`"type":"result"`イベント）からは取得できないため、実行の
 たびに得られる `usage.*` / `modelUsage.*` / `total_cost_usd` を`config/usage.db`
 （.gitignore対象、コミットしない）にSQLiteで記録し、「日単位の使用量」として
 モデル別に集計・表示する方式に転換した。
