@@ -83,6 +83,7 @@ def main() -> None:
             "interval_seconds": DEFAULT_INTERVAL_SECONDS,
             "on_update": on_update,
             "on_issues_fetched": on_issues_fetched,
+            "is_dispatch_active": dispatch_queue.is_active,
             "stop_event": stop_event,
         },
         daemon=True,
