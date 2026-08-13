@@ -98,3 +98,71 @@ def test_is_running_and_queue_length_reflect_idle_state() -> None:
 
     assert queue.is_running("nosetech/project-a") is False
     assert queue.queue_length("nosetech/project-a") == 0
+
+
+def test_is_active_false_when_never_dispatched() -> None:
+    """一度もenqueueされていないissueはis_active=False（issue #50の孤立検知の前提）。"""
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        pass
+
+    queue = DispatchQueue(dispatch_fn=dispatch_fn)
+
+    assert queue.is_active("nosetech/project-a", 1) is False
+
+
+def test_is_active_true_while_dispatch_fn_is_running() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    queue.enqueue("nosetech/project-a", 1, "hello")
+    assert started.wait(timeout=2)
+
+    assert queue.is_active("nosetech/project-a", 1) is True
+    assert queue.is_active("nosetech/project-a", 2) is False
+
+    release.set()
+
+
+def test_is_active_true_for_queued_but_not_yet_running_issue() -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        if issue_number == 1:
+            first_started.set()
+            release_first.wait(timeout=2)
+
+    queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    queue.enqueue("nosetech/project-a", 1, "first")
+    assert first_started.wait(timeout=2)
+    queue.enqueue("nosetech/project-a", 2, "second")
+
+    # issue 2はまだ実行されていないが、キューに積まれているのでactiveとして扱う
+    assert queue.is_active("nosetech/project-a", 2) is True
+
+    release_first.set()
+
+
+def test_is_active_false_after_dispatch_completes() -> None:
+    done = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        done.set()
+
+    queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    queue.enqueue("nosetech/project-a", 1, "hello")
+    assert done.wait(timeout=2)
+
+    # ワーカーがキューを空にして終了するまで少し待つ
+    for _ in range(20):
+        if not queue.is_running("nosetech/project-a"):
+            break
+        time.sleep(0.05)
+
+    assert queue.is_active("nosetech/project-a", 1) is False

@@ -300,3 +300,56 @@ def test_aggregate_does_not_log_warning_when_issue_has_single_status_label(
         aggregate(issues_by_repo)
 
     assert caplog.records == []
+
+
+def test_aggregate_marks_in_progress_issue_as_orphaned_when_dispatch_inactive() -> None:
+    # ラベルのみ手動付与され、ディスパッチキューには一度も乗らなかったケースを再現する
+    # （issue #50、実例: nosetech/stock-is#103）。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_IN_PROGRESS], "2026-08-01T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo, is_dispatch_active=lambda repo, number: False)
+
+    assert state.activity[0].is_orphaned is True
+
+
+def test_aggregate_does_not_mark_in_progress_issue_as_orphaned_when_dispatch_active() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_IN_PROGRESS], "2026-08-01T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo, is_dispatch_active=lambda repo, number: True)
+
+    assert state.activity[0].is_orphaned is False
+
+
+def test_aggregate_does_not_mark_non_in_progress_issue_as_orphaned() -> None:
+    # in-progress以外の状態は、ディスパッチキューに乗っていなくても正常（判断待ち・
+    # レビュー待ち等はAgent Runner終了後の状態のため）。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_NEEDS_HUMAN_DECISION], "2026-08-01T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo, is_dispatch_active=lambda repo, number: False)
+
+    assert state.activity[0].is_orphaned is False
+
+
+def test_aggregate_defaults_orphaned_to_false_when_is_dispatch_active_not_provided() -> None:
+    # is_dispatch_activeを渡さない呼び出し元（判定不能）では、誤検知を避けて常にFalse。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_IN_PROGRESS], "2026-08-01T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.activity[0].is_orphaned is False

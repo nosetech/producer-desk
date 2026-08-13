@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from orchestrator.aggregation import AggregatedState, IssueSummary, aggregate
+from orchestrator.aggregation import AggregatedState, IsDispatchActiveFn, IssueSummary, aggregate
 from orchestrator.config import Project
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
@@ -40,17 +40,22 @@ def poll_once(
     list_issues: ListIssuesFn = gh_list_issues,
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
+    is_dispatch_active: IsDispatchActiveFn | None = None,
 ) -> AggregatedState:
     """全プロジェクトを1回ポーリングし、集約結果を返す。
 
     `on_issues_fetched` が指定されていれば、集約前の生の取得結果（リポジトリ別issue一覧）
     を渡して呼び出す（直接issueにコメントされた指示の検知など、issue #14の用途）。
+    `is_dispatch_active`（`DispatchQueue.is_active`、issue #50）を指定すると、
+    `aggregate()` が孤立したin-progressissueを検知する。`on_issues_fetched` によって
+    このポーリング内でディスパッチが行われた場合も、その結果は集約前に反映される
+    （enqueue()はディスパッチスレッド起動前に同期的にキューへ積むため）。
     """
     issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
     _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
     if on_issues_fetched is not None:
         on_issues_fetched(issues_by_repo)
-    return aggregate(issues_by_repo)
+    return aggregate(issues_by_repo, is_dispatch_active=is_dispatch_active)
 
 
 def run_polling_loop(
@@ -61,6 +66,7 @@ def run_polling_loop(
     list_issues: ListIssuesFn = gh_list_issues,
     resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
+    is_dispatch_active: IsDispatchActiveFn | None = None,
     stop_event: threading.Event | None = None,
 ) -> None:
     """ポーリングを繰り返し、更新のたびに `on_update` を呼び出す。
@@ -77,6 +83,7 @@ def run_polling_loop(
             list_issues=list_issues,
             resolve_pr_number=resolve_pr_number,
             on_issues_fetched=on_issues_fetched,
+            is_dispatch_active=is_dispatch_active,
         )
         on_update(state)
 

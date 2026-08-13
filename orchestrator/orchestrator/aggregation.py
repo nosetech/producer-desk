@@ -6,14 +6,19 @@
 - 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
   （5つの状態ラベルのいずれも付与されていない管理対象外issueは除外する。
   docs/basic-design.md 1章「管理対象外issueの扱い」）
+- 孤立したin-progress検知: `status:in-progress` ラベルが付いているのに、対応する
+  Agent Runnerがディスパッチキュー上で実行中でも待機中でもないissueを異常として
+  イベントにマークする（issue #50）
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orchestrator.labels import (
+    STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_LABEL_PRIORITY,
     STATUS_LABELS,
@@ -21,6 +26,11 @@ from orchestrator.labels import (
 )
 
 logger = logging.getLogger(__name__)
+
+# `DispatchQueue.is_active(repo, issue_number)` と同じシグネチャの関数型。
+# aggregationはDispatchQueueそのものに依存せず、この関数を注入させることで
+# orchestrator.dispatch_queueへの依存を避ける（他のFn型と同様の方針）。
+IsDispatchActiveFn = Callable[[str, int], bool]
 
 
 @dataclass
@@ -44,6 +54,9 @@ class ActivityEvent:
     title: str
     label: str
     updated_at: str
+    # `label`が`status:in-progress`で、かつ対応するAgent Runnerがディスパッチキュー上
+    # で実行中・待機中のいずれでもない場合にTrueになる（issue #50）。
+    is_orphaned: bool = False
 
 
 @dataclass
@@ -74,8 +87,28 @@ def _current_status_label(issue: IssueSummary) -> str | None:
     return next((label for label in STATUS_LABEL_PRIORITY if label in present), None)
 
 
-def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
-    """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・活動ログに集約する。"""
+def _is_orphaned_in_progress(
+    issue: IssueSummary, label: str, is_dispatch_active: IsDispatchActiveFn | None
+) -> bool:
+    """`status:in-progress`のissueなのにディスパッチキュー上で動いていないかを判定する。
+
+    `is_dispatch_active`が渡されない場合（テスト・呼び出し元がディスパッチ状態を
+    持たない場合）は判定不能として常にFalseを返す（誤検知を避ける）。
+    """
+    if is_dispatch_active is None or label != STATUS_IN_PROGRESS:
+        return False
+    return not is_dispatch_active(issue.repo, issue.number)
+
+
+def aggregate(
+    issues_by_repo: dict[str, list[IssueSummary]],
+    is_dispatch_active: IsDispatchActiveFn | None = None,
+) -> AggregatedState:
+    """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・活動ログに集約する。
+
+    `is_dispatch_active`（`DispatchQueue.is_active`、issue #50）を渡すと、活動ログの
+    各イベントに孤立したin-progressの検知結果（`ActivityEvent.is_orphaned`）を含める。
+    """
     all_issues = [issue for issues in issues_by_repo.values() for issue in issues]
 
     decisions = [issue for issue in all_issues if STATUS_NEEDS_HUMAN_DECISION in issue.labels]
@@ -91,6 +124,7 @@ def aggregate(issues_by_repo: dict[str, list[IssueSummary]]) -> AggregatedState:
             title=issue.title,
             label=label,
             updated_at=issue.updated_at,
+            is_orphaned=_is_orphaned_in_progress(issue, label, is_dispatch_active),
         )
         for issue in all_issues
         if (label := _current_status_label(issue)) is not None

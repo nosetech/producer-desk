@@ -27,6 +27,9 @@ class DispatchQueue:
             collections.deque
         )
         self._running: set[str] = set()
+        # 各リポジトリで現在ディスパッチ中（`_dispatch_fn`実行中）のissue番号。
+        # `is_active()`（issue #50）が「実行中かつどのissueか」まで判定できるように保持する。
+        self._current: dict[str, int] = {}
 
     def enqueue(self, repo: str, issue_number: int, message: str) -> None:
         """メッセージをキューに追加する。実行中でなければワーカーを起動する。"""
@@ -43,8 +46,10 @@ class DispatchQueue:
             with self._lock:
                 if not self._queues[repo]:
                     self._running.discard(repo)
+                    self._current.pop(repo, None)
                     return
                 issue_number, message = self._queues[repo].popleft()
+                self._current[repo] = issue_number
 
             self._dispatch_fn(repo, issue_number, message)
 
@@ -55,3 +60,15 @@ class DispatchQueue:
     def queue_length(self, repo: str) -> int:
         with self._lock:
             return len(self._queues[repo])
+
+    def is_active(self, repo: str, issue_number: int) -> bool:
+        """指定issueが現在ディスパッチ中（実行中 or キュー待ち）かどうかを返す（issue #50）。
+
+        `status:in-progress` ラベルが付いているのに実際にはディスパッチキュー上に
+        該当issueの実行・待機のいずれも存在しない「孤立したin-progress」を検知する
+        `aggregation.aggregate()` から利用される。
+        """
+        with self._lock:
+            if self._current.get(repo) == issue_number:
+                return True
+            return any(number == issue_number for number, _ in self._queues[repo])

@@ -134,7 +134,10 @@ def _make_handler(
             """
             try:
                 state = poll_once(
-                    projects, list_issues=list_issues, resolve_pr_number=resolve_pr_number
+                    projects,
+                    list_issues=list_issues,
+                    resolve_pr_number=resolve_pr_number,
+                    is_dispatch_active=dispatch_queue.is_active,
                 )
             except subprocess.CalledProcessError as e:
                 logger.warning("instruct成功後のstate再取得に失敗しました: %s", e)
