@@ -27,6 +27,8 @@ export interface ActivityEvent {
   title: string;
   label: StatusLabel;
   updated_at: string;
+  /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
+  is_orphaned: boolean;
 }
 
 export interface AggregatedState {

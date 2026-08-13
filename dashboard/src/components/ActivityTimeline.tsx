@@ -5,6 +5,26 @@ import { shortRepoName } from "@/lib/projectStatus";
 import type { ActivityEvent } from "@/lib/types";
 import styles from "./ActivityTimeline.module.css";
 
+function WarningIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={styles.warningIcon}
+    >
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
 export default function ActivityTimeline({
   activity,
   onReply,
@@ -24,6 +44,9 @@ export default function ActivityTimeline({
         <div className={styles.list}>
           {activity.map((event) => {
             const meta = statusMeta(event.label);
+            const dotColorVar = event.is_orphaned
+              ? "--accent-red"
+              : meta.colorVar;
             return (
               <div
                 key={`${event.repo}#${event.number}`}
@@ -31,7 +54,7 @@ export default function ActivityTimeline({
               >
                 <span
                   className={styles.dot}
-                  style={{ backgroundColor: `var(${meta.colorVar})` }}
+                  style={{ backgroundColor: `var(${dotColorVar})` }}
                 />
                 <div className={styles.text}>
                   <span className={styles.repoLabel}>
@@ -42,6 +65,24 @@ export default function ActivityTimeline({
                   <div className={styles.time}>
                     {formatRelativeTime(event.updated_at)}
                   </div>
+                  {event.is_orphaned && (
+                    <div className={styles.warningBox}>
+                      <WarningIcon />
+                      <div className={styles.warningTextGroup}>
+                        <div className={styles.warningTitle}>
+                          実行中プロセスが見つかりません
+                        </div>
+                        <div className={styles.warningDesc}>
+                          ラベルは{" "}
+                          <span className={styles.warningCode}>
+                            status:in-progress
+                          </span>{" "}
+                          ですが、Agent Runner
+                          のプロセスが起動していません（孤立状態）。
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"
