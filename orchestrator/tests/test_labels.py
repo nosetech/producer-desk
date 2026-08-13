@@ -158,7 +158,7 @@ def test_retry_converges_after_add_failure_leaves_no_status_label() -> None:
         ({STATUS_TODO}, STATUS_IN_PROGRESS),
         ({STATUS_NEEDS_HUMAN_DECISION}, STATUS_IN_PROGRESS),
         ({STATUS_IN_PROGRESS}, STATUS_IN_PROGRESS),
-        ({STATUS_IN_REVIEW}, STATUS_IN_REVIEW),
+        ({STATUS_IN_REVIEW}, STATUS_IN_PROGRESS),
         ({STATUS_CLOSED}, STATUS_IN_PROGRESS),
     ],
 )

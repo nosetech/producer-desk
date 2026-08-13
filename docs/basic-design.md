@@ -61,10 +61,11 @@ def transition_label(repo, issue_number, new_label):
 | `status:todo` | → `status:in-progress` | 実行中でなければ即時、実行中ならキュー |
 | `needs-human-decision` | → `status:in-progress` | 同上 |
 | `status:in-progress` | 変更なし（割り込み指示として扱う） | 実行中のためキューに追加 |
-| `status:in-review` | 変更なし | 実行中でなければ即時、実行中ならキュー |
+| `status:in-review` | → `status:in-progress`（差し戻し・追加指示として扱う） | 実行中でなければ即時、実行中ならキュー |
 | `status:closed` | → `status:in-progress`（再着手扱い） | 実行中でなければ即時、実行中ならキュー |
 
 - `status:closed` のissueへの自由記述指示はラベルこそ `status:in-progress` に戻すが、GitHub issue自体のクローズ状態（Open/Closed）は変更しない（issueのクローズ・再オープンはproducer-deskの操作範囲外。[アーキテクチャ設計書](./architecture.md)参照）。再着手させたい場合は、プロデューサーが別途GitHub上でissueをreopenする運用とする。
+- `status:in-review` のissueへの自由記述指示（返信）は `status:in-progress` へ即時遷移させる。当初はラベルを変更しない設計だったが、その場合ダッシュボードのレビュー待ち一覧（判定はラベルのみを見る）から返信後もカードが消えず、Agent Runnerが追加対応に着手した後でも「承認」ボタンを押せてしまい、対応中のPRをそのままマージしてしまう不具合があった（issue #95）。承認操作と同様、返信操作でも即座にラベルを更新してカードを一覧から外すことで、この競合を防ぐ。
 
 ## 2. オーケストレータ／ダッシュボードAPI設計
 
