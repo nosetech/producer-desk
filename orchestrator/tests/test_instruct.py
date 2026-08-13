@@ -159,7 +159,9 @@ def test_handle_instruct_instruct_on_in_progress_does_not_change_label_but_dispa
     assert calls == [("nosetech/project-a", 1, "割り込み指示です")]
 
 
-def test_handle_instruct_instruct_on_in_review_keeps_label() -> None:
+def test_handle_instruct_instruct_on_in_review_transitions_to_in_progress() -> None:
+    """レビュー待ちへの返信は差し戻し扱いでin-progressへ遷移し、レビュー待ち一覧から
+    カードが消える（承認操作と同様。issue #95）。"""
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     dispatch_queue, calls = _synchronous_dispatch_queue()
@@ -176,8 +178,10 @@ def test_handle_instruct_instruct_on_in_review_keeps_label() -> None:
         dispatch_queue=dispatch_queue,
     )
 
-    assert result.label == STATUS_IN_REVIEW
-    assert labels.labels == {STATUS_IN_REVIEW}
+    assert result.label == STATUS_IN_PROGRESS
+    assert labels.labels == {STATUS_IN_PROGRESS}
+    _wait_for(calls, 1)
+    assert calls == [("nosetech/project-a", 1, "追加対応をお願いします")]
 
 
 def test_handle_instruct_unknown_action_raises() -> None:
