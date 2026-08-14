@@ -9,6 +9,7 @@ dashboard/      ダッシュボード Web UI（Next.js）
 orchestrator/   オーケストレータ（Python、GitHub Issuesポーリング・ディスパッチ）
 config/         設定ファイル（projects.yaml 等。実データはコミットしない）
 logs/           Agent Runner実行ログ（コミットしない）
+scripts/        運用スクリプト（config/usage.dbの日次バックアップ等）
 ```
 
 ## ローカル開発環境のセットアップ
@@ -81,3 +82,44 @@ Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変�
 ## ログ出力先ディレクトリの運用方針
 
 Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<repo>/<timestamp>.log` としてローカルに保存する（[`docs/basic-design.md` 3-2](./docs/basic-design.md#3-2-監視方法)）。`logs/` ディレクトリ自体はリポジトリに含めるが、中身のログファイルはコミットしない（`.gitignore` 参照）。ディレクトリが存在しない場合はオーケストレータが実行時に作成する想定。
+
+## DBバックアップ（macOS launchd）
+
+`config/usage.db`（利用量・コスト記録用SQLite、[`docs/basic-design.md` 2-2](./docs/basic-design.md#2-2-データ取得仕様ポーリング)参照）は`.gitignore`対象のローカルファイルで、GitHubから再構築できない唯一のデータのため、`scripts/backup_usage_db.sh`と`launchd`のper-user LaunchAgentを使って日次バックアップする。
+
+### セットアップ
+
+```bash
+cp scripts/com.nosetech.producer-desk.backup-usage-db.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
+```
+
+コピー後のファイル内の `/path/to/producer-desk` を、このリポジトリの実際の絶対パスに書き換える（`ProgramArguments`・`StandardOutPath`・`StandardErrorPath`の3箇所）。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
+```
+
+読み込み後は毎日3:00（JST。システムのタイムゾーン設定に従う）に自動実行される。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできる（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定する）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできる。
+
+即時実行して動作確認する場合:
+
+```bash
+launchctl start com.nosetech.producer-desk.backup-usage-db
+```
+
+`logs/backup_usage_db.log`に実行結果が出力され、バックアップ先ディレクトリにタイムスタンプ付きのファイル（例: `usage-20260811-030000.db`）が作成されていることを確認する。
+
+停止する場合:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
+```
+
+### 復元手順
+
+オーケストレータを停止した状態で、復元したいバックアップファイルを`config/usage.db`に上書きコピーする。
+
+```bash
+cp ~/Backups/producer-desk/usage-<timestamp>.db config/usage.db
+```
