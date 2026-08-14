@@ -6,7 +6,12 @@ import threading
 
 from orchestrator.aggregation import IssueSummary
 from orchestrator.config import Project
-from orchestrator.labels import STATUS_IN_REVIEW, STATUS_NEEDS_HUMAN_DECISION
+from orchestrator.labels import (
+    STATUS_IN_PROGRESS,
+    STATUS_IN_REVIEW,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_TODO,
+)
 from orchestrator.polling import poll_once, run_polling_loop
 
 PROJECT_A = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
@@ -58,6 +63,49 @@ def test_poll_once_resolves_pr_number_only_for_in_review_issues() -> None:
 
     assert resolved_calls == [("nosetech/project-a", 1)]
     assert state.reviews[0].pr_number == 33
+
+
+def test_poll_once_reflects_label_transition_made_by_on_issues_fetched() -> None:
+    """issue #97: on_issues_fetched内でオーケストレータ自身が行ったラベル遷移
+    （コメント指示検知・クローズ検知を模したフェイク）が、同一poll_once呼び出しの
+    aggregate()結果（活動ログ）に反映されることを検証する。"""
+    state_by_repo = {
+        "nosetech/project-a": [_issue("nosetech/project-a", 1, [STATUS_TODO])],
+    }
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        # 呼び出すたびに現在の状態ラベルを反映した最新のイシュー一覧を返す
+        # （実際のgh CLI呼び出しと同様、都度GitHubから取得し直す想定）
+        return [
+            _issue(issue.repo, issue.number, list(issue.labels)) for issue in state_by_repo[repo]
+        ]
+
+    def on_issues_fetched(issues_by_repo: dict[str, list[IssueSummary]]) -> None:
+        # コメント指示検知等によりオーケストレータ自身がラベルを書き換える処理を模す
+        state_by_repo["nosetech/project-a"][0].labels = [STATUS_IN_PROGRESS]
+
+    state = poll_once(
+        [PROJECT_A],
+        list_issues=list_issues,
+        on_issues_fetched=on_issues_fetched,
+    )
+
+    assert [event.label for event in state.activity] == [STATUS_IN_PROGRESS]
+
+
+def test_poll_once_skips_refetch_when_on_issues_fetched_is_none() -> None:
+    """`on_issues_fetched`が`None`の場合（`server._refresh_store`からの呼び出し等）は
+    再取得せず、無駄なGitHub API呼び出しを避ける（issue #97）。"""
+    call_count = 0
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    poll_once([PROJECT_A], list_issues=list_issues)
+
+    assert call_count == 1
 
 
 def test_run_polling_loop_calls_on_update_each_cycle_until_stopped() -> None:
