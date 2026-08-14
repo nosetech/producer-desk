@@ -8,7 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from orchestrator.session_store import get_session_id, load_sessions, persist_session_id
+from orchestrator.session_store import (
+    SESSIONS_PATH_ENV,
+    get_session_id,
+    load_sessions,
+    persist_session_id,
+)
 
 
 def test_get_session_id_returns_none_when_file_does_not_exist(tmp_path: Path) -> None:
@@ -65,3 +70,30 @@ def test_load_sessions_returns_empty_dict_when_file_does_not_exist(tmp_path: Pat
     sessions_path = tmp_path / "sessions.json"
 
     assert load_sessions(sessions_path=sessions_path) == {}
+
+
+def test_persist_session_id_reads_sessions_path_env_var_when_arg_omitted(
+    monkeypatch, tmp_path: Path
+) -> None:
+    sessions_path = tmp_path / "dev-sessions.json"
+    monkeypatch.setenv(SESSIONS_PATH_ENV, str(sessions_path))
+
+    persist_session_id("nosetech/project-a", 12, "abc-123")
+
+    assert get_session_id("nosetech/project-a", 12) == "abc-123"
+    assert sessions_path.exists()
+
+
+def test_persist_session_id_explicit_arg_takes_precedence_over_env_var(
+    monkeypatch, tmp_path: Path
+) -> None:
+    env_sessions_path = tmp_path / "env-sessions.json"
+    monkeypatch.setenv(SESSIONS_PATH_ENV, str(env_sessions_path))
+
+    explicit_sessions_path = tmp_path / "explicit-sessions.json"
+    persist_session_id("nosetech/project-a", 12, "abc-123", sessions_path=explicit_sessions_path)
+
+    assert not env_sessions_path.exists()
+    assert get_session_id("nosetech/project-a", 12, sessions_path=explicit_sessions_path) == (
+        "abc-123"
+    )

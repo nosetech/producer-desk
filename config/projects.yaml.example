@@ -1,6 +1,12 @@
 # config/projects.yaml のサンプル。
 # 実データは config/projects.yaml にコピーして作成する（.gitignore対象、コミットしない）。
 # 仕様: docs/basic-design.md 2-1（対象リポジトリ一覧の管理）
+#
+# 開発用インスタンスを運用インスタンスと並行起動する場合は、このファイルとは
+# 別に環境変数 PROJECTS_CONFIG_PATH で参照先を切り替える
+# （テスト用プロジェクトのみを記載した別ファイルを用意する。README「リリース・
+# 日常運用」参照）。運用中の実プロジェクトを開発用インスタンスの対象に含めると、
+# 同一worktreeへの同時ディスパッチが起こりうるため避けること。
 
 projects:
   - repo: nosetech/project-a
