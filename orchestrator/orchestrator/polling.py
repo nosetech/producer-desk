@@ -50,11 +50,22 @@ def poll_once(
     `aggregate()` が孤立したin-progressissueを検知する。`on_issues_fetched` によって
     このポーリング内でディスパッチが行われた場合も、その結果は集約前に反映される
     （enqueue()はディスパッチスレッド起動前に同期的にキューへ積むため）。
+
+    `on_issues_fetched` はコメント指示検知・クローズ検知経由でオーケストレータ自身が
+    `labels.transition_label()` を呼び、GitHub側のラベルを書き換えることがある
+    （issue #97）。この変更は呼び出し前に取得済みの `issues_by_repo` には反映されない
+    ため、`on_issues_fetched` 呼び出し後に `issues_by_repo` を取得し直してから
+    `aggregate()` に渡し、同一ポーリングサイクル内のラベル遷移を「最近の活動」に
+    即時反映させる。`on_issues_fetched` が `None`（`server._refresh_store` からの
+    呼び出し等、オーケストレータ自身によるラベル遷移が起きない経路）の場合は
+    再取得せず、無駄なGitHub API呼び出しを避ける。
     """
     issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
     _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
     if on_issues_fetched is not None:
         on_issues_fetched(issues_by_repo)
+        issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
+        _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
     return aggregate(issues_by_repo, is_dispatch_active=is_dispatch_active)
 
 
