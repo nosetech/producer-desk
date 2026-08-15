@@ -14,6 +14,8 @@ npm run dev
 
 [http://localhost:3000](http://localhost:3000) を開く。オーケストレータ（`orchestrator/`）が `http://127.0.0.1:8787` で起動していないと、判断待ち一覧・活動ログ・承認/却下/指示送信は動作しない。
 
+Next.jsは`15.x`系に固定している。`16.x`系には`/_global-error`ページのプリレンダリングが`TypeError: Cannot read properties of null (reading 'useContext')`で確実に失敗する既知の未解決バグがあり（issue #104参照）、`npm run build && npm run start`による本番相当起動ができないため。`eslint-config-next`が`15.x`ではまだflat config形式のエクスポートを持たないため、`eslint.config.mjs`では`@eslint/eslintrc`の`FlatCompat`で橋渡ししている。
+
 ## アーキテクチャ
 
 - ダッシュボード（Next.js）はブラウザから直接オーケストレータのAPIを呼ばない。CORS設定を持たないオーケストレータ内部API（`docs/basic-design.md` 2-2・2-3）へは、Next.jsのRoute Handler（`src/app/api/**/route.ts`）がサーバーサイドでプロキシする。

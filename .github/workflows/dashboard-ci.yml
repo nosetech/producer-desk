@@ -38,3 +38,6 @@ jobs:
 
       - name: tsc --noEmit
         run: npx tsc --noEmit
+
+      - name: next build
+        run: npm run build
