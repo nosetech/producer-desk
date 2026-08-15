@@ -62,6 +62,14 @@ class AgentRunResult:
 # しかし実際にはこの指示がプロンプトに含まれていないと実行されないことがあり
 # （issue #33: PR作成後もstatus:in-progressのままになり判断待ちが宙に浮いた）、
 # `--append-system-prompt`で毎回明示的に指示することで確実性を上げる。
+#
+# issue #104: 当初「プルリクエストを作成した場合」を条件にしていたため、PR作成
+# 直後に即座にstatus:in-reviewへ遷移してしまい、fix-github-issueスキルの後続
+# ステップ（CI完了待ち・code-reviewerサブエージェントによるレビュー・レビュー
+# 結果のPRコメント投稿）が完了する前にダッシュボードのレビュー待ち一覧（判定は
+# ラベルのみを見る）にカードが出てしまう不具合があった。ラベル遷移は「PR作成」
+# ではなく「そのissueについて自分がこのセッション内で行う一連の作業が完了した
+# 時点」に紐付ける。
 AGENT_RUNNER_LABEL_INSTRUCTION = (
     "あなたはproducer-deskオーケストレータからディスパッチされたAgent Runnerとして、"
     "GitHub issue {repo}#{issue_number} に取り組んでいます。"
@@ -74,6 +82,12 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "- プルリクエストを作成した場合: "
     f"`gh issue edit {{issue_number}} --repo {{repo}} "
     f"--add-label {STATUS_IN_REVIEW} --remove-label {STATUS_IN_PROGRESS}`\n"
+    "  ただし、PR作成はこのコマンドを実行してよいタイミングの下限に過ぎません。"
+    "CI完了待ち・コードレビューの実施・レビュー結果のPRへのコメント投稿など、"
+    "そのissueについてこのセッション内で自分が続けて行う後続作業がある場合は、"
+    "それらを全て終えるまでこのラベル遷移を実行しないでください。PR作成直後に"
+    "即座に実行すると、まだレビュー結果が投稿されていないのにダッシュボードの"
+    "レビュー待ち一覧に表示されてしまいます（ラベルの有無だけで判定するため）。\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
