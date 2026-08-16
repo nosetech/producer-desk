@@ -32,6 +32,7 @@ export default function Dashboard() {
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
+  const [lockedIssue, setLockedIssue] = useState<IssueRef | null>(null);
 
   const [toast, setToast] = useState<{ show: boolean; text: string }>({
     show: false,
@@ -119,12 +120,14 @@ export default function Dashboard() {
             onApproved={refresh}
             onReply={handleReply}
             onToast={showToast}
+            lockedIssue={lockedIssue}
           />
           <ReviewsList
             reviews={state.reviews}
             onApproved={refresh}
             onReply={handleReply}
             onToast={showToast}
+            lockedIssue={lockedIssue}
           />
         </div>
         <div className={styles.right}>
@@ -143,6 +146,7 @@ export default function Dashboard() {
         newTaskRepo={newTaskRepo}
         onNewTaskRepoChange={setNewTaskRepo}
         onSubmitted={refresh}
+        onReplySubmittingChange={setLockedIssue}
       />
       <Toast show={toast.show} text={toast.text} />
     </div>

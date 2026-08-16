@@ -1,3 +1,4 @@
+import type { IssueRef } from "./ComposerBar";
 import type { IssueSummary } from "@/lib/types";
 import ReviewCard from "./ReviewCard";
 import styles from "./ReviewsList.module.css";
@@ -7,11 +8,13 @@ export default function ReviewsList({
   onApproved,
   onReply,
   onToast,
+  lockedIssue,
 }: {
   reviews: IssueSummary[];
   onApproved: () => Promise<void>;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
+  lockedIssue: IssueRef | null;
 }) {
   return (
     <div className={styles.panel}>
@@ -40,6 +43,10 @@ export default function ReviewsList({
               onApproved={onApproved}
               onReply={onReply}
               onToast={onToast}
+              locked={
+                lockedIssue?.repo === review.repo &&
+                lockedIssue?.number === review.number
+              }
             />
           ))}
         </div>
