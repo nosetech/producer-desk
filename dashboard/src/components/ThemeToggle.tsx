@@ -20,7 +20,6 @@ export default function ThemeToggle() {
   useEffect(() => {
     // documentのdata-theme属性（layout.tsxのインラインスクリプトが設定）はSSR時に
     // 参照できないため、マウント後に一度だけ実際の値へ同期する。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(currentTheme());
 
     // 手動で切り替えていない（data-theme未設定）場合は、OSのテーマ設定が
