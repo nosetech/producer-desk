@@ -4,6 +4,7 @@ config/sessions.json
 config/usage.db
 .env
 .env.*
+!.env.example
 !.env.*.example
 *.local
 
