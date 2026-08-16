@@ -88,7 +88,7 @@ Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<r
 
 ## リリース・日常運用
 
-開発時のように`npm run dev`・`python -m orchestrator.main`を都度手動起動するのではなく、プロデューサーが日常的に使い続けるためにバックグラウンドで起動・停止する場合は、`bin/start.sh` / `bin/stop.sh` を使う。前提として、上記「ローカル開発環境のセットアップ」の1・2（`dashboard/node_modules`のインストール、orchestrator用Python環境の構築）と3（`config/projects.yaml`の作成）を済ませておくこと。
+開発時のように`npm run dev`・`python -m orchestrator.main`を都度手動起動するのではなく、プロデューサーが日常的に使い続けるためにバックグラウンドで起動・停止する場合は、`bin/start.sh` / `bin/stop.sh` を使う。前提として、上記「ローカル開発環境のセットアップ」の1（`dashboard/node_modules`のインストール）と3（`config/projects.yaml`の作成）を済ませておくこと（orchestrator用のPython仮想環境は`bin/start.sh`が無ければ自動作成するため、事前準備は不要）。
 
 ### 起動・停止
 
@@ -97,8 +97,10 @@ Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<r
 ```
 
 - dashboardを `npm run build` でビルドした上で本番モード（`next start`）、orchestratorを `python -m orchestrator.main` を、それぞれバックグラウンドで起動する
+- orchestrator用のPython仮想環境（`orchestrator/.venv`）が無ければ自動的に作成し、`pip install -e .`で依存関係を導入してから起動する。既に`orchestrator/.venv`または`orchestrator/venv`が存在する場合はそれをそのまま使う
 - 起動したプロセスのPIDを `logs/orchestrator.pid` / `logs/dashboard.pid` に記録する（`bin/stop.sh`が参照する）
-- 同一LAN内の別端末に公開する場合は、環境変数 `LAN_IP` を設定してから実行する（`next start --hostname "$LAN_IP"` で起動する。オーケストレータの内部APIは常に`127.0.0.1`のみで待ち受けるためLAN公開時もこちらの設定は不要。[ネットワークアクセスの認証設計](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
+- 待受ポートは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）・`DASHBOARD_PORT`（既定: `3000`）で上書きできる。同一LAN内の別端末にdashboardを公開する場合は環境変数 `LAN_IP` を設定する（`next start --hostname "$LAN_IP"` で起動する。オーケストレータの内部APIは常に`127.0.0.1`のみで待ち受けるためLAN公開時もこちらの設定は不要。[ネットワークアクセスの認証設計](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
+- これらの環境変数はシェルでのexportに加えて、`orchestrator/.env`（`ORCHESTRATOR_PORT`等、[`orchestrator/.env.example`](./orchestrator/.env.example)参照）・`dashboard/.env`（`DASHBOARD_PORT`・`LAN_IP`、[`dashboard/.env.example`](./dashboard/.env.example)参照）に設定してもよい（`bin/start.sh`が起動時に読み込む）
 
 ```bash
 LAN_IP=192.168.1.xx ./bin/start.sh

@@ -1,19 +1,21 @@
 #!/bin/bash
 # dashboard・orchestratorを本番相当構成で一括起動する（運用インスタンス専用）。
-# 既定ポート（orchestrator: 8787、dashboard: 3000）で起動する前提であり、
 # 開発用インスタンスを別途並行起動する場合は README「リリース・日常運用」を参照。
 #
 # 使い方:
 #   ./bin/start.sh
 #
-# 環境変数:
-#   LAN_IP   同一LAN内の別端末に公開する場合のみ設定する（dashboardを
-#            `next start --hostname "$LAN_IP"` で起動する。未設定時は127.0.0.1のみ）
-#   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
-#            （既定: orchestrator/.venv/bin/python、無ければ python3）
+# ポート・LAN公開設定は環境変数で上書きできる（shellでexportする方法に加えて、
+# orchestrator/.env・dashboard/.env（それぞれの.env.example参照）でも指定可能）。
 #
-# orchestrator/.env が存在する場合は起動前に読み込みexportする
-# （SLACK_WEBHOOK_URL等、orchestrator/.env.example参照）。
+#   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）
+#   DASHBOARD_PORT      dashboardのbindポート（既定: 3000）
+#   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
+#                       `next start --hostname "$LAN_IP"` で起動する。未設定時は
+#                       全インターフェースで待ち受ける既定動作のまま）
+#   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
+#            （既定: orchestrator/.venv/bin/python。.venvが無ければこのスクリプトが
+#            自動作成する。既にorchestrator/venv/bin/pythonがあればそちらを使う）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,13 +67,28 @@ if [ -f "${ORCHESTRATOR_DIR}/.env" ]; then
     set +a
 fi
 
+if [ -f "${DASHBOARD_DIR}/.env" ]; then
+    log "dashboard/.env を読み込みます"
+    set -a
+    # shellcheck disable=SC1091
+    source "${DASHBOARD_DIR}/.env"
+    set +a
+fi
+
+: "${ORCHESTRATOR_PORT:=8787}"
+: "${DASHBOARD_PORT:=3000}"
+export ORCHESTRATOR_PORT DASHBOARD_PORT
+
 if [ -z "${ORCHESTRATOR_PYTHON:-}" ]; then
     if [ -x "${ORCHESTRATOR_DIR}/.venv/bin/python" ]; then
         ORCHESTRATOR_PYTHON="${ORCHESTRATOR_DIR}/.venv/bin/python"
     elif [ -x "${ORCHESTRATOR_DIR}/venv/bin/python" ]; then
         ORCHESTRATOR_PYTHON="${ORCHESTRATOR_DIR}/venv/bin/python"
     else
-        ORCHESTRATOR_PYTHON="python3"
+        log "orchestrator/.venv が見つからないため作成します..."
+        python3 -m venv "${ORCHESTRATOR_DIR}/.venv"
+        "${ORCHESTRATOR_DIR}/.venv/bin/pip" install -e "${ORCHESTRATOR_DIR}"
+        ORCHESTRATOR_PYTHON="${ORCHESTRATOR_DIR}/.venv/bin/python"
     fi
 fi
 
@@ -89,30 +106,30 @@ export NODE_ENV=production
 log "dashboard をビルドします..."
 (cd "${DASHBOARD_DIR}" && npm run build)
 
-log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}）..."
+log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}、ポート${ORCHESTRATOR_PORT}）..."
 (
     cd "${ORCHESTRATOR_DIR}"
     nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.main >>"${ORCHESTRATOR_LOG}" 2>&1 &
     echo $! >"${ORCHESTRATOR_PID_FILE}"
 )
 
-log "dashboard を起動します..."
+log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 (
     cd "${DASHBOARD_DIR}"
     if [ -n "${LAN_IP:-}" ]; then
-        nohup "${NEXT_BIN}" start --hostname "${LAN_IP}" >>"${DASHBOARD_LOG}" 2>&1 &
+        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${LAN_IP}" >>"${DASHBOARD_LOG}" 2>&1 &
     else
-        nohup "${NEXT_BIN}" start >>"${DASHBOARD_LOG}" 2>&1 &
+        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" >>"${DASHBOARD_LOG}" 2>&1 &
     fi
     echo $! >"${DASHBOARD_PID_FILE}"
 )
 
 log "起動完了"
-log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG}"
+log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG}  URL: http://127.0.0.1:${ORCHESTRATOR_PORT}"
 log "  dashboard:    PID $(cat "${DASHBOARD_PID_FILE}")  log: ${DASHBOARD_LOG}"
 if [ -n "${LAN_IP:-}" ]; then
-    log "  dashboard URL: http://${LAN_IP}:3000"
+    log "  dashboard URL: http://${LAN_IP}:${DASHBOARD_PORT}"
 else
-    log "  dashboard URL: http://127.0.0.1:3000"
+    log "  dashboard URL: http://127.0.0.1:${DASHBOARD_PORT}"
 fi
 log "停止する場合は ./bin/stop.sh を実行してください。"
