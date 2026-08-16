@@ -25,6 +25,7 @@ export default function ComposerBar({
   newTaskRepo,
   onNewTaskRepoChange,
   onSubmitted,
+  onReplySubmittingChange,
 }: {
   open: boolean;
   mode: ComposerMode;
@@ -36,6 +37,7 @@ export default function ComposerBar({
   newTaskRepo: string;
   onNewTaskRepoChange: (repo: string) => void;
   onSubmitted: () => Promise<void>;
+  onReplySubmittingChange: (target: IssueRef | null) => void;
 }) {
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
@@ -63,7 +65,9 @@ export default function ComposerBar({
     setSubmitting(true);
     setError(null);
     const action: InstructAction = "instruct";
-    postInstruct(replyTarget.repo, replyTarget.number, action, message.trim())
+    const target = replyTarget;
+    onReplySubmittingChange(target);
+    postInstruct(target.repo, target.number, action, message.trim())
       .then(() => {
         onClearReplyTarget();
         onClose();
@@ -72,7 +76,10 @@ export default function ComposerBar({
       .catch((e) =>
         setError(e instanceof Error ? e.message : "送信に失敗しました"),
       )
-      .finally(() => setSubmitting(false));
+      .finally(() => {
+        setSubmitting(false);
+        onReplySubmittingChange(null);
+      });
   }
 
   function handleCreateTask(dispatch: Dispatch) {

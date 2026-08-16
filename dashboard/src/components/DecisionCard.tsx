@@ -57,15 +57,19 @@ export default function DecisionCard({
   onApproved,
   onReply,
   onToast,
+  locked,
 }: {
   decision: IssueSummary;
   onApproved: () => Promise<void>;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
+  locked: boolean;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const busy = approving || locked;
 
   const last = latestComment(decision);
   const summary = last ? commentSummary(last) : null;
@@ -75,12 +79,13 @@ export default function DecisionCard({
   const repoName = decision.repo.split("/")[1];
 
   function openConfirm() {
+    if (busy) return;
     setError(null);
     setConfirmOpen(true);
   }
 
   function closeConfirm() {
-    if (approving) return;
+    if (busy) return;
     setConfirmOpen(false);
   }
 
@@ -102,8 +107,8 @@ export default function DecisionCard({
   return (
     <div
       className={styles.card}
-      aria-busy={approving}
-      style={approving ? { opacity: 0.6, pointerEvents: "none" } : undefined}
+      aria-busy={busy}
+      style={busy ? { opacity: 0.6, pointerEvents: "none" } : undefined}
     >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
@@ -150,7 +155,7 @@ export default function DecisionCard({
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
           onClick={openConfirm}
-          disabled={approving}
+          disabled={busy}
         >
           <CheckIcon />
           承認
@@ -161,7 +166,7 @@ export default function DecisionCard({
           onClick={() =>
             onReply(decision.repo, decision.number, decision.title)
           }
-          disabled={approving}
+          disabled={busy}
         >
           <ReplyIcon />
           返信
@@ -200,7 +205,7 @@ export default function DecisionCard({
                 type="button"
                 className={styles.confirmCancelBtn}
                 onClick={closeConfirm}
-                disabled={approving}
+                disabled={busy}
               >
                 キャンセル
               </button>
@@ -208,7 +213,7 @@ export default function DecisionCard({
                 type="button"
                 className={styles.confirmApproveBtn}
                 onClick={handleConfirmApprove}
-                disabled={approving}
+                disabled={busy}
               >
                 <CheckIcon />
                 {approving ? "承認中…" : "承認する"}

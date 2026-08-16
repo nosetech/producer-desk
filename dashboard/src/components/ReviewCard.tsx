@@ -95,15 +95,19 @@ export default function ReviewCard({
   onApproved,
   onReply,
   onToast,
+  locked,
 }: {
   review: IssueSummary;
   onApproved: () => Promise<void>;
   onReply: (repo: string, issueNumber: number, title: string) => void;
   onToast: (text: string) => void;
+  locked: boolean;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const busy = approving || locked;
 
   const last = latestComment(review);
   const summary = last ? commentSummary(last) : null;
@@ -116,12 +120,13 @@ export default function ReviewCard({
   const repoName = review.repo.split("/")[1];
 
   function openConfirm() {
+    if (busy) return;
     setError(null);
     setConfirmOpen(true);
   }
 
   function closeConfirm() {
-    if (approving) return;
+    if (busy) return;
     setConfirmOpen(false);
   }
 
@@ -143,8 +148,8 @@ export default function ReviewCard({
   return (
     <div
       className={styles.card}
-      aria-busy={approving}
-      style={approving ? { opacity: 0.6, pointerEvents: "none" } : undefined}
+      aria-busy={busy}
+      style={busy ? { opacity: 0.6, pointerEvents: "none" } : undefined}
     >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
@@ -204,7 +209,7 @@ export default function ReviewCard({
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
           onClick={openConfirm}
-          disabled={approving}
+          disabled={busy}
         >
           <CheckIcon />
           承認
@@ -213,7 +218,7 @@ export default function ReviewCard({
           type="button"
           className={`${styles.btn} ${styles.btnReply}`}
           onClick={() => onReply(review.repo, review.number, review.title)}
-          disabled={approving}
+          disabled={busy}
         >
           <ReplyIcon />
           返信
@@ -260,7 +265,7 @@ export default function ReviewCard({
                 type="button"
                 className={styles.confirmCancelBtn}
                 onClick={closeConfirm}
-                disabled={approving}
+                disabled={busy}
               >
                 キャンセル
               </button>
@@ -268,7 +273,7 @@ export default function ReviewCard({
                 type="button"
                 className={styles.confirmApproveBtn}
                 onClick={handleConfirmApprove}
-                disabled={approving}
+                disabled={busy}
               >
                 <CheckIcon />
                 {approving ? "マージ中…" : "マージして承認"}
