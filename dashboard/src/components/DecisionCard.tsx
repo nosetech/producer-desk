@@ -79,7 +79,7 @@ export default function DecisionCard({
   const repoName = decision.repo.split("/")[1];
 
   function openConfirm() {
-    if (locked) return;
+    if (busy) return;
     setError(null);
     setConfirmOpen(true);
   }

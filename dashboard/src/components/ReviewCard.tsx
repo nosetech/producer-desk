@@ -120,7 +120,7 @@ export default function ReviewCard({
   const repoName = review.repo.split("/")[1];
 
   function openConfirm() {
-    if (locked) return;
+    if (busy) return;
     setError(null);
     setConfirmOpen(true);
   }
