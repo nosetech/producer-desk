@@ -530,6 +530,126 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         server.shutdown()
 
 
+def test_instruct_concurrent_requests_to_same_issue_are_rejected_with_409() -> None:
+    """同一issueへの同時approve/instructリクエストは片方が409で拒否される（issue #111）。
+
+    `status:in-review`への`approve`は`dispatch_queue`を経由せずPRマージ・issueクローズを
+    同期的に直接実行するため、処理中に同一issueへの後続リクエストが割り込むと、
+    ラベル遷移やコメント投稿が競合しうる。in-flightロックにより後続は409になる。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def blocking_merge_pr(repo: str, pr_number: int) -> None:
+        started_event.set()
+        release_event.wait(timeout=2)
+        review_merge.merge_pr(repo, pr_number)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=blocking_merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
+    )
+
+    first_result: list[tuple[int, dict]] = []
+
+    def do_first_request() -> None:
+        first_result.append(
+            _post(
+                server,
+                "/api/projects/nosetech/project-a/issues/1/instruct",
+                {"action": "approve"},
+            )
+        )
+
+    first_thread = threading.Thread(target=do_first_request)
+    first_thread.start()
+    try:
+        assert started_event.wait(timeout=2)
+
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 409
+        assert "error" in body
+    finally:
+        release_event.set()
+        first_thread.join(timeout=2)
+        server.shutdown()
+
+    assert first_result[0][0] == 200
+
+
+def test_instruct_concurrent_requests_to_different_issues_are_not_blocked() -> None:
+    """ロックはrepo+issue_number単位であり、別issueへの同時リクエストはブロックしない
+    （issue #111）。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}, 2: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def blocking_merge_pr(repo: str, pr_number: int) -> None:
+        started_event.set()
+        release_event.wait(timeout=2)
+        review_merge.merge_pr(repo, pr_number)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=blocking_merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
+    )
+
+    first_thread = threading.Thread(
+        target=lambda: _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+    )
+    first_thread.start()
+    try:
+        assert started_event.wait(timeout=2)
+
+        status, _ = _post(
+            server, "/api/projects/nosetech/project-a/issues/2/instruct", {"action": "approve"}
+        )
+
+        assert status == 200
+    finally:
+        release_event.set()
+        first_thread.join(timeout=2)
+        server.shutdown()
+
+
 def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running() -> None:
     """同じプロジェクトの別issueでAgent Runnerが実行中の場合、worktree同期をスキップする。
 
