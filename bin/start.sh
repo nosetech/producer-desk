@@ -81,6 +81,11 @@ if [ ! -x "${NEXT_BIN}" ]; then
     exit 1
 fi
 
+# 呼び出し元のシェルでNODE_ENVに"production"/"development"/"test"以外の値が
+# 設定されていると、next buildが/_document関連の内部エラーで失敗することがある
+# （vercel/next.js#77262等）。本番起動である以上、常にproductionへ固定する。
+export NODE_ENV=production
+
 log "dashboard をビルドします..."
 (cd "${DASHBOARD_DIR}" && npm run build)
 

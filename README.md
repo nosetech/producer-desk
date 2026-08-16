@@ -138,9 +138,9 @@ ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
 
 **2・3を分離せず、開発用インスタンスの対象に運用中の実プロジェクトを含めてしまうと、同一issue・同一worktreeへ運用インスタンスと開発インスタンスの双方から同時にAgent Runnerがディスパッチされうる**（[`docs/basic-design.md` 3-3](./docs/basic-design.md#3-3-オーケストレータagent-runnerのインターフェース仕様)が前提とする「1プロジェクトにつき同時に1つの`claude -p`プロセスのみ実行」が崩れ、同一worktreeへの同時書き込みが起こりうる）。開発時は`config/projects.dev.yaml`等にテスト用プロジェクトのみを記載し、運用中の実プロジェクトを対象に含めないこと。
 
-### 既知の問題: 現状のNext.jsバージョンで`npm run build`が失敗する
+### 補足: `NODE_ENV`について
 
-現在使用しているNext.js（`16.x`系）には、`next build`が内部の`/_global-error`ページのプリレンダリング時に`TypeError: Cannot read properties of null (reading 'useContext')`で失敗する既知の未解決バグがあり、アプリケーションコード側での回避策は無い（Turbopack・webpackどちらのビルドでも再現、`experimental.cpus`等の設定変更でも回避不可。[vercel/next.js#95741](https://github.com/vercel/next.js/issues/95741) 等参照）。発生した場合、`bin/start.sh`もこのビルド失敗で停止する（orchestratorは起動しない）。
+`next build`は、呼び出し元のシェルで環境変数`NODE_ENV`に`production`/`development`/`test`以外の値が設定されていると、内部エラー（`<Html> should not be imported outside of pages/_document.`等）で失敗することがある（[vercel/next.js#77262](https://github.com/vercel/next.js/discussions/77262)参照）。`bin/start.sh`は起動前に常に`NODE_ENV=production`を設定するため通常は意識不要だが、`dashboard`ディレクトリで直接`npm run build`を実行する場合にビルドが失敗する場合は、シェルの`NODE_ENV`環境変数の値を確認すること。
 
 ## DBバックアップ（macOS launchd）
 
