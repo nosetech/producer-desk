@@ -16,8 +16,7 @@ import os
 import urllib.request
 from collections.abc import Callable
 
-from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummary
-from orchestrator.labels import STATUS_IN_REVIEW
+from orchestrator.aggregation import AggregatedState, IssueSummary
 
 SLACK_WEBHOOK_URL_ENV = "SLACK_WEBHOOK_URL"
 
@@ -86,12 +85,12 @@ class DecisionNotifier:
                 self._post_webhook(webhook_url, {"text": format_decision_message(issue)})
 
 
-def format_review_message(event: ActivityEvent) -> str:
-    url = f"https://github.com/{event.repo}/issues/{event.number}"
+def format_review_message(issue: IssueSummary) -> str:
+    url = f"https://github.com/{issue.repo}/issues/{issue.number}"
     return (
         f":mag: レビュー待ちになりました\n"
-        f"*リポジトリ*: {event.repo}\n"
-        f"*issue*: #{event.number} {event.title}\n"
+        f"*リポジトリ*: {issue.repo}\n"
+        f"*issue*: #{issue.number} {issue.title}\n"
         f"{url}"
     )
 
@@ -110,8 +109,7 @@ class ReviewNotifier:
         self._known: set[tuple[str, int]] | None = None
 
     def notify_new_reviews(self, state: AggregatedState) -> None:
-        reviews = [event for event in state.activity if event.label == STATUS_IN_REVIEW]
-        current = {(event.repo, event.number) for event in reviews}
+        current = {(issue.repo, issue.number) for issue in state.reviews}
 
         if self._known is None:
             self._known = current
@@ -127,6 +125,6 @@ class ReviewNotifier:
         if not webhook_url:
             return
 
-        for event in reviews:
-            if (event.repo, event.number) in new_keys:
-                self._post_webhook(webhook_url, {"text": format_review_message(event)})
+        for issue in state.reviews:
+            if (issue.repo, issue.number) in new_keys:
+                self._post_webhook(webhook_url, {"text": format_review_message(issue)})

@@ -1,4 +1,10 @@
-import type { StatusLabel } from "./status";
+import {
+  STATUS_IN_PROGRESS,
+  STATUS_IN_REVIEW,
+  STATUS_NEEDS_HUMAN_DECISION,
+  STATUS_TODO,
+  type StatusLabel,
+} from "./status";
 
 /** `gh issue list --json comments` の1要素。 */
 export interface IssueComment {
@@ -31,11 +37,34 @@ export interface ActivityEvent {
   is_orphaned: boolean;
 }
 
+/**
+ * GET /api/state の status_counts。オーケストレータのstatus_counts（`aggregate()`、
+ * issue #115）に対応する、状態別のOPEN issue件数。`untagged`は5つの状態ラベルの
+ * いずれも付与されていないissue（ラベル付け漏れの検知用途）で、`StatusLabel`の
+ * 値域には含まれない。`status:closed`は含まない。
+ */
+export interface StatusCounts {
+  [STATUS_TODO]: number;
+  [STATUS_IN_PROGRESS]: number;
+  [STATUS_NEEDS_HUMAN_DECISION]: number;
+  [STATUS_IN_REVIEW]: number;
+  untagged: number;
+}
+
 export interface AggregatedState {
   decisions: IssueSummary[];
   reviews: IssueSummary[];
   activity: ActivityEvent[];
+  status_counts: StatusCounts;
 }
+
+export const EMPTY_STATUS_COUNTS: StatusCounts = {
+  [STATUS_TODO]: 0,
+  [STATUS_IN_PROGRESS]: 0,
+  [STATUS_NEEDS_HUMAN_DECISION]: 0,
+  [STATUS_IN_REVIEW]: 0,
+  untagged: 0,
+};
 
 export interface ProjectsResponse {
   repos: string[];

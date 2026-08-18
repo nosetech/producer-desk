@@ -6,7 +6,7 @@ docs/basic-design.md 5-2のメッセージフォーマット、および判断�
 
 from __future__ import annotations
 
-from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummary
+from orchestrator.aggregation import AggregatedState, IssueSummary
 from orchestrator.slack_notifier import (
     DecisionNotifier,
     ReviewNotifier,
@@ -126,20 +126,21 @@ def test_multiple_new_decisions_in_one_poll_are_each_notified() -> None:
     assert len(webhook.posted) == 2
 
 
-def _review_event(
+def _review_issue(
     repo: str = "nosetech/project-a", number: int = 38, title: str = "ブラウザエラーの調査・対応"
-) -> ActivityEvent:
-    return ActivityEvent(
+) -> IssueSummary:
+    return IssueSummary(
         repo=repo,
         number=number,
         title=title,
-        label="status:in-review",
+        labels=["status:in-review"],
+        comments=[],
         updated_at="2026-08-06T00:00:00Z",
     )
 
 
 def test_format_review_message_matches_basic_design_template() -> None:
-    message = format_review_message(_review_event())
+    message = format_review_message(_review_issue())
 
     assert message == (
         ":mag: レビュー待ちになりました\n"
@@ -155,7 +156,7 @@ def test_first_poll_seeds_known_reviews_without_notifying() -> None:
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
 
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[_review_event()]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[_review_issue()]))
 
     assert webhook.posted == []
 
@@ -165,14 +166,14 @@ def test_newly_appearing_review_is_notified() -> None:
     notifier = ReviewNotifier(
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[]))
 
-    event = _review_event()
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[event]))
+    issue = _review_issue()
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[issue]))
 
     assert len(webhook.posted) == 1
     assert webhook.posted[0][0] == "https://hooks.example/x"
-    assert webhook.posted[0][1] == {"text": format_review_message(event)}
+    assert webhook.posted[0][1] == {"text": format_review_message(issue)}
 
 
 def test_unchanged_review_is_not_renotified() -> None:
@@ -180,39 +181,20 @@ def test_unchanged_review_is_not_renotified() -> None:
     notifier = ReviewNotifier(
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
-    event = _review_event()
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[]))
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[event]))
+    issue = _review_issue()
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[issue]))
 
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[event]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[issue]))
 
     assert len(webhook.posted) == 1
-
-
-def test_non_review_activity_is_ignored() -> None:
-    webhook = FakeWebhook()
-    notifier = ReviewNotifier(
-        post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
-    )
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[]))
-
-    in_progress_event = ActivityEvent(
-        repo="nosetech/project-a",
-        number=1,
-        title="実装中のタスク",
-        label="status:in-progress",
-        updated_at="2026-08-06T00:00:00Z",
-    )
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[in_progress_event]))
-
-    assert webhook.posted == []
 
 
 def test_missing_webhook_url_skips_review_notification_but_still_tracks_state() -> None:
     webhook = FakeWebhook()
     notifier = ReviewNotifier(post_webhook=webhook, get_webhook_url=lambda: None)
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[]))
 
-    notifier.notify_new_reviews(AggregatedState(decisions=[], activity=[_review_event()]))
+    notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[_review_issue()]))
 
     assert webhook.posted == []

@@ -8,7 +8,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from orchestrator.aggregation import ActivityEvent, AggregatedState, IssueSummary
+from orchestrator.aggregation import STATUS_COUNT_KEYS, ActivityEvent, AggregatedState, IssueSummary
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
@@ -155,7 +155,12 @@ def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
     try:
         status, body = _get(server, "/api/state")
         assert status == 200
-        assert body == {"decisions": [], "reviews": [], "activity": []}
+        assert body == {
+            "decisions": [],
+            "reviews": [],
+            "activity": [],
+            "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
+        }
     finally:
         server.shutdown()
 
