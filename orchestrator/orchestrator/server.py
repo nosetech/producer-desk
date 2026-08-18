@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from orchestrator.aggregation import AggregatedState
+from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
@@ -189,7 +189,12 @@ def _make_handler(
                 200,
                 dataclasses.asdict(state)
                 if state is not None
-                else {"decisions": [], "reviews": [], "activity": []},
+                else {
+                    "decisions": [],
+                    "reviews": [],
+                    "activity": [],
+                    "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
+                },
             )
 
         def _handle_usage(self) -> None:

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchProjects, fetchState } from "@/lib/api";
 import { deriveProjectStatus } from "@/lib/projectStatus";
-import type { AggregatedState } from "@/lib/types";
+import { EMPTY_STATUS_COUNTS, type AggregatedState } from "@/lib/types";
 import Header from "./Header";
 import ProjectStatusRow from "./ProjectStatusRow";
 import DecisionsList from "./DecisionsList";
@@ -20,6 +20,7 @@ const EMPTY_STATE: AggregatedState = {
   decisions: [],
   reviews: [],
   activity: [],
+  status_counts: EMPTY_STATUS_COUNTS,
 };
 
 export default function Dashboard() {

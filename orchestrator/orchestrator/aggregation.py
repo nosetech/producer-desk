@@ -9,6 +9,9 @@
 - 孤立したin-progress検知: `status:in-progress` ラベルが付いているのに、対応する
   Agent Runnerがディスパッチキュー上で実行中でも待機中でもないissueを異常として
   イベントにマークする（issue #50）
+- 状態別件数: 「プロジェクトの並行状況」ウィジェット向けに、OPEN issueを状態ラベル別
+  （5つの状態ラベルいずれも無し＝タグなしを含む）に集計する。`status:closed`は含めない
+  （issue #115）
 """
 
 from __future__ import annotations
@@ -23,9 +26,24 @@ from orchestrator.labels import (
     STATUS_LABEL_PRIORITY,
     STATUS_LABELS,
     STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_TODO,
 )
 
 logger = logging.getLogger(__name__)
+
+# 状態別件数（status_counts）のキーのうち、5つの状態ラベルのいずれも付与されていない
+# 「タグなし」issueを表す特別なキー。実在のGitHubラベル名と衝突しないよう名前空間を
+# 分ける（issue #115、ラベル付け漏れ検知用途）。
+STATUS_COUNT_UNTAGGED = "untagged"
+
+# status_countsで集計する対象（完了=status:closedは含めない。docs/basic-design.md参照）。
+STATUS_COUNT_KEYS: tuple[str, ...] = (
+    STATUS_TODO,
+    STATUS_IN_PROGRESS,
+    STATUS_NEEDS_HUMAN_DECISION,
+    STATUS_IN_REVIEW,
+    STATUS_COUNT_UNTAGGED,
+)
 
 # `DispatchQueue.is_active(repo, issue_number)` と同じシグネチャの関数型。
 # aggregationはDispatchQueueそのものに依存せず、この関数を注入させることで
@@ -64,6 +82,11 @@ class AggregatedState:
     decisions: list[IssueSummary] = field(default_factory=list)
     reviews: list[IssueSummary] = field(default_factory=list)
     activity: list[ActivityEvent] = field(default_factory=list)
+    # 状態別のOPEN issue件数（`STATUS_COUNT_UNTAGGED`含む5種、`status:closed`は含まない。
+    # issue #115、「プロジェクトの並行状況」ウィジェットの件数表示用）。
+    status_counts: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(STATUS_COUNT_KEYS, 0)
+    )
 
 
 def _current_status_label(issue: IssueSummary) -> str | None:
@@ -131,4 +154,14 @@ def aggregate(
     ]
     activity.sort(key=lambda event: event.updated_at, reverse=True)
 
-    return AggregatedState(decisions=decisions, reviews=reviews, activity=activity)
+    status_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
+    for issue in all_issues:
+        if issue.state != "OPEN":
+            continue
+        label = _current_status_label(issue) or STATUS_COUNT_UNTAGGED
+        if label in status_counts:
+            status_counts[label] += 1
+
+    return AggregatedState(
+        decisions=decisions, reviews=reviews, activity=activity, status_counts=status_counts
+    )

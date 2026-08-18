@@ -1,11 +1,12 @@
-import type {
-  AggregatedState,
-  CreateIssueResult,
-  Dispatch,
-  InstructAction,
-  InstructResult,
-  ProjectsResponse,
-  UsageResponse,
+import {
+  EMPTY_STATUS_COUNTS,
+  type AggregatedState,
+  type CreateIssueResult,
+  type Dispatch,
+  type InstructAction,
+  type InstructResult,
+  type ProjectsResponse,
+  type UsageResponse,
 } from "./types";
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
@@ -30,6 +31,7 @@ export function fetchState(): Promise<AggregatedState> {
       decisions: data.decisions ?? [],
       reviews: data.reviews ?? [],
       activity: data.activity ?? [],
+      status_counts: data.status_counts ?? EMPTY_STATUS_COUNTS,
     }));
 }
 

@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from orchestrator.aggregation import ActivityEvent, IssueSummary, aggregate
+from orchestrator.aggregation import STATUS_COUNT_UNTAGGED, ActivityEvent, IssueSummary, aggregate
 from orchestrator.labels import (
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
@@ -20,10 +20,21 @@ from orchestrator.labels import (
 
 
 def _issue(
-    repo: str, number: int, labels: list[str], updated_at: str, title: str = "title"
+    repo: str,
+    number: int,
+    labels: list[str],
+    updated_at: str,
+    title: str = "title",
+    state: str = "OPEN",
 ) -> IssueSummary:
     return IssueSummary(
-        repo=repo, number=number, title=title, labels=labels, comments=[], updated_at=updated_at
+        repo=repo,
+        number=number,
+        title=title,
+        labels=labels,
+        comments=[],
+        updated_at=updated_at,
+        state=state,
     )
 
 
@@ -353,3 +364,100 @@ def test_aggregate_defaults_orphaned_to_false_when_is_dispatch_active_not_provid
     state = aggregate(issues_by_repo)
 
     assert state.activity[0].is_orphaned is False
+
+
+def test_aggregate_status_counts_by_label_across_repos() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_TODO], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, [STATUS_IN_PROGRESS], "2026-08-02T00:00:00Z"),
+        ],
+        "nosetech/project-b": [
+            _issue("nosetech/project-b", 3, [STATUS_NEEDS_HUMAN_DECISION], "2026-08-03T00:00:00Z"),
+            _issue("nosetech/project-b", 4, [STATUS_IN_REVIEW], "2026-08-04T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.status_counts == {
+        STATUS_TODO: 1,
+        STATUS_IN_PROGRESS: 1,
+        STATUS_NEEDS_HUMAN_DECISION: 1,
+        STATUS_IN_REVIEW: 1,
+        STATUS_COUNT_UNTAGGED: 0,
+    }
+
+
+def test_aggregate_status_counts_includes_untagged_issues() -> None:
+    # 5つの状態ラベルいずれも付いていないissue（ラベル付け漏れの検知用途、issue #115）。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [], "2026-08-01T00:00:00Z"),
+            _issue("nosetech/project-a", 2, ["bug"], "2026-08-02T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.status_counts[STATUS_COUNT_UNTAGGED] == 2
+
+
+def test_aggregate_status_counts_excludes_closed_status_label() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a", 1, [STATUS_CLOSED], "2026-08-01T00:00:00Z", state="CLOSED"
+            ),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert sum(state.status_counts.values()) == 0
+
+
+def test_aggregate_status_counts_excludes_closed_state_issues_even_without_closed_label() -> None:
+    # status:closedラベルが付かないまま人手で直接クローズされたケースを混入させない
+    # （issue #115、`state == "OPEN"`に限定する方針）。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a",
+                1,
+                [STATUS_IN_PROGRESS],
+                "2026-08-01T00:00:00Z",
+                state="CLOSED",
+            ),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert sum(state.status_counts.values()) == 0
+
+
+def test_aggregate_status_counts_resolves_multiple_labels_by_priority() -> None:
+    # 複数の状態ラベルが同時に付与されている場合、活動ログと同じ優先順位で1つに
+    # 解決する（issue #77の優先順位ロジックを件数集計でも再利用）。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a",
+                1,
+                [STATUS_IN_PROGRESS, STATUS_IN_REVIEW],
+                "2026-08-01T00:00:00Z",
+            ),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert state.status_counts[STATUS_IN_REVIEW] == 1
+    assert state.status_counts[STATUS_IN_PROGRESS] == 0
+
+
+def test_aggregate_status_counts_empty_when_no_issues() -> None:
+    state = aggregate({})
+
+    assert sum(state.status_counts.values()) == 0

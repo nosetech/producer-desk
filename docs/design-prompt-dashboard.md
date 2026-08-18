@@ -77,3 +77,4 @@
 - 状態バッジの色分けは [basic-design.md 1章](./basic-design.md#1-データモデル状態遷移設計) のラベルスキーマ（`status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review`）に対応させる。
 - デザイン成果物（Artifact）ができたら、URLまたはコードをこのリポジトリの実装issueに添付し、Next.js実装のベースとする。
 - 本プロンプトでの初回デザイン後に指示入力欄の要件が追加された場合は、ゼロから作り直すのではなく [design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md) の差分プロンプトを使って既存デザインを更新すること。
+- 「プロジェクトの並行状況が分かる要素」（要素4）に状態別件数を追加し、「最近の活動ログ（タイムライン）」（要素2）を廃止する変更は [design-prompt-dashboard-diff-status-counts.md](./design-prompt-dashboard-diff-status-counts.md) の差分プロンプトを使うこと（issue #115）。
