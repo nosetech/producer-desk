@@ -73,6 +73,9 @@ def configure_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     # 二重呼び出し（テスト等）でハンドラが積み上がらないよう、既存ハンドラは
-    # 一度クリアしてから設定し直す。
-    root_logger.handlers.clear()
+    # 一度クローズしてから設定し直す（close()せずclear()するだけだとファイル
+    # ディスクリプタがリークする）。
+    for existing_handler in root_logger.handlers[:]:
+        root_logger.removeHandler(existing_handler)
+        existing_handler.close()
     root_logger.addHandler(handler)

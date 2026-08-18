@@ -81,9 +81,14 @@ def test_configure_logging_does_not_stack_handlers_on_repeated_calls(
     _reset_root_logger()
 
     configure_logging(log_path=tmp_path / "orchestrator.log", retention_days=7)
+    first_handler = logging.getLogger().handlers[0]
     configure_logging(log_path=tmp_path / "orchestrator.log", retention_days=7)
 
     assert len(logging.getLogger().handlers) == 1
+    # 前回のハンドラはclear()で参照を外すだけでなくclose()もされ、ファイル
+    # ディスクリプタがリークしていないこと（FileHandler.close()はstream属性を
+    # Noneにリセットする）。
+    assert first_handler.stream is None
     _reset_root_logger()
 
 

@@ -72,3 +72,13 @@ def test_load_log_retention_days_reads_custom_value(tmp_path: Path) -> None:
     )
 
     assert load_log_retention_days(config_path=config_path) == 14
+
+
+def test_load_log_retention_days_clamps_non_positive_value_to_one(tmp_path: Path) -> None:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text(
+        "projects: []\nlog_retention_days: 0\n",
+        encoding="utf-8",
+    )
+
+    assert load_log_retention_days(config_path=config_path) == 1

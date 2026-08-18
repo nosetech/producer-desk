@@ -53,4 +53,8 @@ def load_projects(config_path: Path | None = None) -> list[Project]:
 
 def load_log_retention_days(config_path: Path | None = None) -> int:
     data = _load_yaml_data(config_path)
-    return int(data.get("log_retention_days", DEFAULT_LOG_RETENTION_DAYS))
+    value = int(data.get("log_retention_days", DEFAULT_LOG_RETENTION_DAYS))
+    # 0以下だと、書き込み直後のログファイルもTimedRotatingFileHandlerの
+    # backupCount管理・cleanup_old_agent_logs（agent_runner.py）のmtime判定で
+    # 即座に削除されうるため、最低1日は保持する（issue #114）。
+    return max(1, value)
