@@ -5,6 +5,9 @@
 # 使い方:
 #   ./bin/start.sh
 #
+# 起動のたびにdashboardの依存関係を`npm ci`でpackage-lock.jsonと照合・是正する
+# （ネットワークアクセスが発生する。オフライン環境での起動には対応していない）。
+#
 # ポート・LAN公開設定は環境変数で上書きできる（shellでexportする方法に加えて、
 # orchestrator/.env・dashboard/.env（それぞれの.env.example参照）でも指定可能）。
 #
@@ -92,9 +95,17 @@ if [ -z "${ORCHESTRATOR_PYTHON:-}" ]; then
     fi
 fi
 
+# --include=devを付けるのは、呼び出し元のシェルで既にNODE_ENV=productionが
+# 設定されている場合、npmがdevDependencies（typescript等）を省略してインストール
+# してしまい、後続のnext buildがtypescriptを検知できずに勝手に再インストールして
+# package.json/package-lock.jsonを書き換えてしまうため。
+log "dashboard の依存関係を package-lock.json と照合します（npm ci）..."
+(cd "${DASHBOARD_DIR}" && npm ci --include=dev)
+log "dashboard の依存関係の照合が完了しました"
+
 NEXT_BIN="${DASHBOARD_DIR}/node_modules/.bin/next"
 if [ ! -x "${NEXT_BIN}" ]; then
-    err "dashboard/node_modules/.bin/next が見つかりません。先に \`cd dashboard && npm install\` を実行してください。"
+    err "npm ci 実行後も dashboard/node_modules/.bin/next が見つかりません。dashboard/package.json の内容を確認してください。"
     exit 1
 fi
 
