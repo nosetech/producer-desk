@@ -13,3 +13,9 @@ projects:
     worktree_path: /Users/producer/worktrees/project-a
   - repo: nosetech/project-b
     worktree_path: /Users/producer/worktrees/project-b
+
+# logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
+# 保持日数（未設定時は7）。orchestrator.logはこの日数分をTimedRotatingFileHandler
+# が世代管理し、Agent Runner個別実行ログはこの日数（mtime基準）より古いものが
+# 実行完了のたびに削除される（docs/basic-design.md 3-2参照、issue #114）。
+# log_retention_days: 7

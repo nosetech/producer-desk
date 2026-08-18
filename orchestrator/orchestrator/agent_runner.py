@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import REPO_ROOT, Project
+from orchestrator.config import DEFAULT_LOG_RETENTION_DAYS, REPO_ROOT, Project
 from orchestrator.github_client import BOT_COMMENT_MARKER, PostCommentFn
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import (
@@ -33,6 +33,7 @@ from orchestrator.labels import (
     transition_label,
 )
 from orchestrator.session_store import get_session_id, persist_session_id
+from orchestrator.timezone import JST
 from orchestrator.usage_store import (
     RecordUsageFn,
     UsageRecord,
@@ -330,6 +331,26 @@ def _init_log_file(repo: str, issue_number: int, *, logs_dir: Path, timestamp: s
     return log_path
 
 
+def cleanup_old_agent_logs(repo_log_dir: Path, retention_days: int, now: NowFn) -> None:
+    """保持日数を超えて更新されていないAgent Runner個別実行ログを削除する。
+
+    mtime基準で判定する。`_stream_process_output`は1行書くたびに`flush()`する
+    ため、実行中のファイルは常にmtimeが「今」に近い状態を保つ。ファイル名に
+    埋め込まれた実行開始時刻ではなくmtimeで判定することで、実行中のファイルは
+    経過日数のカウントが始まらず、追加のフラグ管理（`DispatchQueue.is_active()`
+    の参照等）なしに「実行中は保護・完了後は経過日数で削除」を実現できる
+    （issue #114）。書き込み中のファイルを日付境界で分割する仕組みではないため、
+    「1実行＝1ファイル」の書き込み方式自体は変更しない。
+    """
+    if not repo_log_dir.is_dir():
+        return
+
+    cutoff = now().timestamp() - retention_days * 86400
+    for log_path in repo_log_dir.glob("*.log"):
+        if log_path.stat().st_mtime < cutoff:
+            log_path.unlink()
+
+
 def _write_error_log(
     repo: str, issue_number: int, error_message: str, *, logs_dir: Path, timestamp: str
 ) -> Path:
@@ -477,6 +498,7 @@ def run_agent_runner(
     record_usage_fn: RecordUsageFn = store_record_usage,
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
+    log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
@@ -486,7 +508,10 @@ def run_agent_runner(
     判断待ちで止まっている間に別issueが同じセッションで進行し、後から前者を
     resumeした際に後者issueの文脈を引きずってしまう（issue #32）。
     """
-    timestamp = now().strftime("%Y%m%dT%H%M%SZ")
+    # ログファイル名はJST基準（issue #114）。`now`自体は既定でUTCを返す
+    # （record_usage_fn側のrecorded_at契約を維持するため、`now()`の戻り値
+    # そのものは変更せずJSTへ変換するだけに留める）。
+    timestamp = now().astimezone(JST).strftime("%Y%m%dT%H%M%S")
     worktree_path = Path(project.worktree_path)
     existing_session_id = get_session_id_fn(project.repo, issue_number)
 
@@ -506,6 +531,7 @@ def run_agent_runner(
         log_path = _write_error_log(
             project.repo, issue_number, error_message, logs_dir=logs_dir, timestamp=timestamp
         )
+        cleanup_old_agent_logs(logs_dir / project.repo, log_retention_days, now)
         return AgentRunResult(
             repo=project.repo,
             issue_number=issue_number,
@@ -591,6 +617,7 @@ def run_agent_runner(
             remove_label=remove_label,
         )
 
+    cleanup_old_agent_logs(logs_dir / project.repo, log_retention_days, now)
     return AgentRunResult(
         repo=project.repo,
         issue_number=issue_number,

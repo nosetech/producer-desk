@@ -14,13 +14,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from orchestrator import agent_runner
-from orchestrator.agent_runner import build_claude_command, run_agent_runner
+from orchestrator.agent_runner import build_claude_command, cleanup_old_agent_logs, run_agent_runner
 from orchestrator.config import Project
 from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.labels import (
@@ -31,6 +31,9 @@ from orchestrator.labels import (
 )
 from orchestrator.usage_store import UsageRecord
 
+# UTCの01:02:03はJSTで同日10:02:03になる（ログファイル名がJST基準である
+# ことをtest_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output
+# で確認するため、日付が変わらない時刻を選んでいる）。
 FIXED_NOW = lambda: datetime(2026, 8, 4, 1, 2, 3, tzinfo=UTC)  # noqa: E731
 FIXED_UUID = lambda: "11111111-1111-1111-1111-111111111111"  # noqa: E731
 
@@ -721,7 +724,7 @@ def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_ou
         now=FIXED_NOW,
     )
 
-    assert result.log_path == tmp_path / "logs" / "nosetech/project-a" / "20260804T010203Z.log"
+    assert result.log_path == tmp_path / "logs" / "nosetech/project-a" / "20260804T100203.log"
     content = result.log_path.read_text(encoding="utf-8")
     assert "issue: #7" in content
     assert '"result": "ok"' in content
@@ -898,3 +901,106 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
     )
 
     assert record_usage_fn.calls == []
+
+
+def test_cleanup_old_agent_logs_removes_files_older_than_retention_days(tmp_path: Path) -> None:
+    repo_log_dir = tmp_path / "nosetech" / "project-a"
+    repo_log_dir.mkdir(parents=True)
+    old_log = repo_log_dir / "20260101T000000.log"
+    old_log.write_text("old", encoding="utf-8")
+
+    now = datetime(2026, 8, 4, 0, 0, 0, tzinfo=UTC)
+    old_mtime = (now - timedelta(days=10)).timestamp()
+    os.utime(old_log, (old_mtime, old_mtime))
+
+    cleanup_old_agent_logs(repo_log_dir, retention_days=7, now=lambda: now)
+
+    assert not old_log.exists()
+
+
+def test_cleanup_old_agent_logs_keeps_files_within_retention_days(tmp_path: Path) -> None:
+    repo_log_dir = tmp_path / "nosetech" / "project-a"
+    repo_log_dir.mkdir(parents=True)
+    recent_log = repo_log_dir / "20260803T000000.log"
+    recent_log.write_text("recent", encoding="utf-8")
+
+    now = datetime(2026, 8, 4, 0, 0, 0, tzinfo=UTC)
+    recent_mtime = (now - timedelta(days=1)).timestamp()
+    os.utime(recent_log, (recent_mtime, recent_mtime))
+
+    cleanup_old_agent_logs(repo_log_dir, retention_days=7, now=lambda: now)
+
+    assert recent_log.exists()
+
+
+def test_cleanup_old_agent_logs_keeps_in_progress_file_regardless_of_filename_timestamp(
+    tmp_path: Path,
+) -> None:
+    """実行開始が保持日数より前でも、mtimeが新しい（実行中の）ファイルは残す。
+
+    `_stream_process_output`は1行書くたびに`flush()`するため、実行中のファイルの
+    mtimeは常に「今」に近い。ファイル名の実行開始時刻ではなくmtimeで判定する
+    ことで、長時間実行中のファイルが経過日数のカウント対象にならないことを
+    確認する（issue #114）。
+    """
+    repo_log_dir = tmp_path / "nosetech" / "project-a"
+    repo_log_dir.mkdir(parents=True)
+    in_progress_log = repo_log_dir / "20260101T000000.log"
+    in_progress_log.write_text("in progress", encoding="utf-8")
+
+    now = datetime(2026, 8, 4, 0, 0, 0, tzinfo=UTC)
+    os.utime(in_progress_log, (now.timestamp(), now.timestamp()))
+
+    cleanup_old_agent_logs(repo_log_dir, retention_days=7, now=lambda: now)
+
+    assert in_progress_log.exists()
+
+
+def test_cleanup_old_agent_logs_no_op_when_repo_log_dir_missing(tmp_path: Path) -> None:
+    cleanup_old_agent_logs(
+        tmp_path / "nosetech" / "does-not-exist", retention_days=7, now=lambda: datetime.now(UTC)
+    )
+
+
+def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> None:
+    """run_agent_runner完了時に、同じリポジトリの古いログのみが掃除される。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    logs_dir = tmp_path / "logs"
+    repo_log_dir = logs_dir / "nosetech/project-a"
+    repo_log_dir.mkdir(parents=True)
+
+    old_log = repo_log_dir / "20260101T000000.log"
+    old_log.write_text("old", encoding="utf-8")
+    old_mtime = (FIXED_NOW() - timedelta(days=10)).timestamp()
+    os.utime(old_log, (old_mtime, old_mtime))
+
+    other_repo_log_dir = logs_dir / "nosetech/project-b"
+    other_repo_log_dir.mkdir(parents=True)
+    other_old_log = other_repo_log_dir / "20260101T000000.log"
+    other_old_log.write_text("old", encoding="utf-8")
+    os.utime(other_old_log, (old_mtime, old_mtime))
+
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=logs_dir,
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        log_retention_days=7,
+    )
+
+    assert not old_log.exists()
+    assert other_old_log.exists()

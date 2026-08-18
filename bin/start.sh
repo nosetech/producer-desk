@@ -19,6 +19,13 @@
 #   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
 #            （既定: orchestrator/.venv/bin/python。.venvが無ければこのスクリプトが
 #            自動作成する。既にorchestrator/venv/bin/pythonがあればそちらを使う）
+#
+# logs/orchestrator.logの出力レベルは環境変数 ORCHESTRATOR_ENV で切り替えられる
+# が、このスクリプトは明示的に設定しないため常に既定のproduction相当（INFO以上
+# のみ出力）で起動する（開発時にDEBUG以上を見たい場合は`python -m
+# orchestrator.main`を直接、ORCHESTRATOR_ENV=developmentを指定して起動すること。
+# README「ログ出力先ディレクトリの運用方針」参照）。ローテーション保持日数は
+# config/projects.yamlのlog_retention_days（既定7日）に従う。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

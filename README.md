@@ -82,9 +82,9 @@ Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変�
 
 ## ログ出力先ディレクトリの運用方針
 
-Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<repo>/<timestamp>.log` としてローカルに保存する（[`docs/basic-design.md` 3-2](./docs/basic-design.md#3-2-監視方法)）。`logs/` ディレクトリ自体はリポジトリに含めるが、中身のログファイルはコミットしない（`.gitignore` 参照）。ディレクトリが存在しない場合はオーケストレータが実行時に作成する想定。
+Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<repo>/<timestamp>.log`（ファイル名の`<timestamp>`はJST基準）としてローカルに保存する（[`docs/basic-design.md` 3-2](./docs/basic-design.md#3-2-監視方法)）。`logs/` ディレクトリ自体はリポジトリに含めるが、中身のログファイルはコミットしない（`.gitignore` 参照）。ディレクトリが存在しない場合はオーケストレータが実行時に作成する想定。このAgent Runner個別実行ログは、書き込み中（実行中）のファイルを除き、`config/projects.yaml`の`log_retention_days`（既定7日、更新日時＝mtime基準）より古いものが実行完了のたびに自動削除される（issue #114）。
 
-`bin/start.sh`（後述）で起動したdashboard・orchestrator自体の標準出力・標準エラー出力は `logs/dashboard.log` / `logs/orchestrator.log` に出力される。上記のAgent Runner個別実行ログ（`logs/<repo>/`以下）とは別物なので混同しないこと。
+`bin/start.sh`（後述）で起動したdashboard・orchestrator自体の標準出力・標準エラー出力は `logs/dashboard.log` / `logs/orchestrator.log` に出力される。上記のAgent Runner個別実行ログ（`logs/<repo>/`以下）とは別物なので混同しないこと。`logs/orchestrator.log`はorchestrator自身の`logging`モジュールによる`時刻(JST) [レベル] メッセージ`形式で出力され、`TimedRotatingFileHandler`により日付単位でローテーション・`log_retention_days`世代分保持される。出力レベルは環境変数`ORCHESTRATOR_ENV`で切り替える（未設定時は`production`扱いで`INFO`以上のみ、`development`指定時は`DEBUG`以上の全レベルを出力する）。`bin/start.sh`はこの変数を明示的に設定しないため、運用時は常に`production`相当で起動する。`logs/dashboard.log`はNext.js本体のサーバーログで、この仕組みの対象外。
 
 ## リリース・日常運用
 
