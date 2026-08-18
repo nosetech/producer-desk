@@ -12,10 +12,14 @@ issue #49: `claude -p`の出力形式を`--output-format json`（完了後に一
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from orchestrator import agent_runner
 from orchestrator.agent_runner import build_claude_command, run_agent_runner
 from orchestrator.config import Project
 from orchestrator.github_client import BOT_COMMENT_MARKER
@@ -269,7 +273,7 @@ def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> No
     flag_index = command.index("--append-system-prompt")
     instruction = command[flag_index + 1]
 
-    assert "ollama-bench" in instruction
+    assert "$OLLAMA_BENCH_PATH" in instruction
     assert "--record --repo nosetech/project-a --issue-number 12" in instruction
     assert "mcp__ollama-client__ollama_chat" in instruction
     assert "mcp__ollama-client__ollama_list" in instruction
@@ -377,6 +381,107 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     assert persist.calls == [("nosetech/project-a", 1, FIXED_UUID())]
     assert result.success is True
     assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
+
+
+def test_resolve_ollama_bench_path_prefers_console_script_next_to_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #107の再発防止テスト。
+
+    `ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソール
+    スクリプトだが、`claude -p`は別プロジェクトのworktreeをcwdに起動される。バレの
+    コマンド名のままではPATH解決できずcommand-not-foundで失敗し利用量が記録され
+    ない。`sys.executable`と同じディレクトリに`ollama-bench`が実在する場合、その
+    絶対パスをそのまま返すことを確認する（`.resolve()`でsymlinkを辿ると、Homebrew
+    管理の実体側ディレクトリを指してしまい存在しなくなるため使わない）。
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ollama-bench").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(agent_runner.sys, "executable", str(bin_dir / "python"))
+
+    assert agent_runner._resolve_ollama_bench_path() == str(bin_dir / "ollama-bench")
+
+
+def test_resolve_ollama_bench_path_falls_back_to_which(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sys.executable`の隣に無い場合、PATH上の`ollama-bench`（`shutil.which`）を使う。"""
+    monkeypatch.setattr(agent_runner.sys, "executable", str(tmp_path / "no-such-dir" / "python"))
+    monkeypatch.setattr(agent_runner.shutil, "which", lambda name: "/usr/local/bin/ollama-bench")
+
+    assert agent_runner._resolve_ollama_bench_path() == "/usr/local/bin/ollama-bench"
+
+
+def test_resolve_ollama_bench_path_falls_back_to_bare_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """どちらでも見つからない場合はバレのコマンド名にフォールバックする。"""
+    monkeypatch.setattr(agent_runner.sys, "executable", str(tmp_path / "no-such-dir" / "python"))
+    monkeypatch.setattr(agent_runner.shutil, "which", lambda name: None)
+
+    assert agent_runner._resolve_ollama_bench_path() == "ollama-bench"
+
+
+def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #107の再発防止テスト。
+
+    system prompt本文に解決済みの絶対パスを埋め込み複数のBashツール呼び出しに
+    またがって書き写させる方式は、長いパスの写し間違いによる「command not
+    found」を誘発しやすい。代わりに`$OLLAMA_BENCH_PATH`環境変数として子プロ
+    セスに渡し、Agent Runnerには短い参照だけを使わせることを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    monkeypatch.setattr(
+        agent_runner,
+        "_resolve_ollama_bench_path",
+        lambda: "/opt/orchestrator/.venv/bin/ollama-bench",
+    )
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    call_kwargs = popen.calls[0]
+    assert call_kwargs["env"]["OLLAMA_BENCH_PATH"] == "/opt/orchestrator/.venv/bin/ollama-bench"
+    # オーケストレータ自身のPATH等、既存の環境変数はそのまま引き継がれる。
+    assert call_kwargs["env"]["PATH"] == os.environ["PATH"]
+
+
+def test_resolve_ollama_bench_path_logs_warning_when_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`sys.executable`隣接・PATHのいずれでも見つからない場合、診断用の警告ログを残す。
+
+    サイレントにバレのコマンド名へフォールバックすると、`$OLLAMA_BENCH_PATH`が
+    PATH解決できず利用量が記録されない不具合が再発しても運用側から検知できない。
+    """
+    monkeypatch.setattr(agent_runner.sys, "executable", str(tmp_path / "no-such-dir" / "python"))
+    monkeypatch.setattr(agent_runner.shutil, "which", lambda name: None)
+
+    with caplog.at_level("WARNING", logger="orchestrator.agent_runner"):
+        result = agent_runner._resolve_ollama_bench_path()
+
+    assert result == "ollama-bench"
+    assert any("ollama-bench" in record.message for record in caplog.records)
 
 
 def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: Path) -> None:

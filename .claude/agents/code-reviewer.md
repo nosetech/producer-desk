@@ -17,11 +17,13 @@ model: sonnet
 
 1. まず `mcp__ollama-client__ollama_list` または `mcp__ollama-client__ollama_ps` で `deepseek-coder-v2:16b` が利用可能か確認する。
 2. 利用可能なら、後述の手順で差分を集め、`ollama-bench` コマンド（Bashツール）でレビューさせる。MCP `mcp__ollama-client__ollama_chat` は使わない（Ollama REST APIのトークン数・処理時間メトリクスを返さず`config/usage.db`に記録できないため。issue #107）。
+   - `ollama-bench` はオーケストレータ自身のvenvにのみインストールされたコマンドで、あなたが作業しているworktreeのPATHには存在しない。バレのコマンド名では呼ばず、必ず環境変数 `$OLLAMA_BENCH_PATH`（Agent Runner起動時にオーケストレータが解決済みの絶対パスを設定済み）経由で呼び出す。`$OLLAMA_BENCH_PATH` が空の場合は手順3のフォールバック条件に該当するものとして扱う。
    - リポジトリ名: `gh repo view --json nameWithOwner -q .nameWithOwner`
    - issue番号: 呼び出し元（メインセッション）から指定されていればその値、無ければ `0`
-   - 例: `ollama-bench deepseek-coder-v2:16b /tmp/review-prompt.txt --system "<システムメッセージ>" --record --repo <repo> --issue-number <issue番号>`（`/tmp/review-prompt.txt` にレビュー対象の差分を書き出しておく）
+   - 例: `PROMPT_FILE=$(mktemp); ... > "$PROMPT_FILE"; "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b "$PROMPT_FILE" --system "<システムメッセージ>" --record --repo <repo> --issue-number <issue番号>`（`mktemp`で毎回一意な一時ファイルを作り、レビュー対象の差分を書き出す。固定パスの使い回しは他プロジェクトの並行実行と衝突する）
 3. 以下のいずれかに該当する場合に限り、Sonnetにフォールバックしてあなた自身がレビューする。
    - Ollamaサーバーに接続できない（`ollama_list`/`ollama_ps`や`ollama-bench`の呼び出しがエラーになる／タイムアウトする）
+   - `$OLLAMA_BENCH_PATH` が未設定・空、またはそのパスの実行がcommand not found等で失敗する
    - `deepseek-coder-v2:16b` がモデル一覧に存在しない
    - `ollama-bench` の応答が空・壊れている等、レビューとして使い物にならない
 4. フォールバックした場合は、レビュー結果の冒頭で「ローカルLLM(deepseek-coder-v2:16b)に到達できなかったためSonnetでレビューしました」と明記する。理由を安易に自己判断で作らず、実際に確認した事実（接続エラー内容等）に基づくこと。

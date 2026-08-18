@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import shutil
 import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +41,8 @@ from orchestrator.usage_store import (
 from orchestrator.usage_store import (
     record_usage as store_record_usage,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 
@@ -140,6 +146,16 @@ AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
 # し、本番経路でも利用量がダッシュボードに反映されるようにする。モデルの利用可否
 # 確認（メトリクス不要）はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`のままで
 # よい。
+#
+# `ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソール
+# スクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身
+# とは別リポジトリのことが多い）のPATHには存在しない。解決済みの絶対パスを
+# system prompt本文に直接埋め込みBashツール呼び出しのたびに再現させる案は、長い
+# パスをLLMが複数回のツール呼び出しにまたがって書き写す必要があり、写し間違いで
+# 同じ「command not found」に陥りやすい。代わりに`run_agent_runner`が起動する
+# 子プロセスの環境変数`OLLAMA_BENCH_PATH`に解決済みパスを設定し（`popen`の`env=`
+# 参照）、Agent Runnerには短く安定した`$OLLAMA_BENCH_PATH`という参照だけを
+# 覚えさせる。
 AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
     "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
@@ -151,12 +167,18 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "- 日本語ドキュメント生成: `gemma2`\n"
     "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
     "モデルの利用可否確認はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`で構い"
-    "ませんが、実際に生成させる呼び出しは必ず`ollama-bench`コマンド（Bashツール）"
-    "経由で行い、`--record --repo {repo} --issue-number {issue_number}`を付与して"
-    "ください。例: `ollama-bench deepseek-coder-v2:16b /tmp/prompt.txt --system "
-    '"..." --record --repo {repo} --issue-number {issue_number}`（プロンプトは'
-    "一旦ファイルに書き出してから渡します）。MCP `mcp__ollama-client__ollama_chat`"
-    "はOllama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
+    "ませんが、実際に生成させる呼び出しは必ず環境変数`$OLLAMA_BENCH_PATH`が指す"
+    "`ollama-bench`コマンド（Bashツール）経由で行い、`--record --repo {repo} "
+    "--issue-number {issue_number}`を付与してください。あなたが作業している"
+    "プロジェクトのworktreeにはこのコマンドがPATH解決できないため、バレの"
+    "コマンド名`ollama-bench`ではなく必ず`$OLLAMA_BENCH_PATH`経由で呼び出して"
+    "ください。プロンプトは一旦ファイルに書き出してから渡しますが、他プロジェクトの"
+    "並行実行と衝突しないよう`mktemp`等で毎回一意な一時ファイルパスを生成してくだ"
+    "さい（固定パス`/tmp/prompt.txt`等の使い回しは避ける）。例: "
+    '`PROMPT_FILE=$(mktemp); "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b '
+    '"$PROMPT_FILE" --system "..." --record --repo {repo} '
+    "--issue-number {issue_number}`。MCP `mcp__ollama-client__ollama_chat`は"
+    "Ollama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
     "ため、生成呼び出しには使わないでください。\n"
     "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
     "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
@@ -256,6 +278,42 @@ def build_claude_command(
     else:
         command += ["--session-id", session_id]
     return command
+
+
+# issue #107: `ollama-bench`はオーケストレータ自身のvenv（`orchestrator/.venv`等）
+# にのみインストールされたコンソールスクリプトだが、`claude -p`はAgent Runnerが
+# 担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）を
+# cwdに起動される。オーケストレータプロセスのPATHをそのまま継承させただけでは
+# `ollama-bench`がPATH解決できず、AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONの指示が
+# 「command not found」で失敗し利用量が一切記録されない。解決結果は
+# `run_agent_runner`が子プロセスの環境変数`OLLAMA_BENCH_PATH`に設定する
+# （system promptへの埋め込みではなく環境変数にする理由は同定数の直前コメント参照）。
+#
+# 子プロセスのPATH自体を書き換える案は採らない。対象プロジェクトのworktree内で
+# Agent Runnerが`python`/`pytest`/`ruff`等（対象プロジェクト自身のCLAUDE.mdの
+# 開発ワークフローで使うもの）を呼んだ場合に、オーケストレータ自身のvenvに同名で
+# 同梱されている`python`/`pytest`/`ruff`（`orchestrator/pyproject.toml`のdev依存）
+# を誤ってPATH解決してしまい、対象プロジェクトのツールチェーンをサイレントに
+# シャドーイングする恐れがあるため。
+def _resolve_ollama_bench_path() -> str:
+    # `.resolve()`は使わない。venvのpythonバイナリはHomebrew等が管理する実体への
+    # symlinkであることが多く、解決すると`ollama-bench`が存在しない実体側のbin
+    # ディレクトリ（例: Homebrew CellarのFrameworks/.../bin）を指してしまう。
+    # `sys.executable`はvenv経由で起動された場合そのvenvのbinパスをそのまま
+    # 報告するため、symlinkのまま親ディレクトリを使う。
+    candidate = Path(sys.executable).parent / "ollama-bench"
+    if candidate.exists():
+        return str(candidate)
+    found = shutil.which("ollama-bench")
+    if found:
+        return found
+    logger.warning(
+        "ollama-bench の絶対パスを解決できませんでした（sys.executable隣接・PATH"
+        "いずれにも見つからず）。OLLAMA_BENCH_PATHにはバレのコマンド名を設定する"
+        "ため、Agent Runnerのworktree側でPATH解決できず利用量が記録されない"
+        "可能性があります。"
+    )
+    return "ollama-bench"
 
 
 def _init_log_file(repo: str, issue_number: int, *, logs_dir: Path, timestamp: str) -> Path:
@@ -468,6 +526,10 @@ def run_agent_runner(
     )
 
     log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
+    # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
+    # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
+    # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
+    env = {**os.environ, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path()}
     process = popen(
         command,
         cwd=str(worktree_path),
@@ -475,6 +537,7 @@ def run_agent_runner(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=env,
     )
     stdout_text = _stream_process_output(process, log_path)
     returncode = process.wait()

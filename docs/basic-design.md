@@ -220,7 +220,7 @@ claude -p "<指示内容>" \
 
 ### 実装方針: Agent Runnerへのsystem prompt指示
 
-- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たない。既存の`AGENT_RUNNER_LABEL_INSTRUCTION`・`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`と同様に、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`定数として上記対応表を`--append-system-prompt`で毎回Agent Runnerに渡す。system prompt生成時に呼び出し元の`repo`/`issue_number`を埋め込み、後述の`ollama-bench --record`の引数として使わせる。
+- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たない。既存の`AGENT_RUNNER_LABEL_INSTRUCTION`・`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`と同様に、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`定数として上記対応表を`--append-system-prompt`で毎回Agent Runnerに渡す。system prompt生成時に呼び出し元の`repo`/`issue_number`を埋め込み、後述の`ollama-bench --record`の引数として使わせる。`ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソールスクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）のPATHには存在しないため、バレのコマンド名では解決できない。解決済みの絶対パス（`_resolve_ollama_bench_path`が解決）をsystem prompt本文に埋め込む方式は、長いパスを複数回のBashツール呼び出しにまたがってAgent Runnerが書き写す必要があり写し間違いを誘発しやすいため採らず、`run_agent_runner`が子プロセス（`claude -p`本体、およびそのBashツールが起動するシェル）の環境変数`OLLAMA_BENCH_PATH`として渡す。Agent Runnerは`"$OLLAMA_BENCH_PATH"`という短い参照だけを覚えればよい。子プロセスのPATH自体は書き換えない（対象プロジェクト自身の`python`/`pytest`/`ruff`等をオーケストレータ側のものへ誤ってシャドーイングする恐れがあるため）。
 - Agent Runnerは、コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成が必要になった場面で、指示に従いローカルLLMを自身の判断で呼び出す。呼び出すか否か、結果をどう扱うかもAgent Runnerの裁量とし、オーケストレータ側での結果ハンドリングは行わない（Agent Runner内で完結する）。モデルの利用可否確認は`mcp__ollama-client__ollama_list`/`ollama_ps`等のMCPツールでよいが、実際に生成させる呼び出しは次節の`ollama-bench`コマンド（Bashツール）を使い、MCP `mcp__ollama-client__ollama_chat`は使わない。
 - 自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
 
