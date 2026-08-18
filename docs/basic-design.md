@@ -84,6 +84,7 @@ projects:
 Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェクトではなくissue単位で管理するため、このファイルには含まれない（`config/sessions.json`。[3-1](#3-1-起動パラメータ)参照）。
 
 - プロジェクト追加時は、このファイルにエントリを追加し、対象リポジトリのworktreeを用意した上でオーケストレータを再起動する（[要件定義書 2-4](./requirements.md#2-4-agent-runnerの起動停止プロジェクト追加時の運用フロー)の「手動起動・停止」＝このファイルへの登録とオーケストレータの認識、と読み替える）。
+- トップレベルの`log_retention_days`（プロジェクト単位ではなくファイル全体に1つ、既定値7）で、`logs/orchestrator.log`のローテーション世代数・`logs/<repo>/*.log`（Agent Runner個別実行ログ）の保持日数の両方を制御する（[3-2](#3-2-監視方法)参照。issue #114）。
 
 ### 2-2. データ取得仕様（ポーリング）
 
@@ -194,12 +195,22 @@ claude -p "<指示内容>" \
 
 - **ヘルスチェック**: ワンショット実行のため常時稼働のプロセス監視（ヘルスチェックエンドポイント等）は設けない。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueに終了コード・ログパスを記載したコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与を第一とする。[1章](#1-データモデル状態遷移設計)参照）。**実行中の進捗確認は、プロセス監視ではなく後述のログ収集（`tail -f`によるリアルタイム追跡）で行う（issue #49）。**
 - **正常終了時の決定的フォールバック**: プロセスが正常終了（exit 0）しても、Agent Runnerが上記の自己申告ラベル遷移（`AGENT_RUNNER_LABEL_INSTRUCTION`）を実行し忘れることがある（issue #70）。正常終了時、issueは必ず「PR作成済み（`status:in-review`）」「人間への確認が必要（`needs-human-decision`）」のいずれかに到達している設計であるため、オーケストレータは`run_agent_runner`の成功分岐でissueコメント投稿後に現在のラベルを再取得し、`status:in-progress`のまま変化していなければ（＝`needs-human-decision`・`status:in-review`いずれにも自己遷移していなければ）常に異常とみなし、`needs-human-decision`へ強制的に遷移させる（`result`テキストの自然文判定は行わない。既存の「異常終了時は`needs-human-decision`に強制遷移」ロジックと対称的な構造。issue #78）。Agent Runnerが既に自己遷移済みの場合、`transition_label`の冪等性によりこのフォールバックは何も行わない。
-- **ログ収集**: ログファイル（`logs/<repo>/<timestamp>.log`）はディスパッチ開始時点で作成し、以降は `claude` CLIの標準出力（NDJSON、3-1参照）を1行読むたびに都度ファイルへappendする（`agent_runner.py`の`_stream_process_output`。`subprocess.Popen`でプロセスを起動し、完了を待たずに読み取りを進める）。標準エラー出力は `stderr=subprocess.STDOUT` で標準出力ストリームに合流させ、取りこぼしを防ぐ（別スレッドでの並行読み取りは実装が複雑になる割に効果が変わらないため採用しなかった）。この方式により、実行中に `tail -f logs/<repo>/<timestamp>.log` でリアルタイムに進捗を追える（issue #49。旧方式では `subprocess.run(capture_output=True)` でプロセス終了まで標準出力・標準エラーをメモリにバッファし、終了後に一度だけログファイルへ書き出していたため、実行時間の長いタスクでは終了までログファイルが一切更新されなかった）。加えて、プロセス終了後にNDJSON全体から最後の `"type":"result"` イベントを取り出し（`_parse_result_payload`）、その `result` フィールドを要約としてissueコメントに投稿し、ダッシュボードの活動ログと連動させる。
+- **ログ収集**: ログファイル（`logs/<repo>/<timestamp>.log`、`<timestamp>`はJST基準の`%Y%m%dT%H%M%S`。UTC基準・末尾`Z`表記だった旧形式から、`usage_store.py`の`_JST`と同じ前例に合わせて変更した。issue #114）はディスパッチ開始時点で作成し、以降は `claude` CLIの標準出力（NDJSON、3-1参照）を1行読むたびに都度ファイルへappendする（`agent_runner.py`の`_stream_process_output`。`subprocess.Popen`でプロセスを起動し、完了を待たずに読み取りを進める）。標準エラー出力は `stderr=subprocess.STDOUT` で標準出力ストリームに合流させ、取りこぼしを防ぐ（別スレッドでの並行読み取りは実装が複雑になる割に効果が変わらないため採用しなかった）。この方式により、実行中に `tail -f logs/<repo>/<timestamp>.log` でリアルタイムに進捗を追える（issue #49。旧方式では `subprocess.run(capture_output=True)` でプロセス終了まで標準出力・標準エラーをメモリにバッファし、終了後に一度だけログファイルへ書き出していたため、実行時間の長いタスクでは終了までログファイルが一切更新されなかった）。加えて、プロセス終了後にNDJSON全体から最後の `"type":"result"` イベントを取り出し（`_parse_result_payload`）、その `result` フィールドを要約としてissueコメントに投稿し、ダッシュボードの活動ログと連動させる。
+- **個別実行ログの保持クリーンアップ**: 「1実行＝1ファイル、実行完了まで同一ファイルへ追記」という書き込み方式自体は変更しない（NDJSONの一貫性・`tail -f`の継続性を壊さないため）。`run_agent_runner`の実行完了直後（正常終了・異常終了・worktree不在による早期リターンいずれの場合も）に、`agent_runner.py`の`cleanup_old_agent_logs`が当該リポジトリの`logs/<repo>/`配下を走査し、**更新日時（mtime）**が`log_retention_days`（2-1の`config/projects.yaml`設定値、既定7日）より古い`*.log`ファイルのみを削除する。ファイル名に埋め込まれた実行開始時刻ではなくmtimeで判定するのは、`_stream_process_output`が1行書くたびに`flush()`するため実行中のファイルは常にmtimeが「今」に近く、実行中は経過日数のカウントが始まらないため（`DispatchQueue.is_active()`等の別途のフラグ管理は不要。issue #114）。
 
 ### 3-3. オーケストレータ⇔Agent Runnerのインターフェース仕様
 
 - オーケストレータはPythonの `subprocess`（`Popen`）でClaude Code CLIを直接起動し、標準出力を逐次読み取りながら、プロセス終了時に終了コードを取得する（HTTP等の別プロセス間APIは設けない）。ディスパッチ元の`dispatch_fn`から見た`run_agent_runner`の呼び出し自体は同期的（プロセスの完了を待って戻る）であり、この点は`--output-format json`を使っていた旧方式から変わらない（issue #49で変更したのはCLIの出力形式とログ書き出しタイミングのみで、呼び出し側インターフェースは維持）。
 - 1プロジェクトにつき同時に1つの `claude -p` プロセスのみ実行する（同一worktreeへの同時書き込みを避けるため、ディスパッチ中は当該プロジェクトの新規ディスパッチをキューイングする。キューの詳細は[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)参照）。
+
+### 3-4. オーケストレータ自身のログ出力設計
+
+`server.py`・`aggregation.py`・`instruct.py`・`worktree.py`・`agent_runner.py`は`logging.getLogger(__name__)`でロガーを取得するのみで、ハンドラ・フォーマッタ・レベルの設定（`logging.basicConfig()`相当）は`main.py`の`main()`冒頭で一度だけ呼ぶ`orchestrator/orchestrator/logging_config.py`の`configure_logging()`に集約する（issue #114。以前はこの設定が無く、Pythonのデフォルト（レベル`WARNING`以上）で出力されていたため、`logger.info()`/`logger.debug()`が実質握りつぶされていた）。
+
+- **フォーマット**: `logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")`。`%(asctime)s`はOSのタイムゾーン設定に依存しないよう、`formatTime`をオーバーライドしてJST（`Asia/Tokyo`）基準に固定する（`usage_store.py`の`_JST`と同じJST定義を`orchestrator/timezone.py`に切り出し共有する）。
+- **レベル制御**: 環境変数`ORCHESTRATOR_ENV`で切り替える。未設定時は`production`扱いで`INFO`以上のみ、`development`指定時は`DEBUG`以上（全レベル）を出力する。`bin/start.sh`はこの変数を明示的に設定せず起動するため、運用時は常に`production`相当となる。
+- **ローテーション**: `logging.handlers.TimedRotatingFileHandler(log_path, when="midnight", backupCount=log_retention_days)`で`logs/orchestrator.log`に直接書き込む（`log_retention_days`は2-1の`config/projects.yaml`設定値、既定7日。自前でのファイル走査・削除は実装せず標準機能に委譲する）。二重書き込みを避けるため、コンソール向けの`StreamHandler`は追加しない。`bin/start.sh`側の`nohup ... >>"${ORCHESTRATOR_FALLBACK_LOG}" 2>&1`という生リダイレクトは、ロガーを経由しない出力（`configure_logging()`呼び出し前のクラッシュ・未捕捉例外のトレースバック等）を取りこぼさないための最終フォールバックとして残すが、書き込み先は`logs/orchestrator.stderr.log`という別ファイルに分離する。`TimedRotatingFileHandler`はローテーション時に`orchestrator.log`を`orchestrator.log.YYYY-MM-DD`へ**rename**した上で新規に`orchestrator.log`を開き直すため、シェル側の`nohup`が同じパスに`>>`で開いたファイルディスクリプタを共有すると、rename後もシェル側は旧inode（rename後の名前）へ書き込み続けてしまう。この状態でPython側がbackupCount超過分のバックアップファイルを`unlink`しても、シェル側のfdが開いたままならディスク上の実体は解放されず、ディレクトリ上は見えないまま際限なく肥大化する（issue #114が解消しようとした問題を別の場所で再発させる）。この競合を避けるため、両者の書き込み先パスを分離した。
+- **`main.py`の`print()`置き換え**: 起動時メッセージ（読み込んだプロジェクト一覧・APIサーバーのURL等）はすべて`logger`経由に置き換え、上記4ファイル・`agent_runner.py`と同一の出力系統・フォーマットに統一する。
 
 ## 4. モデルルーター設定設計
 

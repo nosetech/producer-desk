@@ -8,6 +8,7 @@ config/projects.yaml を読み込み、5分間隔のポーリングループを�
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 
@@ -15,12 +16,15 @@ from orchestrator.agent_runner import run_agent_runner
 from orchestrator.aggregation import AggregatedState
 from orchestrator.close_watcher import close_finished_issues
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
-from orchestrator.config import Project, load_projects
+from orchestrator.config import Project, load_log_retention_days, load_projects
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
+from orchestrator.logging_config import configure_logging
 from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
+
+logger = logging.getLogger(__name__)
 
 # 環境変数 ORCHESTRATOR_PORT でbindポートを上書きできる。既に本番用インスタンスが
 # 稼働中の状態でAgent Runner自身が動作確認のために別インスタンスを起動する際、
@@ -28,29 +32,37 @@ from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
 PORT_ENV = "ORCHESTRATOR_PORT"
 
 
-def _make_dispatch_fn(projects: list[Project]) -> DispatchFn:
+def _make_dispatch_fn(projects: list[Project], log_retention_days: int) -> DispatchFn:
     projects_by_repo = {project.repo: project for project in projects}
 
     def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
-        run_agent_runner(projects_by_repo[repo], issue_number, message)
+        run_agent_runner(
+            projects_by_repo[repo],
+            issue_number,
+            message,
+            log_retention_days=log_retention_days,
+        )
 
     return dispatch_fn
 
 
 def main() -> None:
+    log_retention_days = load_log_retention_days()
+    configure_logging(retention_days=log_retention_days)
+
     projects = load_projects()
 
     if not projects:
-        print("config/projects.yaml にプロジェクトが登録されていません。")
+        logger.error("config/projects.yaml にプロジェクトが登録されていません。")
         return
 
-    print(f"{len(projects)}件のプロジェクトを読み込みました:")
+    logger.info("%d件のプロジェクトを読み込みました:", len(projects))
     for project in projects:
-        print(f"  - {project.repo} ({project.worktree_path})")
+        logger.info("  - %s (%s)", project.repo, project.worktree_path)
 
     store = StateStore()
     stop_event = threading.Event()
-    dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects))
+    dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects, log_retention_days))
     comment_tracker = CommentTracker()
     decision_notifier = DecisionNotifier()
     review_notifier = ReviewNotifier()
@@ -92,8 +104,10 @@ def main() -> None:
 
     port = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
     server = make_server(store, projects=projects, dispatch_queue=dispatch_queue, port=port)
-    print(
-        f"APIサーバーを起動しました: http://{server.server_address[0]}:{server.server_address[1]}/api/state"
+    logger.info(
+        "APIサーバーを起動しました: http://%s:%s/api/state",
+        server.server_address[0],
+        server.server_address[1],
     )
     try:
         server.serve_forever()

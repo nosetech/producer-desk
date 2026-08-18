@@ -19,6 +19,13 @@
 #   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
 #            （既定: orchestrator/.venv/bin/python。.venvが無ければこのスクリプトが
 #            自動作成する。既にorchestrator/venv/bin/pythonがあればそちらを使う）
+#
+# logs/orchestrator.logの出力レベルは環境変数 ORCHESTRATOR_ENV で切り替えられる
+# が、このスクリプトは明示的に設定しないため常に既定のproduction相当（INFO以上
+# のみ出力）で起動する（開発時にDEBUG以上を見たい場合は`python -m
+# orchestrator.main`を直接、ORCHESTRATOR_ENV=developmentを指定して起動すること。
+# README「ログ出力先ディレクトリの運用方針」参照）。ローテーション保持日数は
+# config/projects.yamlのlog_retention_days（既定7日）に従う。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +39,21 @@ ORCHESTRATOR_PID_FILE="${LOG_DIR}/orchestrator.pid"
 DASHBOARD_PID_FILE="${LOG_DIR}/dashboard.pid"
 ORCHESTRATOR_LOG="${LOG_DIR}/orchestrator.log"
 DASHBOARD_LOG="${LOG_DIR}/dashboard.log"
+
+# orchestrator.pyのlogging（TimedRotatingFileHandler）が${ORCHESTRATOR_LOG}を
+# 直接管理する（issue #114、orchestrator/orchestrator/logging_config.py参照）。
+# nohupのリダイレクト先を同じパスにすると、日付境界でのローテーション（rename
+# によりorchestrator.logをorchestrator.log.YYYY-MM-DDへ改名し、新規に
+# orchestrator.logを開き直す）が起きた後もこのシェルのファイルディスクリプタは
+# rename前のinodeを掴んだままになる。その結果、ロガーを経由しない出力
+# （configure_logging()呼び出し前のクラッシュや未捕捉例外のトレースバック等）
+# が、ローテーション後は新しいorchestrator.logに一切書き込まれなくなるばかり
+# か、そのバックアップファイルがTimedRotatingFileHandlerのbackupCountを超えて
+# unlinkされてもこのシェルのfdが開いたままなら削除されずディスク上に残り続け、
+# 「際限のない肥大化」というissue #114の解消対象を別の場所で再発させてしまう。
+# そのためnohupのフォールバック出力先はPythonが管理するパスとは別ファイルに
+# 分離する。
+ORCHESTRATOR_FALLBACK_LOG="${LOG_DIR}/orchestrator.stderr.log"
 
 log() {
     echo "[start] $*"
@@ -120,7 +142,7 @@ log "dashboard をビルドします..."
 log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}、ポート${ORCHESTRATOR_PORT}）..."
 (
     cd "${ORCHESTRATOR_DIR}"
-    nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.main >>"${ORCHESTRATOR_LOG}" 2>&1 &
+    nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.main >>"${ORCHESTRATOR_FALLBACK_LOG}" 2>&1 &
     echo $! >"${ORCHESTRATOR_PID_FILE}"
 )
 
@@ -136,7 +158,7 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 )
 
 log "起動完了"
-log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG}  URL: http://127.0.0.1:${ORCHESTRATOR_PORT}"
+log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG} (fallback: ${ORCHESTRATOR_FALLBACK_LOG})  URL: http://127.0.0.1:${ORCHESTRATOR_PORT}"
 log "  dashboard:    PID $(cat "${DASHBOARD_PID_FILE}")  log: ${DASHBOARD_LOG}"
 if [ -n "${LAN_IP:-}" ]; then
     log "  dashboard URL: http://${LAN_IP}:${DASHBOARD_PORT}"

@@ -25,16 +25,17 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from orchestrator.config import REPO_ROOT
+from orchestrator.timezone import JST as _JST
 
 DEFAULT_USAGE_DB_PATH = REPO_ROOT / "config" / "usage.db"
 
 # 利用量の日次集計はJST（Asia/Tokyo）基準で行う。record_usage()が保存する
 # recorded_at自体はUTCのまま（絶対時刻として一意）だが、daily_model_usage()の
-# 「本日」判定・日付グルーピングはJSTへ変換してから行う（issue #71）。
-_JST = ZoneInfo("Asia/Tokyo")
+# 「本日」判定・日付グルーピングはJSTへ変換してから行う（issue #71。JST定義
+# 自体はログ出力設計（logging_config.py・agent_runner.py）と共有するため
+# orchestrator/timezone.py に切り出した。issue #114）。
 
 # リミット到達時、`result`の自由文（例: "You've hit your session limit ·
 # resets 1pm (Asia/Tokyo)"）から解除予定時刻の記述部分を抜き出す。

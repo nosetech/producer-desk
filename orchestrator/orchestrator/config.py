@@ -20,6 +20,11 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "projects.yaml"
 # 指定するために使う（README「リリース・日常運用」参照）。
 CONFIG_PATH_ENV = "PROJECTS_CONFIG_PATH"
 
+# logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
+# 保持日数の既定値。config/projects.yamlの`log_retention_days`未設定時に使う
+# （issue #114）。
+DEFAULT_LOG_RETENTION_DAYS = 7
+
 
 @dataclass
 class Project:
@@ -27,7 +32,7 @@ class Project:
     worktree_path: str
 
 
-def load_projects(config_path: Path | None = None) -> list[Project]:
+def _load_yaml_data(config_path: Path | None) -> dict:
     if config_path is None:
         config_path = Path(os.environ.get(CONFIG_PATH_ENV, str(DEFAULT_CONFIG_PATH)))
 
@@ -38,6 +43,18 @@ def load_projects(config_path: Path | None = None) -> list[Project]:
         )
 
     with config_path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        return yaml.safe_load(f) or {}
 
+
+def load_projects(config_path: Path | None = None) -> list[Project]:
+    data = _load_yaml_data(config_path)
     return [Project(**entry) for entry in data.get("projects", [])]
+
+
+def load_log_retention_days(config_path: Path | None = None) -> int:
+    data = _load_yaml_data(config_path)
+    value = int(data.get("log_retention_days", DEFAULT_LOG_RETENTION_DAYS))
+    # 0以下だと、書き込み直後のログファイルもTimedRotatingFileHandlerの
+    # backupCount管理・cleanup_old_agent_logs（agent_runner.py）のmtime判定で
+    # 即座に削除されうるため、最低1日は保持する（issue #114）。
+    return max(1, value)
