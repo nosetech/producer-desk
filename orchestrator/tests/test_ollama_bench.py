@@ -1,9 +1,10 @@
 """orchestrator.ollama_bench の単体テスト。
 
 MCP `ollama-client` ではOllama REST APIの`prompt_eval_count`/`eval_count`/
-`total_duration`等が取得できないため、直接REST APIを叩く手動ベンチマーク
-ツールを検証する（issue #60コメント参照）。実ネットワークは叩かず、
-`http_post`をDIで差し替える。
+`total_duration`等が取得できないため、直接REST APIを叩くCLIツールを検証する
+（issue #60コメント参照）。issue #107でAgent Runner本番経路のローカルLLM
+生成呼び出しもこのツール経由に一本化したため、手動ベンチマークと本番経路の
+両方から使われる。実ネットワークは叩かず、`http_post`をDIで差し替える。
 """
 
 from __future__ import annotations
@@ -96,6 +97,35 @@ def test_call_ollama_chat_posts_system_message_when_given() -> None:
     assert body["messages"][0] == {"role": "system", "content": "あなたは..."}
     assert body["messages"][1] == {"role": "user", "content": "docsを書いて"}
     assert body["stream"] is False
+
+
+def test_call_ollama_chat_passes_response_format_when_given() -> None:
+    http_post = FakeHttpPost(OLLAMA_CHAT_RESPONSE)
+
+    call_ollama_chat(
+        "deepseek-coder-v2:16b",
+        "レビューして",
+        host="http://host:11434",
+        response_format="json",
+        http_post=http_post,
+    )
+
+    body = json.loads(http_post.calls[0]["payload"])
+    assert body["format"] == "json"
+
+
+def test_call_ollama_chat_omits_format_field_when_not_given() -> None:
+    http_post = FakeHttpPost(OLLAMA_CHAT_RESPONSE)
+
+    call_ollama_chat(
+        "deepseek-coder-v2:16b",
+        "レビューして",
+        host="http://host:11434",
+        http_post=http_post,
+    )
+
+    body = json.loads(http_post.calls[0]["payload"])
+    assert "format" not in body
 
 
 def test_to_usage_record_converts_tokens_and_duration() -> None:

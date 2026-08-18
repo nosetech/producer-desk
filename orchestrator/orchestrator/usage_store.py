@@ -9,10 +9,12 @@
 （.gitignore対象、コミットしない）にSQLiteで記録し、「日単位の使用量」として
 モデル別に集計・表示する方式に転換した。
 
-`duration_seconds` はOllama REST APIの`total_duration`相当（秒）。Agent Runner
-本番経路（MCP `ollama-client`経由）では取得できず、`orchestrator/orchestrator/
-ollama_bench.py`（手動ベンチマークツール、Ollama REST APIを直接呼び出す）から
-のみ値が入る。Claude Code実行分の記録では常に`None`になる。
+`duration_seconds` はOllama REST APIの`total_duration`相当（秒）。MCP
+`ollama-client`経由の呼び出しではメトリクスが取得できないため、`orchestrator/
+orchestrator/ollama_bench.py`（`ollama-bench` CLI、Ollama REST APIを直接呼び
+出す。手動ベンチマークとAgent Runner本番経路のローカルLLM生成呼び出しの両方
+から使われる。issue #107）からのみ値が入る。Claude Code実行分の記録では常に
+`None`になる。
 """
 
 from __future__ import annotations

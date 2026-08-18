@@ -1,14 +1,16 @@
-"""LocalLLM（Ollama）の手動ベンチマークツール。Ollama REST APIを直接呼び出す。
+"""LocalLLM（Ollama）をOllama REST APIで直接呼び出すCLIツール。
 
-MCP `ollama-client` はOllama REST APIレスポンスに含まれる`prompt_eval_count`/
-`eval_count`/`total_duration`等のメトリクスをそのまま返さないため、正確な
-トークン数・処理時間を計測するにはMCPを経由せずOllama REST API
-（`POST /api/chat`, `stream: false`）に直接アクセスする必要がある
-（issue #60コメント参照）。
+MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）はOllama REST API
+レスポンスに含まれる`prompt_eval_count`/`eval_count`/`total_duration`等の
+メトリクスをそのまま返さない（`ollama_chat`ツールが`message.content`のみを
+抽出して返す実装のため）。正確なトークン数・処理時間を計測するにはMCPを
+経由せずOllama REST API（`POST /api/chat`, `stream: false`）に直接アクセス
+する必要がある（issue #60コメント参照）。
 
-このツールは人間が手動でモデル比較・性能検証を行う専用であり、Agent Runner
-本番経路（MCP `ollama-client`経由、`agent_runner.AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`）
-は変更しない。
+当初は人間が手動でモデル比較・性能検証を行う専用ツールとして追加したが、
+issue #107でAgent Runner本番経路（`agent_runner.AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`）
+のローカルLLM生成呼び出しもこのツール（`--record`付き）経由に一本化し、
+`config/usage.db`への利用量記録を本番経路でも行うようにした。
 """
 
 from __future__ import annotations
@@ -63,16 +65,24 @@ def call_ollama_chat(
     *,
     host: str | None = None,
     system: str | None = None,
+    response_format: str | None = None,
     timeout: float = 300.0,
     http_post: HttpPostFn = _http_post,
 ) -> BenchmarkResult:
-    """`POST /api/chat`（`stream: false`）を直接呼び出し、実測のトークン数・処理時間を取得する。"""
+    """`POST /api/chat`（`stream: false`）を直接呼び出し、実測のトークン数・処理時間を取得する。
+
+    `response_format="json"`を指定するとOllama側に構造化JSON出力を要求する
+    （Ollama REST APIの`format`フィールドにそのまま渡す）。
+    """
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    payload = json.dumps({"model": model, "messages": messages, "stream": False}).encode("utf-8")
+    payload_dict: dict = {"model": model, "messages": messages, "stream": False}
+    if response_format:
+        payload_dict["format"] = response_format
+    payload = json.dumps(payload_dict).encode("utf-8")
     url = f"{resolve_ollama_host(host).rstrip('/')}/api/chat"
     body = http_post(url, payload, timeout=timeout)
 
@@ -123,12 +133,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Ollama REST APIを直接呼び出し、モデルのトークン数・処理時間を計測する"
-            "手動ベンチマークツール（MCP ollama-clientでは取得できないメトリクス用）。"
+            "CLIツール（MCP ollama-clientでは取得できないメトリクス用）。手動ベンチ"
+            "マークのほか、Agent Runner本番経路のローカルLLM生成呼び出しにも使う。"
         )
     )
     parser.add_argument("model", help="Ollamaモデル名（例: deepseek-coder-v2:16b）")
     parser.add_argument("prompt_file", type=Path, help="プロンプトを記載したテキストファイル")
     parser.add_argument("--system", default=None, help="systemメッセージ（任意）")
+    parser.add_argument(
+        "--format",
+        dest="response_format",
+        default=None,
+        choices=["json"],
+        help="構造化JSON出力を要求する場合に指定する（未指定時はプレーンテキスト）",
+    )
     parser.add_argument(
         "--host",
         default=None,
@@ -148,7 +166,13 @@ def main() -> None:
         parser.error("--record指定時は--repoが必須です")
 
     prompt = args.prompt_file.read_text(encoding="utf-8")
-    result = call_ollama_chat(args.model, prompt, host=args.host, system=args.system)
+    result = call_ollama_chat(
+        args.model,
+        prompt,
+        host=args.host,
+        system=args.system,
+        response_format=args.response_format,
+    )
     _print_result(result)
 
     if args.record:
