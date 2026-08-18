@@ -84,6 +84,33 @@ class StateStore:
             return self._state
 
 
+class InstructInFlightLocks:
+    """repo+issue_number単位のin-flightロック（issue #111）。
+
+    `status:in-review`への`approve`は`dispatch_queue`を経由せずPRマージ・issueクローズを
+    同期的に直接実行するため、同一issueへの`approve`/`instruct`がほぼ同時に届くと
+    ラベル遷移やコメント投稿が競合しうる。`ThreadingHTTPServer`はリクエストごとに別スレッドで
+    処理するため、`_handle_instruct`の処理中は該当issueへの後続リクエストを単純に拒否する
+    ことで排他制御する（複数タブ・複数端末からの同時操作を想定。CLAUDE.md参照）。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._in_flight: set[tuple[str, int]] = set()
+
+    def try_acquire(self, repo: str, issue_number: int) -> bool:
+        with self._lock:
+            key = (repo, issue_number)
+            if key in self._in_flight:
+                return False
+            self._in_flight.add(key)
+            return True
+
+    def release(self, repo: str, issue_number: int) -> None:
+        with self._lock:
+            self._in_flight.discard((repo, issue_number))
+
+
 def _make_handler(
     store: StateStore,
     *,
@@ -106,6 +133,7 @@ def _make_handler(
     sync_worktree: SyncWorktreeFn,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
+    instruct_locks = InstructInFlightLocks()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -196,35 +224,43 @@ def _make_handler(
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
                 return
 
+            if not instruct_locks.try_acquire(repo, issue_number):
+                message = f"{repo}#{issue_number} は他の操作を処理中です。しばらくお待ちください"
+                self._send_json(409, {"error": message})
+                return
+
             try:
-                payload = self._read_json_body()
-                result = handle_instruct(
-                    repo,
-                    issue_number,
-                    payload["action"],
-                    payload.get("message"),
-                    get_labels=get_labels,
-                    add_label=add_label,
-                    remove_label=remove_label,
-                    post_comment=post_comment,
-                    dispatch_queue=dispatch_queue,
-                    resolve_pr_number=resolve_pr_number,
-                    merge_pr=merge_pr,
-                    close_issue=close_issue,
-                    get_pr_branch=get_pr_branch,
-                    delete_branch=delete_branch,
-                    worktree_path=projects_by_repo[repo].worktree_path,
-                    sync_worktree=sync_worktree,
-                )
-            except (KeyError, ValueError) as e:
-                self._send_json(400, {"error": str(e)})
-                return
-            except ReviewMergeError as e:
-                self._send_json(502, {"error": str(e)})
-                return
-            except subprocess.CalledProcessError as e:
-                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
-                return
+                try:
+                    payload = self._read_json_body()
+                    result = handle_instruct(
+                        repo,
+                        issue_number,
+                        payload["action"],
+                        payload.get("message"),
+                        get_labels=get_labels,
+                        add_label=add_label,
+                        remove_label=remove_label,
+                        post_comment=post_comment,
+                        dispatch_queue=dispatch_queue,
+                        resolve_pr_number=resolve_pr_number,
+                        merge_pr=merge_pr,
+                        close_issue=close_issue,
+                        get_pr_branch=get_pr_branch,
+                        delete_branch=delete_branch,
+                        worktree_path=projects_by_repo[repo].worktree_path,
+                        sync_worktree=sync_worktree,
+                    )
+                except (KeyError, ValueError) as e:
+                    self._send_json(400, {"error": str(e)})
+                    return
+                except ReviewMergeError as e:
+                    self._send_json(502, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+            finally:
+                instruct_locks.release(repo, issue_number)
 
             self._refresh_store()
             self._send_json(200, dataclasses.asdict(result))
