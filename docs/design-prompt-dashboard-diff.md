@@ -46,3 +46,4 @@
 - この差分プロンプトは [design-prompt-dashboard.md](./design-prompt-dashboard.md) に対する追加変更であり、単独では使わない（最初のダッシュボードデザインが未作成の場合は、まず元のプロンプトを使うこと）。
 - 対応する仕様変更は [requirements.md 2-3/2-7](./requirements.md#2-3-aiへの指示出し導線) 、[basic-design.md 2-3](./basic-design.md#2-3-指示出しapi内部api)（`instruct`アクション・新規issue作成API・ディスパッチキュー）を参照。
 - デザイン更新後のArtifact URL/コードは、このリポジトリの実装issueに添付すること。
+- 上記プロンプト本文中の「既存の4要素（判断待ち一覧／最近の活動ログ／利用量・リミットモニター／プロジェクトの並行状況）」は、このプロンプトを実際に使用した時点（指示入力欄追加時）のデザイン構成の記録であり、過去に送信した文面をそのまま残している。その後 [design-prompt-dashboard-diff-status-counts.md](./design-prompt-dashboard-diff-status-counts.md)（issue #115）で「最近の活動ログ」は廃止され、現在の要素は3つ（判断待ち一覧／利用量・リミットモニター／プロジェクトの並行状況（状態別件数表示・枠付きウィジェット化））になっている（issue #121）。本プロンプトを土台に新たな差分プロンプトを作成する場合は、この最新構成を前提にすること。

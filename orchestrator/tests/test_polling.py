@@ -68,7 +68,7 @@ def test_poll_once_resolves_pr_number_only_for_in_review_issues() -> None:
 def test_poll_once_reflects_label_transition_made_by_on_issues_fetched() -> None:
     """issue #97: on_issues_fetched内でオーケストレータ自身が行ったラベル遷移
     （コメント指示検知・クローズ検知を模したフェイク）が、同一poll_once呼び出しの
-    aggregate()結果（活動ログ）に反映されることを検証する。"""
+    aggregate()結果（プロジェクト状況）に反映されることを検証する。"""
     state_by_repo = {
         "nosetech/project-a": [_issue("nosetech/project-a", 1, [STATUS_TODO])],
     }
@@ -90,7 +90,7 @@ def test_poll_once_reflects_label_transition_made_by_on_issues_fetched() -> None
         on_issues_fetched=on_issues_fetched,
     )
 
-    assert [event.label for event in state.activity] == [STATUS_IN_PROGRESS]
+    assert [p.label for p in state.project_status] == [STATUS_IN_PROGRESS]
 
 
 def test_poll_once_skips_refetch_when_on_issues_fetched_is_none() -> None:

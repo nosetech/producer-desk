@@ -26,17 +26,6 @@ export interface IssueSummary {
   pr_number: number | null;
 }
 
-/** GET /api/state の activity 配列要素。オーケストレータのActivityEventに対応。 */
-export interface ActivityEvent {
-  repo: string;
-  number: number;
-  title: string;
-  label: StatusLabel;
-  updated_at: string;
-  /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
-  is_orphaned: boolean;
-}
-
 /**
  * GET /api/state の status_counts。オーケストレータのstatus_counts（`aggregate()`、
  * issue #115）に対応する、状態別のOPEN issue件数。`untagged`は5つの状態ラベルの
@@ -51,10 +40,28 @@ export interface StatusCounts {
   untagged: number;
 }
 
+/**
+ * GET /api/state の project_status 配列要素。オーケストレータのProjectStatus
+ * （`aggregate()`）に対応する、プロジェクト（リポジトリ）単位の「並行状況」ウィジェット
+ * 向け集計。かつての横断タイムライン（`activity`）はissue #121で廃止され、この
+ * フィールドに一本化された。
+ */
+export interface ProjectStatusSummary {
+  repo: string;
+  /** 直近更新issueの状態ラベル。管理対象issueが1件も無いリポジトリはnull。 */
+  label: StatusLabel | null;
+  number: number | null;
+  title: string | null;
+  /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
+  is_orphaned: boolean;
+  /** そのリポジトリ単体の状態別OPEN issue件数（`status:closed`は含まない）。 */
+  counts: StatusCounts;
+}
+
 export interface AggregatedState {
   decisions: IssueSummary[];
   reviews: IssueSummary[];
-  activity: ActivityEvent[];
+  project_status: ProjectStatusSummary[];
   status_counts: StatusCounts;
 }
 

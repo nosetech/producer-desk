@@ -1,46 +1,43 @@
+import { EMPTY_STATUS_COUNTS } from "./types";
 import { STATUS_TODO, type StatusLabel } from "./status";
-import type { ActivityEvent, IssueSummary } from "./types";
+import type { IssueSummary, ProjectStatusSummary, StatusCounts } from "./types";
 
 export interface ProjectStatus {
   repo: string;
   label: StatusLabel;
-  subtitle: string;
-  decisionCount: number;
+  isOrphaned: boolean;
+  counts: StatusCounts;
 }
 
 function shortRepoName(repo: string): string {
   return repo.split("/")[1] ?? repo;
 }
 
+/**
+ * リポジトリ単位の「並行状況」ウィジェット表示用データを組み立てる。
+ *
+ * `decisions`（判断待ち一覧）を最優先で反映するのは、直近更新issueが判断待ちで
+ * なくても「対応が必要な判断待ちがある」ことをプロジェクト状態として常に目立たせる
+ * ため（旧実装からの踏襲）。それ以外は`projectStatus`（オーケストレータの
+ * `ProjectStatus`、issue #121でかつての横断タイムライン`activity`から置き換え）の
+ * 直近更新issueの状態をそのまま使う。件数内訳・孤立in-progress検知は`label`の
+ * 決定方法に依らず常に`projectStatus`由来の値を使う。
+ */
 export function deriveProjectStatus(
   repo: string,
   decisions: IssueSummary[],
-  activity: ActivityEvent[],
+  projectStatus: ProjectStatusSummary[],
 ): ProjectStatus {
-  const repoDecisions = decisions.filter((d) => d.repo === repo);
-  if (repoDecisions.length > 0) {
-    return {
-      repo,
-      label: "needs-human-decision",
-      subtitle: `${repoDecisions.length}件 起票`,
-      decisionCount: repoDecisions.length,
-    };
-  }
+  const status = projectStatus.find((p) => p.repo === repo);
+  const counts = status?.counts ?? EMPTY_STATUS_COUNTS;
+  const isOrphaned = status?.is_orphaned ?? false;
 
-  // activity は updated_at 降順に集約済み（orchestrator/aggregation.py）
-  const latest = activity.find((a) => a.repo === repo);
-  if (!latest) {
-    return {
-      repo,
-      label: STATUS_TODO,
-      subtitle: "issueなし",
-      decisionCount: 0,
-    };
-  }
+  const hasPendingDecision = decisions.some((d) => d.repo === repo);
+  const label: StatusLabel = hasPendingDecision
+    ? "needs-human-decision"
+    : (status?.label ?? STATUS_TODO);
 
-  const subtitle =
-    latest.label === STATUS_TODO ? "キュー待ち" : `#${latest.number}`;
-  return { repo, label: latest.label, subtitle, decisionCount: 0 };
+  return { repo, label, isOrphaned, counts };
 }
 
 export { shortRepoName };

@@ -8,7 +8,6 @@ import Header from "./Header";
 import ProjectStatusRow from "./ProjectStatusRow";
 import DecisionsList from "./DecisionsList";
 import ReviewsList from "./ReviewsList";
-import ActivityTimeline from "./ActivityTimeline";
 import UsageMonitor from "./UsageMonitor";
 import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
 import Toast from "./Toast";
@@ -19,7 +18,7 @@ const TOAST_DURATION_MS = 4_600;
 const EMPTY_STATE: AggregatedState = {
   decisions: [],
   reviews: [],
-  activity: [],
+  project_status: [],
   status_counts: EMPTY_STATUS_COUNTS,
 };
 
@@ -95,7 +94,7 @@ export default function Dashboard() {
   }
 
   const projectStatuses = repos.map((repo) =>
-    deriveProjectStatus(repo, state.decisions, state.activity),
+    deriveProjectStatus(repo, state.decisions, state.project_status),
   );
 
   return (
@@ -133,7 +132,6 @@ export default function Dashboard() {
         </div>
         <div className={styles.right}>
           <UsageMonitor />
-          <ActivityTimeline activity={state.activity} onReply={handleReply} />
         </div>
       </main>
       <ComposerBar

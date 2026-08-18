@@ -192,7 +192,7 @@ def _make_handler(
                 else {
                     "decisions": [],
                     "reviews": [],
-                    "activity": [],
+                    "project_status": [],
                     "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
                 },
             )

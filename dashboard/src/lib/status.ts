@@ -59,3 +59,21 @@ const UNKNOWN_META: StatusMeta = {
 export function statusMeta(label: string): StatusMeta {
   return STATUS_META[label] ?? UNKNOWN_META;
 }
+
+export const STATUS_COUNT_UNTAGGED = "untagged";
+
+/**
+ * `StatusCounts.untagged`（5つの状態ラベルいずれも付与されていないissue）の表示定義。
+ * ラベル付け漏れを示す警告として、孤立in-progress検知と同じ`--accent-red`系トークンを
+ * 使う（`--accent-red`は暗色モードでClaude Designの`--warn`と同値、issue #121）。
+ */
+const UNTAGGED_META: StatusMeta = {
+  text: "タグなし",
+  colorVar: "--accent-red",
+  bgVar: "--accent-red-bg",
+};
+
+/** `StatusCounts`のキー（4つの状態ラベル＋`untagged`）に対応する表示定義を返す。 */
+export function statusCountMeta(key: string): StatusMeta {
+  return key === STATUS_COUNT_UNTAGGED ? UNTAGGED_META : statusMeta(key);
+}

@@ -8,7 +8,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from orchestrator.aggregation import STATUS_COUNT_KEYS, ActivityEvent, AggregatedState, IssueSummary
+from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
 from orchestrator.config import Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
@@ -141,7 +141,7 @@ def test_state_store_returns_none_before_any_update() -> None:
 
 def test_state_store_returns_latest_set_state() -> None:
     store = StateStore()
-    state = AggregatedState(decisions=[], activity=[])
+    state = AggregatedState(decisions=[], project_status=[])
 
     store.set(state)
 
@@ -158,7 +158,7 @@ def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
         assert body == {
             "decisions": [],
             "reviews": [],
-            "activity": [],
+            "project_status": [],
             "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
         }
     finally:
@@ -179,13 +179,12 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
                     updated_at="2026-08-01T00:00:00Z",
                 )
             ],
-            activity=[
-                ActivityEvent(
+            project_status=[
+                ProjectStatus(
                     repo="nosetech/project-a",
+                    label="needs-human-decision",
                     number=1,
                     title="t",
-                    label="needs-human-decision",
-                    updated_at="2026-08-01T00:00:00Z",
                 )
             ],
         )
@@ -196,7 +195,7 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
         status, body = _get(server, "/api/state")
         assert status == 200
         assert body["decisions"][0]["number"] == 1
-        assert body["activity"][0]["label"] == "needs-human-decision"
+        assert body["project_status"][0]["label"] == "needs-human-decision"
     finally:
         server.shutdown()
 
@@ -880,7 +879,7 @@ def test_create_issue_refreshes_store_synchronously() -> None:
         assert event.wait(timeout=2)
         state = store.get()
         assert state is not None
-        assert [e.number for e in state.activity] == [42]
+        assert [p.number for p in state.project_status] == [42]
     finally:
         server.shutdown()
 
