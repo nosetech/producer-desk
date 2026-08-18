@@ -33,7 +33,7 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
 
 3.6. **ローカルLLMの補助的活用**
 
-- コード変更そのものを伴わない補助的な作業（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）では、必要に応じてMCP `ollama-client` 経由でローカルLLM（Ollama）を併用してよい（PR #61 / docs/basic-design.md 4章「モデルルーター設定設計」と同じ方針。Agent Runner本体への実装は `orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION` 参照）
+- コード変更そのものを伴わない補助的な作業（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）では、必要に応じてローカルLLM（Ollama）を併用してよい（PR #61 / docs/basic-design.md 4章「モデルルーター設定設計」と同じ方針。Agent Runner本体への実装は `orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION` 参照）。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは`ollama-bench`コマンド（`--record --repo <repo> --issue-number <issue番号>`付き）経由でOllama REST APIを直接呼び出す。MCP `mcp__ollama-client__ollama_chat`はトークン数・処理時間メトリクスを返さず`config/usage.db`に利用量を記録できないため使わない（issue #107）
 - タスク種別ごとの推奨モデル:
   - コードレビュー支援: `deepseek-coder-v2:16b`
   - デバッグ調査の下調べ: `deepseek-coder-v2:16b`

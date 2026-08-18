@@ -250,9 +250,29 @@ def test_build_claude_command_appends_local_llm_instruction() -> None:
     flag_index = command.index("--append-system-prompt")
     instruction = command[flag_index + 1]
 
-    assert "ollama-client" in instruction
     assert "deepseek-coder-v2:16b" in instruction
     assert "gemma2" in instruction
+
+
+def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> None:
+    """issue #107の再発防止テスト。
+
+    MCP `ollama-client`経由の生成呼び出しではOllama REST APIのトークン数・
+    処理時間メトリクスが取得できず`config/usage.db`に記録できないため、生成
+    本体は`ollama-bench` CLI（`--record`）を使うようsystem promptで明示的に
+    指示し、かつ実行対象のrepo/issue番号が埋め込まれることを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "ollama-bench" in instruction
+    assert "--record --repo nosetech/project-a --issue-number 12" in instruction
+    assert "mcp__ollama-client__ollama_chat" in instruction
+    assert "mcp__ollama-client__ollama_list" in instruction
 
 
 def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:

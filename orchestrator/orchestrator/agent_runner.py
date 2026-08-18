@@ -126,20 +126,38 @@ AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
 
 
 # issue #59: コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった
-# 補助用途に限り、MCP `ollama-client`経由でローカルLLMを併用する（自走タスク本体は
-# 引き続きClaude Codeのみを使う。docs/requirements.md 2-5参照）。呼び出すか否か・
-# どのモデルを使うかはAgent Runner自身の裁量とするため、タスク種別ごとの推奨モデルを
-# system promptで伝える（docs/basic-design.md 4章参照）。
+# 補助用途に限り、ローカルLLMを併用する（自走タスク本体は引き続きClaude Codeのみを
+# 使う。docs/requirements.md 2-5参照）。呼び出すか否か・どのモデルを使うかはAgent
+# Runner自身の裁量とするため、タスク種別ごとの推奨モデルをsystem promptで伝える
+# （docs/basic-design.md 4章参照）。
+#
+# issue #107: MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の
+# `ollama_chat`ツールはOllama REST APIレスポンスから`content`のみを取り出して返し、
+# `prompt_eval_count`/`eval_count`/`total_duration`等のメトリクスを破棄するため、
+# MCP経由の呼び出しでは利用量を`config/usage.db`に記録できない（issue #60の調査で
+# 判明、`ollama_bench.py`を手動ベンチマーク専用ツールとして追加していた）。生成本体
+# の呼び出しはOllama REST APIを直接叩き利用量を記録する`ollama-bench` CLIに一本化
+# し、本番経路でも利用量がダッシュボードに反映されるようにする。モデルの利用可否
+# 確認（メトリクス不要）はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`のままで
+# よい。
 AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
-    "コード変更そのものを伴わない補助的な作業では、必要に応じてMCP `ollama-client` "
-    "経由でローカルLLM（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを"
-    "参考に、呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
+    "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
+    "（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを参考に、"
+    "呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
     "（docs/basic-design.md 4章「モデルルーター設定設計」参照）。\n"
     "- コードレビュー支援: `deepseek-coder-v2:16b`\n"
     "- デバッグ調査の下調べ: `deepseek-coder-v2:16b`\n"
     "- 日本語ドキュメント生成: `gemma2`\n"
     "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
+    "モデルの利用可否確認はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`で構い"
+    "ませんが、実際に生成させる呼び出しは必ず`ollama-bench`コマンド（Bashツール）"
+    "経由で行い、`--record --repo {repo} --issue-number {issue_number}`を付与して"
+    "ください。例: `ollama-bench deepseek-coder-v2:16b /tmp/prompt.txt --system "
+    '"..." --record --repo {repo} --issue-number {issue_number}`（プロンプトは'
+    "一旦ファイルに書き出してから渡します）。MCP `mcp__ollama-client__ollama_chat`"
+    "はOllama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
+    "ため、生成呼び出しには使わないでください。\n"
     "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
     "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
     "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
@@ -211,7 +229,7 @@ def build_claude_command(
         + "\n\n"
         + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
         + "\n\n"
-        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION
+        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION.format(repo=repo, issue_number=issue_number)
         + "\n\n"
         + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
     )
