@@ -1,118 +1,89 @@
 # producer-desk
 
-自走型AI開発オーケストレーションシステム。設計ドキュメントは [`docs/`](./docs/) を参照（[`CLAUDE.md`](./CLAUDE.md) に読む順序の案内あり）。
+producer-deskは、プロデューサー1名が複数プロジェクト（3〜5件程度の同時進行を想定）のソフトウェア開発をAIエージェントに任せて監督するための、自走型AI開発オーケストレーションシステムです。GitHub issueに指示を書くと、[Claude Code](https://claude.com/product/claude-code) CLIによる「Agent Runner」がバックグラウンドで実装・PR作成まで自走し、人間の判断が必要な場面（設計判断・レビュー）だけダッシュボード経由で対応する運用を想定しています。
 
-**開発せず利用するだけの場合は、git cloneせず [GitHub Releases](https://github.com/nosetech/producer-desk/releases) からビルド済みのtarballをダウンロードする方が簡単**（同梱の `SETUP.md` 参照、[`docs/basic-design.md` 7章](./docs/basic-design.md#7-配布パッケージ化設計)）。以下は開発者向けのgit clone前提のセットアップ手順。
+**開発ではなく利用したい場合**は、git cloneせず[GitHub Releases](https://github.com/nosetech/producer-desk/releases)から配布パッケージ（ビルド済みtarball）をダウンロードしてください。以下はその手順です。producer-desk自体の開発に参加する場合は[CONTRIBUTING.md](./CONTRIBUTING.md)を、内部設計を詳しく知りたい場合は[`docs/`](./docs/)を参照してください。
 
-## 構成
+## 前提ソフトウェア
 
-```
-dashboard/      ダッシュボード Web UI（Next.js）
-orchestrator/   オーケストレータ（Python、GitHub Issuesポーリング・ディスパッチ）
-config/         設定ファイル（projects.yaml 等。実データはコミットしない）
-logs/           Agent Runner実行ログ・bin/start.shのログ/PIDファイル（コミットしない）
-bin/            起動・停止スクリプト（bin/start.sh / bin/stop.sh）
-scripts/        運用スクリプト（config/usage.dbの日次バックアップ等）
-```
-
-## ローカル開発環境のセットアップ
-
-### 前提
+以下はOS側の前提としてあらかじめインストールしておく必要があります（配布パッケージには含まれません）。
 
 - Node.js 20以降
 - Python 3.11以降
-- [GitHub CLI (`gh`)](https://cli.github.com/) がインストール済みで `gh auth login` 済みであること
+- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること）
+- [Claude Code CLI](https://claude.com/product/claude-code)（Pro/Maxプラン等のサブスクリプション認証済みであること。Anthropic APIの従量課金は使わない）
+- macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
 
-### 1. dashboard（Next.js）
+Dockerは使いません（ネイティブ構成での動作を前提としています）。
 
-```bash
-cd dashboard
-npm install
-npm run dev
-```
+## インストール
 
-`http://localhost:3000` で起動確認できる。
-
-**同一LAN内の別端末（スマートフォン等）からアクセスする場合**は、自機のLAN IPを環境変数 `LAN_IP` に設定した上で `npm run dev:lan` / `npm run start:lan` を使う（[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)）。LAN IPは以下で確認できる。
+任意のディレクトリに配布パッケージ（tarball）を展開します。
 
 ```bash
-# macOS（Wi-Fi接続時の例。有線の場合はen0をen1等に読み替える）
-ipconfig getifaddr en0
-
-# Linux
-hostname -I
+tar xzf producer-desk-<version>.tar.gz
+cd producer-desk-<version>
 ```
 
-```bash
-LAN_IP=192.168.1.xx npm run dev:lan
-```
+## 初期設定
 
-同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale対応（別issue、`docs/requirements.md` 4-2参照）が必要になる。
+### 対象プロジェクトの設定
 
-なお、オーケストレータの内部API（後述）はダッシュボードのサーバーサイドから同一マシン上で呼び出す構成のため、LANに公開する必要は無く `127.0.0.1` のままでよい。
-
-### 2. orchestrator（Python）
-
-```bash
-cd orchestrator
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-`config/projects.yaml` を用意した上で（下記参照）、以下で起動確認できる。
-
-```bash
-python -m orchestrator.main
-```
-
-5分間隔でのGitHub Issuesポーリング・状態集約（`GET /api/state`）、指示出し内部API（`POST /api/projects/{repo}/issues/{issue_number}/instruct` 等）、Agent Runner（Claude Code CLI）へのディスパッチ、判断待ち新規発生時のSlack通知までを行う（[`docs/basic-design.md`](./docs/basic-design.md) 2〜3章・5章）。既定のbindポートは`8787`だが、環境変数 `ORCHESTRATOR_PORT` で上書きできる。運用インスタンス（後述「[リリース・日常運用](#リリース日常運用)」参照）を動かしたまま別インスタンスを動作確認したい場合に使う。
-
-Agent Runnerの起動コマンドには常に `--dangerously-skip-permissions` が付与される（`orchestrator/orchestrator/agent_runner.py` の `build_claude_command`。worktreeディレクトリ内でのフル自動実行を許可し、`.claude/settings.json` 等による別途の権限モード指定は行わない。[`docs/basic-design.md` 6-1](./docs/basic-design.md#6-1-agent-runnerのサンドボックス権限設定)参照）。また、オーケストレータの内部APIにアプリケーションレベルの追加認証（Basic認証等）は実装していない（[6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）。
-
-### 3. config/projects.yaml の作成
-
-[`config/projects.yaml.example`](./config/projects.yaml.example) をコピーして `config/projects.yaml` を作成し、対象リポジトリとworktreeパスを記載する（[`docs/basic-design.md` 2-1](./docs/basic-design.md#2-1-対象リポジトリ一覧の管理)）。このファイルは `.gitignore` 対象であり、実データをコミットしない。
+`config/projects.yaml.example` をコピーして `config/projects.yaml` を作成し、AIに任せたい対象リポジトリと、そのリポジトリを展開するworktreeパスを記載します。
 
 ```bash
 cp config/projects.yaml.example config/projects.yaml
 ```
 
-### 4. Slack Webhook URL等のsecrets
+```yaml
+projects:
+  - repo: nosetech/project-a
+    worktree_path: /Users/producer/worktrees/project-a
+```
 
-Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（[`orchestrator/.env.example`](./orchestrator/.env.example) をコピーして作成する `orchestrator/.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。未設定の場合、オーケストレータは判断待ち発生時のSlack通知処理を単にスキップする（起動エラーにはならない）。`python -m orchestrator.main` を直接起動する開発時のフローでは`.env`は自動で読み込まれないため、`set -a; source orchestrator/.env; set +a` 等で自分でexportすること（`bin/start.sh` を使う場合は起動時に自動で読み込まれる。後述）。
+対象リポジトリのworktree自体は事前に用意しておく必要があります。プロジェクトを追加・変更した場合は、このファイルを編集した上でproducer-deskを再起動してください。
 
-## ログ出力先ディレクトリの運用方針
+### Slack通知設定（任意）
 
-Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<repo>/<timestamp>.log`（ファイル名の`<timestamp>`はJST基準）としてローカルに保存する（[`docs/basic-design.md` 3-2](./docs/basic-design.md#3-2-監視方法)）。`logs/` ディレクトリ自体はリポジトリに含めるが、中身のログファイルはコミットしない（`.gitignore` 参照）。ディレクトリが存在しない場合はオーケストレータが実行時に作成する想定。このAgent Runner個別実行ログは、書き込み中（実行中）のファイルを除き、`config/projects.yaml`の`log_retention_days`（既定7日、更新日時＝mtime基準）より古いものが実行完了のたびに自動削除される（issue #114）。
+判断待ち・レビュー待ち発生時のSlack通知を使う場合は、`SLACK_WEBHOOK_URL` にIncoming WebhookのURLを設定します。未設定の場合、通知処理は単にスキップされます（起動エラーにはなりません）。
 
-`bin/start.sh`（後述）で起動したdashboardの標準出力・標準エラー出力は `logs/dashboard.log` に出力される（Next.js本体のサーバーログで、以下の仕組みの対象外）。上記のAgent Runner個別実行ログ（`logs/<repo>/`以下）とは別物なので混同しないこと。
+**方法A: `.env` ファイルに記載する（推奨）**
 
-orchestrator自体のログは `logs/orchestrator.log` に、`logging`モジュールによる`時刻(JST) [レベル] メッセージ`形式で出力される。`TimedRotatingFileHandler`により日付単位でローテーション・`log_retention_days`世代分保持される。出力レベルは環境変数`ORCHESTRATOR_ENV`で切り替える（未設定時は`production`扱いで`INFO`以上のみ、`development`指定時は`DEBUG`以上の全レベルを出力する）。`bin/start.sh`はこの変数を明示的に設定しないため、運用時は常に`production`相当で起動する。
+`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載します。起動のたびに自動で読み込まれるため、以後は環境変数を都度exportする必要がありません。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`（後述）も同様にここで設定できます。
 
-`bin/start.sh`は`nohup ... orchestrator.main`の標準出力・標準エラー出力を `logs/orchestrator.log` ではなく別ファイル `logs/orchestrator.stderr.log` へリダイレクトする（`configure_logging()`呼び出し前のクラッシュ・未捕捉例外のトレースバック等、`logging`モジュールを経由しない出力を取りこぼさないための最終フォールバック）。`TimedRotatingFileHandler`はローテーション時に`orchestrator.log`を`orchestrator.log.YYYY-MM-DD`へrenameした上で新規に開き直すため、シェル側が同じパスに`>>`でリダイレクトすると、rename後もシェル側のファイルディスクリプタは旧inodeへ書き込み続けてしまい、際限のない肥大化が別の場所で再発する（issue #114）。そのため意図的に別ファイルへ分離している。
+```bash
+cp .env.example .env
+# .env を編集し、SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz の
+# 行のコメント（先頭の#）を外す
+```
 
-## リリース・日常運用
+**方法B: シェルの環境変数として都度exportする**
 
-開発時のように`npm run dev`・`python -m orchestrator.main`を都度手動起動するのではなく、プロデューサーが日常的に使い続けるためにバックグラウンドで起動・停止する場合は、`bin/start.sh` / `bin/stop.sh` を使う。前提として、上記「ローカル開発環境のセットアップ」の3（`config/projects.yaml`の作成）を済ませておくこと（`dashboard/node_modules`は`bin/start.sh`が起動のたびに`npm ci`で`package-lock.json`と照合・是正するため事前の`npm install`は必須ではない。orchestrator用のPython仮想環境も`bin/start.sh`が無ければ自動作成するため、事前準備は不要）。
+```bash
+export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+./bin/start.sh
+```
 
-### 起動・停止
+`.env` に記載した値とシェルでexportした値の両方が存在する場合、`.env` 側の値で上書きされます。恒常的な設定は方法A、その場限りの一時的な上書きには方法Bを使う、という使い分けを推奨します。
+
+## 起動・停止
 
 ```bash
 ./bin/start.sh
 ```
 
-- dashboardの依存関係を`npm ci`で`package-lock.json`と照合・是正した上で `npm run build` でビルドし、本番モード（`next start`）、orchestratorを `python -m orchestrator.main` を、それぞれバックグラウンドで起動する（`npm ci`は`package-lock.json`と一致しない`node_modules`があれば作り直すため、手動での`npm install`と`node_modules`のバージョン不整合を気にする必要はない。ネットワークアクセスが必要）
-- orchestrator用のPython仮想環境（`orchestrator/.venv`）が無ければ自動的に作成し、`pip install -e .`で依存関係を導入してから起動する。既に`orchestrator/.venv`または`orchestrator/venv`が存在する場合はそれをそのまま使う（`pyproject.toml`との整合性は検証しない）
-- 起動したプロセスのPIDを `logs/orchestrator.pid` / `logs/dashboard.pid` に記録する（`bin/stop.sh`が参照する）
-- 待受ポートは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）・`DASHBOARD_PORT`（既定: `3000`）で上書きできる。同一LAN内の別端末にdashboardを公開する場合は環境変数 `LAN_IP` を設定する（`next start --hostname "$LAN_IP"` で起動する。オーケストレータの内部APIは常に`127.0.0.1`のみで待ち受けるためLAN公開時もこちらの設定は不要。[ネットワークアクセスの認証設計](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
-- これらの環境変数はシェルでのexportに加えて、`orchestrator/.env`（`ORCHESTRATOR_PORT`等、[`orchestrator/.env.example`](./orchestrator/.env.example)参照）・`dashboard/.env`（`DASHBOARD_PORT`・`LAN_IP`、[`dashboard/.env.example`](./dashboard/.env.example)参照）に設定してもよい（`bin/start.sh`が起動時に読み込む）
+初回起動時、`orchestrator/.venv` を自動作成し、同梱の`orchestrator/dist/*.whl`をインストールしてから起動します（ネットワークアクセス不要、`pip install`のみ）。dashboardは`npm install`・ビルド不要のビルド済みNext.js standalone出力をそのまま起動します。
+
+- orchestrator: `http://127.0.0.1:8787`（環境変数 `ORCHESTRATOR_PORT` で上書き可）
+- dashboard: `http://127.0.0.1:3000`（環境変数 `DASHBOARD_PORT` で上書き可）
+
+同一LAN内の別端末（スマートフォン等）からdashboardにアクセスする場合は、自機のLAN IPを環境変数 `LAN_IP` に設定してから起動します。
 
 ```bash
 LAN_IP=192.168.1.xx ./bin/start.sh
 ```
 
-- 既に起動中の場合は二重起動を防止してエラー終了する（先に`./bin/stop.sh`を実行すること）。PIDファイルが残っているがプロセスが存在しない場合（前回異常終了時等）は、そのPIDファイルを削除した上で起動を続行する
+アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用してください（外出先からのアクセスへの対応は将来拡張、下記「システムの動作仕様」参照）。
 
 停止する場合:
 
@@ -120,54 +91,54 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 ./bin/stop.sh
 ```
 
-- PIDファイルを元にそれぞれのプロセスへ`SIGTERM`を送る。10秒待っても終了しない場合は`SIGKILL`で強制終了する
-- PIDファイルが無い、または記録されたプロセスが既に終了している場合はその旨を表示してエラー終了する（片方だけ起動していた場合、起動している側だけを正しく停止する）
+## 使い方
 
-### 運用インスタンスと開発インスタンスの同時起動
+起動後、ブラウザで`http://127.0.0.1:3000`（またはLAN IP経由）を開くとダッシュボードが表示されます。
 
-`bin/start.sh`で起動した運用インスタンスを止めずに、機能追加・修正の動作確認用インスタンスを並行起動したい場合がある。この場合、以下3点を運用インスタンスと分離する必要がある。
+- **判断待ち一覧**: `needs-human-decision`ラベルが付いたissue（Agent Runnerが自ら「人間の判断が必要」と判断して停止したもの）が横断的に並びます。各カードから「承認」（定型文「承認します。進めてください。」をissueにコメント投稿し、Agent Runnerを再開させる）、または自由記述での指示（方針変更・追加情報の提供等をそのままコメント投稿する）ができます。専用の「却下」操作はなく、方針を変えたい場合も自由記述で伝えます。
+- **レビュー待ち一覧**: `status:in-review`ラベルが付いたissue（Agent RunnerがPRを作成し終えたもの）が並びます。紐づくPRへのリンクが表示されるので内容を確認し、「承認」でそのPRをsquash mergeしてissueをクローズします。差し戻したい場合は自由記述で修正指示を送ると、Agent Runnerが同じPRブランチで対応を続けます。
+- **新規タスクの作成**: プロジェクトを選び、タイトルと自由記述のプロンプト（指示内容）を入力してissueを新規作成できます。「即時着手」を選ぶとすぐにAgent Runnerがディスパッチされ、「todo登録」を選ぶと`status:todo`のまま登録だけ行われ、後で着手を指示できます。
+- **プロジェクトの並行状況**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態と状態別のissue件数が表示されます。ラベルは付いているのに対応するAgent Runnerのプロセスが実際には動いていない異常（`status:in-progress`のまま停止している等）は警告アイコンで示されます。
+- **Slack通知**: 判断待ち・レビュー待ちが新規に発生すると、設定したSlackチャンネルに通知が届きます（起動時点で既に判断待ち・レビュー待ちだったissueは再通知しません）。
 
-1. **ポート**: orchestratorは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）、dashboardは`next dev`/`next start`の`-p`オプション（既定: `3000`）でそれぞれ上書きする。開発用dashboardから開発用orchestratorを参照させる場合は、`ORCHESTRATOR_URL`環境変数も同じポートに合わせて設定する
-2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する
-3. **セッション永続化ファイル**: 環境変数 `SESSIONS_PATH`（既定: `config/sessions.json`）で、開発用インスタンスには別ファイルを指定する
+GitHub issueに直接コメントを書いても（ダッシュボードを介さなくても）、次回ポーリング（最大5分後）でAgent Runnerへの指示として検知されます。
 
-```bash
-cd orchestrator
-ORCHESTRATOR_PORT=8788 \
-  PROJECTS_CONFIG_PATH=../config/projects.dev.yaml \
-  SESSIONS_PATH=../config/sessions.dev.json \
-  python -m orchestrator.main
-```
+## ログ
 
-```bash
-cd dashboard
-ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
-```
+各種ログはすべて展開先ルート直下の`logs/`ディレクトリに出力されます。
 
-**2・3を分離せず、開発用インスタンスの対象に運用中の実プロジェクトを含めてしまうと、同一issue・同一worktreeへ運用インスタンスと開発インスタンスの双方から同時にAgent Runnerがディスパッチされうる**（[`docs/basic-design.md` 3-3](./docs/basic-design.md#3-3-オーケストレータagent-runnerのインターフェース仕様)が前提とする「1プロジェクトにつき同時に1つの`claude -p`プロセスのみ実行」が崩れ、同一worktreeへの同時書き込みが起こりうる）。開発時は`config/projects.dev.yaml`等にテスト用プロジェクトのみを記載し、運用中の実プロジェクトを対象に含めないこと。
+- **Agent Runnerの実行ログ**: `logs/<repo>/<timestamp>.log`（`<repo>`は対象リポジトリ名、`<timestamp>`は日本時間基準の実行開始時刻）に、issueへのディスパッチ1回ごとに1ファイルとして記録されます。実行中も随時追記されるため、`tail -f logs/<repo>/<timestamp>.log`で進行状況をリアルタイムに確認できます。ダッシュボードの「プロジェクトの並行状況」で異常（実行中プロセスが見つからない等）が疑われる場合の一次切り分けにも使えます。古いログファイルは、`config/projects.yaml`の`log_retention_days`（既定7日）より更新日時が古くなった時点で、次回の実行完了時に自動削除されます。
+- **dashboardのログ**: `logs/dashboard.log`にNext.jsサーバー自体の標準出力・標準エラー出力が記録されます。
+- **orchestratorのログ**: `logs/orchestrator.log`に`時刻(JST) [レベル] メッセージ`形式で記録されます。日付単位でローテーションし、`log_retention_days`（既定7日）分保持されます。万一この仕組み自体が動き出す前にクラッシュした場合の記録は、フォールバックとして`logs/orchestrator.stderr.log`に残ります。
 
-### 補足: `NODE_ENV`について
+## システムの動作仕様（概要）
 
-`next build`は、呼び出し元のシェルで環境変数`NODE_ENV`に`production`/`development`/`test`以外の値が設定されていると、内部エラー（`<Html> should not be imported outside of pages/_document.`等）で失敗することがある（[vercel/next.js#77262](https://github.com/vercel/next.js/discussions/77262)参照）。`bin/start.sh`は起動前に常に`NODE_ENV=production`を設定するため通常は意識不要だが、`dashboard`ディレクトリで直接`npm run build`を実行する場合にビルドが失敗する場合は、シェルの`NODE_ENV`環境変数の値を確認すること。
+producer-deskは独自のデータベースを持たず、**GitHub Issuesを正のデータストア**として動作します。詳細設計は[`docs/basic-design.md`](./docs/basic-design.md)を参照してください。ここでは運用者が押さえておくべき挙動の要点のみをまとめます。
 
-## DBバックアップ（macOS launchd）
+- **状態はラベルで管理される**: 各issueには常に1つだけ状態ラベルが付与されます。`status:todo`（未着手）→ `status:in-progress`（作業中）→ `needs-human-decision`（判断待ち）または`status:in-review`（レビュー待ち）→ `status:closed`（完了）という流れで遷移し、いずれのラベル付け替えもAgent Runnerまたはオーケストレータ自身が自動で行います（人間が手動でラベルを付け替える必要は基本的にありません）。
+- **5分間隔のポーリング**: オーケストレータは5分ごとに対象リポジトリのissue一覧を取得し、ラベル遷移の検知・判断待ち/レビュー待ちの集約・Slack通知を行います。ダッシュボードから操作した直後は同期的に最新状態へ更新されるため、5分待たずに反映されます。
+- **Agent Runnerが自動で行うこと**: ディスパッチされると、Claude Code CLI（`claude -p --dangerously-skip-permissions`）が対象プロジェクトのworktree内でフル自動実行され、調査・実装・テスト・PR作成・ラベルの自己更新までを行います。1プロジェクトにつき同時に実行されるAgent Runnerは1つのみで、複数の指示が重なった場合はプロジェクトごとのキューで順次処理されます。
+- **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはありません。issueの再オープンはproducer-deskの操作範囲外で、再着手させたい場合は人間がGitHub上でreopenする必要があります。issueのクローズ自体は、レビュー承認時にproducer-desk（オーケストレータ）がPRのsquash merge後に明示的に行います（GitHubのPRマージによる自動クローズには依存しません。本プロジェクトのPRは`develop`向けのため、GitHubの`Closes #`による自動クローズが働かないための対処です）。
+- **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていません。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定です。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されています。
 
-`config/usage.db`（利用量・コスト記録用SQLite、[`docs/basic-design.md` 2-2](./docs/basic-design.md#2-2-データ取得仕様ポーリング)参照）は`.gitignore`対象のローカルファイルで、GitHubから再構築できない唯一のデータのため、`scripts/backup_usage_db.sh`と`launchd`のper-user LaunchAgentを使って日次バックアップする。
+## バックアップ・トラブルシューティング
 
-### セットアップ
+### DBバックアップ（macOS launchd）
+
+`config/usage.db`（利用量・コスト記録用SQLite）はローカルファイルで自動的にはバックアップされません。`scripts/backup_usage_db.sh` と launchd の per-user LaunchAgent を使って日次バックアップする場合は、以下の手順を行います。
 
 ```bash
 cp scripts/com.nosetech.producer-desk.backup-usage-db.plist.example \
   ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
 ```
 
-コピー後のファイル内の `/path/to/producer-desk` を、このリポジトリの実際の絶対パスに書き換える（`ProgramArguments`・`StandardOutPath`・`StandardErrorPath`の3箇所）。
+コピー後のファイル内の `/path/to/producer-desk` を、展開先の実際の絶対パスに書き換えます（`ProgramArguments`・`StandardOutPath`・`StandardErrorPath`の3箇所）。
 
 ```bash
 launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
 ```
 
-読み込み後は毎日3:00（JST。システムのタイムゾーン設定に従う）に自動実行される。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできる（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定する）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできる。
+読み込み後は毎日3:00（システムのタイムゾーン設定に従う）に自動実行されます。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできます（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定します）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできます。
 
 即時実行して動作確認する場合:
 
@@ -175,7 +146,7 @@ launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage
 launchctl start com.nosetech.producer-desk.backup-usage-db
 ```
 
-`logs/backup_usage_db.log`に実行結果が出力され、バックアップ先ディレクトリにタイムスタンプ付きのファイル（例: `usage-20260811-030000.db`）が作成されていることを確認する。
+`logs/backup_usage_db.log`に実行結果が出力され、バックアップ先ディレクトリにタイムスタンプ付きのファイル（例: `usage-20260811-030000.db`）が作成されていることを確認します。
 
 停止する場合:
 
@@ -183,10 +154,15 @@ launchctl start com.nosetech.producer-desk.backup-usage-db
 launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
 ```
 
-### 復元手順
-
-オーケストレータを停止した状態で、復元したいバックアップファイルを`config/usage.db`に上書きコピーする。
+復元する場合は、オーケストレータを停止した状態で、復元したいバックアップファイルを`config/usage.db`に上書きコピーします。
 
 ```bash
 cp ~/Backups/producer-desk/usage-<timestamp>.db config/usage.db
 ```
+
+### トラブルシューティング
+
+- **`config/projects.yaml が見つかりません`**: 「初期設定」を実施していません。`config/projects.yaml.example` からコピーして作成してください。
+- **`orchestrator/dist/*.whl が見つかりません`**: 配布パッケージ（tarball）が壊れている可能性があります。ダウンロードし直してください。
+- **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` で別ポートを指定してください。
+- **`orchestrator/.venv/bin/orchestrator` コマンドを直接実行しても `config/projects.yaml` が見つからないと言われる**: このコマンドは実行時のカレントディレクトリを展開先ルート（このファイルがある場所）とみなして`config/`・`logs/`を探します。必ず展開先ルートで `./bin/start.sh` 経由で起動し、`orchestrator`コマンドを別ディレクトリから直接実行しないでください。
