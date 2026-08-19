@@ -40,10 +40,11 @@ function WarningIcon({ size }: { size: number }) {
 }
 
 function PlusIcon() {
+  // Claude Designの実値(14px)より意図的に拡大（プラスの視認性向上のため、プロデューサーの明示的な指示）。
   return (
     <svg
-      width="14"
-      height="14"
+      width="16"
+      height="16"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -66,8 +67,7 @@ export default function ProjectStatusRow({
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
-        <span className={styles.sectionTitle}>並行状況</span>
-        <span className={styles.sectionCount}>
+        <span className={styles.sectionTitle}>
           {projects.length} プロジェクト
         </span>
       </div>

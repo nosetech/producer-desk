@@ -99,11 +99,7 @@ export default function Dashboard() {
 
   return (
     <div className={styles.page}>
-      <Header
-        decisionsCount={state.decisions.length}
-        projectsCount={repos.length}
-        lastUpdated={lastUpdated}
-      />
+      <Header lastUpdated={lastUpdated} />
       {error && (
         <div className={styles.banner}>
           {error}（オーケストレータが起動しているか確認してください）
