@@ -11,13 +11,18 @@
 # 初回起動時、orchestrator/.venv が無ければ自動的に作成し、同梱の
 # orchestrator/dist/*.whl をインストールしてから起動する。
 #
-# ポート・LAN公開設定は環境変数で上書きできる。
+# ポート・LAN公開設定・Slack通知等は環境変数で上書きできる。シェルでの
+# exportに加えて、展開先ルートに .env（.env.example参照）を作成しておけば
+# このスクリプトが起動時に読み込む。
 #
 #   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）
 #   DASHBOARD_PORT      dashboardのbindポート（既定: 3000）
 #   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
 #                       そのLAN IPでbindする。未設定時は全インターフェースで
 #                       待ち受ける既定動作のまま）
+#   SLACK_WEBHOOK_URL   判断待ち・レビュー待ち発生時のSlack通知先。未設定の
+#                       場合、通知処理は単にスキップされる（起動エラーには
+#                       ならない）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +69,14 @@ check_not_running "orchestrator" "${ORCHESTRATOR_PID_FILE}"
 check_not_running "dashboard" "${DASHBOARD_PID_FILE}"
 
 mkdir -p "${LOG_DIR}"
+
+if [ -f "${ROOT_DIR}/.env" ]; then
+    log "${ROOT_DIR}/.env を読み込みます"
+    set -a
+    # shellcheck disable=SC1091
+    source "${ROOT_DIR}/.env"
+    set +a
+fi
 
 if [ ! -f "${ROOT_DIR}/config/projects.yaml" ]; then
     err "config/projects.yaml が見つかりません。SETUP.md の手順に従って config/projects.yaml.example から作成してください。"

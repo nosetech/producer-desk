@@ -31,11 +31,26 @@ cp config/projects.yaml.example config/projects.yaml
 
 ## 3. Slack通知設定（任意）
 
-判断待ち・レビュー待ち発生時のSlack通知を使う場合は、環境変数 `SLACK_WEBHOOK_URL` にIncoming WebhookのURLを設定してから `bin/start.sh` を実行する。未設定の場合、通知処理は単にスキップされる（起動エラーにはならない）。
+判断待ち・レビュー待ち発生時のSlack通知を使う場合は、`SLACK_WEBHOOK_URL` にIncoming WebhookのURLを設定してから `bin/start.sh` を実行する。未設定の場合、通知処理は単にスキップされる（起動エラーにはならない）。以下いずれかの方法で設定する。
+
+**方法A: `.env` ファイルに記載する（推奨）**
+
+`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載する。`bin/start.sh` が起動のたびに自動で読み込むため、以後は環境変数を都度exportする必要がない。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`（後述）も同様にここで設定できる。
+
+```bash
+cp .env.example .env
+# .env を編集し、SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz の
+# 行のコメント（先頭の#）を外す
+```
+
+**方法B: シェルの環境変数として都度exportする**
 
 ```bash
 export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+./bin/start.sh
 ```
+
+`.env` に記載した値とシェルでexportした値の両方が存在する場合、`.env` 側の値で上書きされる（`bin/start.sh`は起動のたびに`.env`を`source`するため）。恒常的な設定は方法A、その場限りの一時的な上書きには方法Bを使う、という使い分けを推奨する。
 
 ## 4. 起動・停止
 

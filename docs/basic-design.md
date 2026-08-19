@@ -319,7 +319,7 @@ git cloneに依存せず、必要なファイルだけを配布し好きなデ�
 
 - **dashboard**: `next.config.ts`の`output: "standalone"`でビルドし、`.next/standalone`（`server.js`＋最小限のnode_modulesサブセット）に`.next/static`・`public/`を同梱する。配布先では`npm install`不要、`node server.js`のみで起動できる
 - **orchestrator**: `python -m build --wheel`で生成したwheelを配布する。依存が`PyYAML`のみのため、配布先では`pip install <wheel>`のみで済む
-- リポジトリ直下の`dist/`ディレクトリに、配布レイアウト専用の`bin/start.sh`・`bin/stop.sh`・`config/projects.yaml.example`・`scripts/`（`backup_usage_db.sh`・launchd plistサンプル）・`SETUP.md`（エンドユーザー向けセットアップ手順書）を用意する。開発用の`bin/start.sh`（git clone・`npm ci`・editable install前提）とは別物で、tarball展開後のディレクトリレイアウト（`dashboard/server.js`・`orchestrator/dist/*.whl`が展開先直下に並ぶ構成）に合わせて起動ロジックを書き換えている
+- リポジトリ直下の`dist/`ディレクトリに、配布レイアウト専用の`bin/start.sh`・`bin/stop.sh`・`config/projects.yaml.example`・`.env.example`（`SLACK_WEBHOOK_URL`・`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`。展開先ルートに`.env`を作成すると`bin/start.sh`が起動時に読み込む）・`scripts/`（`backup_usage_db.sh`・launchd plistサンプル）・`SETUP.md`（エンドユーザー向けセットアップ手順書）を用意する。開発用の`bin/start.sh`（git clone・`npm ci`・editable install前提、`orchestrator/.env`・`dashboard/.env`に分かれている）とは別物で、tarball展開後のディレクトリレイアウト（`dashboard/server.js`・`orchestrator/dist/*.whl`が展開先直下に並ぶ構成）に合わせて起動ロジックを書き換え、`.env`もルート直下の単一ファイルに統合している
 - `docs/`・`CLAUDE.md`・`.claude/`・`tests/`・`.github/`はproducer-deskを**開発する**ための資材のため配布物に含めない
 
 ### `orchestrator`のインストール形態非依存化
