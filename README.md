@@ -43,6 +43,14 @@ projects:
 
 対象リポジトリのworktree自体は事前に用意しておく必要があります。プロジェクトを追加・変更した場合は、このファイルを編集した上でproducer-deskを再起動してください。
 
+上記の「対象リポジトリへの状態ラベル作成」「worktreeの用意」「このファイルへの追記」は、`scripts/add_project.sh`で1コマンドにまとめて行えます（`gh auth login`済みであること）。
+
+```bash
+./scripts/add_project.sh nosetech/project-a /Users/producer/worktrees/project-a
+```
+
+ベースブランチは省略時`develop`で、対象リポジトリに無ければ`main`→`master`の順にフォールバックします（3番目の引数で明示的に指定することもできます）。既にラベル・worktree・エントリが存在する場合はそれぞれスキップされるため、何度実行しても安全です。実行後は案内に従ってproducer-deskを再起動してください（自動再起動は行われません）。
+
 ### Slack通知設定（任意）
 
 判断待ち・レビュー待ち発生時のSlack通知を使う場合は、`SLACK_WEBHOOK_URL` にIncoming WebhookのURLを設定します。未設定の場合、通知処理は単にスキップされます（起動エラーにはなりません）。
