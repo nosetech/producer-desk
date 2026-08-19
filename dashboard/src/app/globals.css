@@ -1,7 +1,9 @@
 :root {
   --font-sans:
-    "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic Medium", "Meiryo",
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    var(--font-ibm-plex-sans), "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+    "Yu Gothic Medium", "Meiryo", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: var(--font-ibm-plex-mono), monospace;
 
   /* ダークモード（既定） */
   --bg-page: #0e141b;

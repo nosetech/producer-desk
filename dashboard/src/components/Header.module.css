@@ -2,9 +2,6 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 20px;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
 }
 
@@ -44,25 +41,6 @@
   flex-wrap: wrap;
 }
 
-.pill {
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.pillDecisions {
-  background: var(--accent-amber-bg);
-  color: var(--accent-amber);
-}
-
-.pillNeutral {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-}
-
 .updatedAt {
   font-size: 0.78rem;
   color: var(--text-tertiary);
@@ -70,10 +48,6 @@
 }
 
 @media (max-width: 640px) {
-  .header {
-    padding: 12px 14px;
-  }
-
   .subtitle {
     display: none;
   }

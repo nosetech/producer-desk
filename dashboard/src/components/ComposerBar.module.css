@@ -9,6 +9,23 @@
   }
 }
 
+@keyframes composerFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  background: rgba(6, 10, 15, 0.32);
+  animation: composerFade 0.18s ease;
+}
+
 .trigger {
   position: fixed;
   z-index: 40;
@@ -43,10 +60,10 @@
   position: fixed;
   z-index: 41;
   left: 50%;
+  top: 18px;
   bottom: 18px;
   transform: translateX(-50%);
   width: min(564px, calc(100% - 44px));
-  max-height: calc(100% - 36px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -105,6 +122,15 @@
   display: flex;
   flex-direction: column;
   gap: 11px;
+  flex: 1;
+  min-height: 0;
+}
+
+.promptField {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .targetChip {
@@ -167,8 +193,9 @@
 
 .textarea {
   width: 100%;
-  min-height: 76px;
-  resize: vertical;
+  flex: 1;
+  min-height: 100px;
+  resize: none;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-page);
@@ -177,6 +204,10 @@
   font-size: 13px;
   line-height: 1.55;
   font-family: inherit;
+}
+
+.textareaPrompt {
+  min-height: 120px;
 }
 
 .sendRow {
@@ -264,12 +295,12 @@
   .panel {
     left: 12px;
     right: 12px;
+    top: 12px;
     bottom: 12px;
     width: auto;
     transform: none;
     border-radius: 20px;
     padding: 14px 14px 16px;
-    max-height: 82%;
   }
 
   .dispatchRow {

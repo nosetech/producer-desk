@@ -66,8 +66,7 @@ export default function ProjectStatusRow({
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
-        <span className={styles.sectionTitle}>並行状況</span>
-        <span className={styles.sectionCount}>
+        <span className={styles.sectionTitle}>
           {projects.length} プロジェクト
         </span>
       </div>
