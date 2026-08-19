@@ -30,7 +30,7 @@ export function fetchState(): Promise<AggregatedState> {
       // 再起動タイミングがずれても画面がクラッシュしないようにする。
       decisions: data.decisions ?? [],
       reviews: data.reviews ?? [],
-      activity: data.activity ?? [],
+      project_status: data.project_status ?? [],
       status_counts: data.status_counts ?? EMPTY_STATUS_COUNTS,
     }));
 }

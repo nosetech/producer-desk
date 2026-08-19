@@ -3,15 +3,14 @@
 仕様: docs/basic-design.md 2-2（データ取得仕様（ポーリング））
 - 判断待ち一覧: `needs-human-decision` ラベル付きissueを横断集約
 - レビュー待ち一覧: `status:in-review` ラベル付きissueを横断集約（issue #58）
-- 活動ログ（タイムライン）: 各issueの `updatedAt` とラベル遷移をイベントとして時系列に並べる
-  （5つの状態ラベルのいずれも付与されていない管理対象外issueは除外する。
-  docs/basic-design.md 1章「管理対象外issueの扱い」）
+- プロジェクト状況: 「プロジェクトの並行状況」ウィジェット向けに、プロジェクト（リポジトリ）
+  ごとの直近更新issueの状態ラベル・状態別件数（5つの状態ラベルいずれも無し＝タグなしを
+  含む。`status:closed`は含めない）・孤立したin-progress検知結果を集計する
+  （issue #50, #115。かつては横断タイムライン「活動ログ」がこれらの情報源だったが、
+  issue #121でタイムライン自体を廃止しプロジェクト単位の集計に一本化した）
 - 孤立したin-progress検知: `status:in-progress` ラベルが付いているのに、対応する
   Agent Runnerがディスパッチキュー上で実行中でも待機中でもないissueを異常として
-  イベントにマークする（issue #50）
-- 状態別件数: 「プロジェクトの並行状況」ウィジェット向けに、OPEN issueを状態ラベル別
-  （5つの状態ラベルいずれも無し＝タグなしを含む）に集計する。`status:closed`は含めない
-  （issue #115）
+  `ProjectStatus.is_orphaned` にマークする（issue #50）
 """
 
 from __future__ import annotations
@@ -66,24 +65,34 @@ class IssueSummary:
 
 
 @dataclass
-class ActivityEvent:
+class ProjectStatus:
+    """プロジェクト（リポジトリ）単位の「並行状況」ウィジェット向け集計（issue #121）。
+
+    ダッシュボードの`activity`（横断タイムライン、issue #121で廃止）には依存せず、
+    リポジトリごとのissue一覧から直接算出する。
+    """
+
     repo: str
-    number: int
-    title: str
-    label: str
-    updated_at: str
+    # 直近更新issueの状態ラベル。そのリポジトリに5つの状態ラベルいずれかを持つissueが
+    # 1件も無い場合はNone（管理対象issueが存在しない）。
+    label: str | None = None
+    number: int | None = None
+    title: str | None = None
     # `label`が`status:in-progress`で、かつ対応するAgent Runnerがディスパッチキュー上
     # で実行中・待機中のいずれでもない場合にTrueになる（issue #50）。
     is_orphaned: bool = False
+    # 状態別のOPEN issue件数（`STATUS_COUNT_UNTAGGED`含む5種、`status:closed`は含まない）。
+    counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(STATUS_COUNT_KEYS, 0))
 
 
 @dataclass
 class AggregatedState:
     decisions: list[IssueSummary] = field(default_factory=list)
     reviews: list[IssueSummary] = field(default_factory=list)
-    activity: list[ActivityEvent] = field(default_factory=list)
+    # プロジェクト（リポジトリ）単位の並行状況集計（issue #121）。
+    project_status: list[ProjectStatus] = field(default_factory=list)
     # 状態別のOPEN issue件数（`STATUS_COUNT_UNTAGGED`含む5種、`status:closed`は含まない。
-    # issue #115、「プロジェクトの並行状況」ウィジェットの件数表示用）。
+    # issue #115、全プロジェクト横断の合計値）。
     status_counts: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(STATUS_COUNT_KEYS, 0)
     )
@@ -127,10 +136,10 @@ def aggregate(
     issues_by_repo: dict[str, list[IssueSummary]],
     is_dispatch_active: IsDispatchActiveFn | None = None,
 ) -> AggregatedState:
-    """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・活動ログに集約する。
+    """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・プロジェクト状況に集約する。
 
-    `is_dispatch_active`（`DispatchQueue.is_active`、issue #50）を渡すと、活動ログの
-    各イベントに孤立したin-progressの検知結果（`ActivityEvent.is_orphaned`）を含める。
+    `is_dispatch_active`（`DispatchQueue.is_active`、issue #50）を渡すと、プロジェクト
+    状況の各要素に孤立したin-progressの検知結果（`ProjectStatus.is_orphaned`）を含める。
     """
     all_issues = [issue for issues in issues_by_repo.values() for issue in issues]
 
@@ -140,28 +149,44 @@ def aggregate(
     reviews = [issue for issue in all_issues if STATUS_IN_REVIEW in issue.labels]
     reviews.sort(key=lambda issue: issue.updated_at, reverse=True)
 
-    activity = [
-        ActivityEvent(
-            repo=issue.repo,
-            number=issue.number,
-            title=issue.title,
-            label=label,
-            updated_at=issue.updated_at,
-            is_orphaned=_is_orphaned_in_progress(issue, label, is_dispatch_active),
-        )
-        for issue in all_issues
-        if (label := _current_status_label(issue)) is not None
-    ]
-    activity.sort(key=lambda event: event.updated_at, reverse=True)
-
     status_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
-    for issue in all_issues:
-        if issue.state != "OPEN":
+    project_status: list[ProjectStatus] = []
+
+    for repo, issues in issues_by_repo.items():
+        labeled: list[tuple[IssueSummary, str]] = []
+        repo_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
+
+        for issue in issues:
+            label = _current_status_label(issue)
+            if label is not None:
+                labeled.append((issue, label))
+            if issue.state == "OPEN":
+                count_key = label or STATUS_COUNT_UNTAGGED
+                if count_key in repo_counts:
+                    repo_counts[count_key] += 1
+                    status_counts[count_key] += 1
+
+        if not labeled:
+            project_status.append(ProjectStatus(repo=repo, counts=repo_counts))
             continue
-        label = _current_status_label(issue) or STATUS_COUNT_UNTAGGED
-        if label in status_counts:
-            status_counts[label] += 1
+
+        latest_issue, latest_label = max(labeled, key=lambda pair: pair[0].updated_at)
+        project_status.append(
+            ProjectStatus(
+                repo=repo,
+                label=latest_label,
+                number=latest_issue.number,
+                title=latest_issue.title,
+                is_orphaned=_is_orphaned_in_progress(
+                    latest_issue, latest_label, is_dispatch_active
+                ),
+                counts=repo_counts,
+            )
+        )
 
     return AggregatedState(
-        decisions=decisions, reviews=reviews, activity=activity, status_counts=status_counts
+        decisions=decisions,
+        reviews=reviews,
+        project_status=project_status,
+        status_counts=status_counts,
     )

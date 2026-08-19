@@ -55,7 +55,7 @@ def poll_once(
     `labels.transition_label()` を呼び、GitHub側のラベルを書き換えることがある
     （issue #97）。この変更は呼び出し前に取得済みの `issues_by_repo` には反映されない
     ため、`on_issues_fetched` 呼び出し後に `issues_by_repo` を取得し直してから
-    `aggregate()` に渡し、同一ポーリングサイクル内のラベル遷移を「最近の活動」に
+    `aggregate()` に渡し、同一ポーリングサイクル内のラベル遷移をプロジェクト状況に
     即時反映させる。`on_issues_fetched` が `None`（`server._refresh_store` からの
     呼び出し等、オーケストレータ自身によるラベル遷移が起きない経路）の場合は
     再取得せず、無駄なGitHub API呼び出しを避ける。

@@ -53,7 +53,7 @@ def test_first_poll_seeds_known_decisions_without_notifying() -> None:
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
 
-    notifier.notify_new_decisions(AggregatedState(decisions=[_issue()], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[_issue()]))
 
     assert webhook.posted == []
 
@@ -63,10 +63,10 @@ def test_newly_appearing_decision_is_notified() -> None:
     notifier = DecisionNotifier(
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
 
     issue = _issue()
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue]))
 
     assert len(webhook.posted) == 1
     assert webhook.posted[0][0] == "https://hooks.example/x"
@@ -79,10 +79,10 @@ def test_unchanged_decision_is_not_renotified() -> None:
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
     issue = _issue()
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue]))
 
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue]))
 
     assert len(webhook.posted) == 1
 
@@ -93,11 +93,11 @@ def test_decision_that_disappears_and_reappears_is_renotified() -> None:
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
     issue = _issue()
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue], activity=[]))
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
 
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue]))
 
     assert len(webhook.posted) == 2
 
@@ -105,9 +105,9 @@ def test_decision_that_disappears_and_reappears_is_renotified() -> None:
 def test_missing_webhook_url_skips_notification_but_still_tracks_state() -> None:
     webhook = FakeWebhook()
     notifier = DecisionNotifier(post_webhook=webhook, get_webhook_url=lambda: None)
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
 
-    notifier.notify_new_decisions(AggregatedState(decisions=[_issue()], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[_issue()]))
 
     assert webhook.posted == []
 
@@ -117,11 +117,11 @@ def test_multiple_new_decisions_in_one_poll_are_each_notified() -> None:
     notifier = DecisionNotifier(
         post_webhook=webhook, get_webhook_url=lambda: "https://hooks.example/x"
     )
-    notifier.notify_new_decisions(AggregatedState(decisions=[], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[]))
 
     issue_a = _issue(number=1)
     issue_b = _issue(number=2)
-    notifier.notify_new_decisions(AggregatedState(decisions=[issue_a, issue_b], activity=[]))
+    notifier.notify_new_decisions(AggregatedState(decisions=[issue_a, issue_b]))
 
     assert len(webhook.posted) == 2
 
