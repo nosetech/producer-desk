@@ -309,9 +309,39 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - オーケストレータの内部API（`GET /api/state` 等）は、ダッシュボードのRoute Handlerが**同一マシン上でサーバーサイドから**呼び出す構成（[2-2](#2-2-データ取得仕様ポーリング)参照。ブラウザから直接呼び出すことはない）のため、ネットワークインターフェースに公開する必要が無い。オーケストレータの待受プロセスは`127.0.0.1`（ループバック）にのみbindしたままとする。
 - **将来拡張**: 外出先からのアクセスに対応する際は、ダッシュボードのbind先をTailscaleインターフェースIPに切り替える（`--hostname <tailscale-ip>`、`npm run dev:tailscale`/`npm run start:tailscale`）。別issue（#29）で対応する（[要件定義書 4-2](./requirements.md#4-2-将来拡張とする範囲)参照）。
 
+## 7. 配布パッケージ化設計
+
+対応issue: [#110](https://github.com/nosetech/producer-desk/issues/110)
+
+git cloneに依存せず、必要なファイルだけを配布し好きなディレクトリに展開して実行できるようにする。Dockerを使わないMVP方針・Homebrew/pipネイティブ構成という確定済み設計判断（[アーキテクチャ設計書](./architecture.md)）と整合する形で、**GitHub Releasesへのtarball添付**を採用する。
+
+### 配布物の構成
+
+- **dashboard**: `next.config.ts`の`output: "standalone"`でビルドし、`.next/standalone`（`server.js`＋最小限のnode_modulesサブセット）に`.next/static`・`public/`を同梱する。配布先では`npm install`不要、`node server.js`のみで起動できる
+- **orchestrator**: `python -m build --wheel`で生成したwheelを配布する。依存が`PyYAML`のみのため、配布先では`pip install <wheel>`のみで済む
+- リポジトリ直下の`dist/`ディレクトリに、配布レイアウト専用の`bin/start.sh`・`bin/stop.sh`・`config/projects.yaml.example`・`scripts/`（`backup_usage_db.sh`・launchd plistサンプル）・`SETUP.md`（エンドユーザー向けセットアップ手順書）を用意する。開発用の`bin/start.sh`（git clone・`npm ci`・editable install前提）とは別物で、tarball展開後のディレクトリレイアウト（`dashboard/server.js`・`orchestrator/dist/*.whl`が展開先直下に並ぶ構成）に合わせて起動ロジックを書き換えている
+- `docs/`・`CLAUDE.md`・`.claude/`・`tests/`・`.github/`はproducer-deskを**開発する**ための資材のため配布物に含めない
+
+### `orchestrator`のインストール形態非依存化
+
+`orchestrator/orchestrator/config.py`の`REPO_ROOT`は、従来`Path(__file__).resolve().parents[2]`（ソースツリー上のファイル位置からの逆算）で決定していた。これはeditable install（`pip install -e .`、開発時のgit clone運用）でのみ正しく動作し、wheelインストールではパッケージが`site-packages/orchestrator/`直下にフラットに配置されるため誤ったパスを指してしまう。`orchestrator/pyproject.toml`の有無でインストール形態を判定し、wheelインストール時はカレントディレクトリ（配布物のルートディレクトリで起動する前提）にフォールバックするよう変更した（`_detect_repo_root()`）。`config/projects.yaml`・`config/sessions.json`・`config/usage.db`・`logs/`のデフォルトパスは全てこの`REPO_ROOT`を起点にしているため、この修正により配布先でも`dist/bin/start.sh`が展開先ルートで`orchestrator`コマンドを実行するだけで正しく動作する。
+
+### `.github/workflows/release.yml`
+
+セマンティックバージョンタグ（`v*.*.*`）のpushでのみ起動する（`pull_request`・`workflow_dispatch`トリガーは持たない）。タグのバージョンと`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`が一致することを検証する`validate-version`ジョブを経て、`dashboard`・`orchestrator`それぞれで既存CI（`dashboard-ci.yml`/`orchestrator-ci.yml`）相当のformat/lint/test/typecheckを再実行した上でビルドし、`package-and-release`ジョブが`dist/`の内容とビルド成果物を1つのtarball（`producer-desk-<version>.tar.gz`）にまとめて`gh release create --generate-notes`でアセット添付する。同一タグへのリリース再実行は非対応（タグ・リリースの手動削除が必要）。
+
+### リリース準備（`.claude/skills/release-prepare`）
+
+タグを打つ前段として、バージョン番号の確定（`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`更新）と`develop`→`master`のプルリクエスト作成を補助するSKILL。**`master`へのマージ・タグ付け（`git tag vX.Y.Z` → push）は人間が最終承認した上で行い、本SKILLの範囲では実施しない**（`master`への直接コミット禁止というブランチ運用ルールと整合させるため、あくまでPR経由の変更に限定する）。マージ後、`master`上のマージコミットにタグを打つことで`release.yml`が起動する。
+
+### 前提・注意点
+
+- Node.js／Python 3.11以降／`gh` CLI／Claude Code CLI（サブスクリプション認証）は引き続きOS側の前提としてユーザー自身にインストールしてもらう（Docker不使用の方針上、tarballに同梱できない）
+- Homebrew formula化も選択肢にあるが、公開tap運用のオーバーヘッドに見合うほどの配布規模（不特定多数への公開）ではないため、まずはGitHub Releasesのtarballで十分と判断した
+
 ## 成果物
 
-- 本書（データモデル定義、状態遷移フロー、API仕様、Agent Runner連携仕様、通知フロー、権限設計）
+- 本書（データモデル定義、状態遷移フロー、API仕様、Agent Runner連携仕様、通知フロー、権限設計、配布パッケージ化設計）
 - [design-prompt-dashboard.md](./design-prompt-dashboard.md)（Claude Designへの画面設計委譲プロンプト）
 
 ## 参考

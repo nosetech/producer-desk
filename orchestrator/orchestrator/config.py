@@ -11,7 +11,27 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _detect_repo_root(module_file: str = __file__) -> Path:
+    """`config/`・`logs/`等の既定の親ディレクトリを検出する。
+
+    editable install（`pip install -e .`、開発時のgit clone運用）では、本ファイル
+    （`orchestrator/orchestrator/config.py`）はソースツリー上に存在し続けるため、
+    2階層上（`orchestrator/pyproject.toml`が存在するディレクトリの親）がリポジトリ
+    ルートになる。一方、`pip install <wheel>`でのインストール（配布パッケージ、
+    issue #110）ではファイルが`site-packages/orchestrator/`直下にフラットに配置
+    され、この逆算が別ディレクトリを指してしまう。`orchestrator/pyproject.toml`の
+    有無でどちらのインストール形態かを判定し、wheelインストール時はカレント
+    ディレクトリ（配布物のルートディレクトリで起動する前提。dist/bin/start.sh参照）
+    を採用する。
+    """
+    candidate = Path(module_file).resolve().parents[2]
+    if (candidate / "orchestrator" / "pyproject.toml").exists():
+        return candidate
+    return Path.cwd()
+
+
+REPO_ROOT = _detect_repo_root()
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "projects.yaml"
 
 # 環境変数 PROJECTS_CONFIG_PATH で読み込み先を上書きできる。運用インスタンスを
