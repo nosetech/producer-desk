@@ -11,6 +11,7 @@ from pathlib import Path
 from orchestrator.config import (
     CONFIG_PATH_ENV,
     DEFAULT_LOG_RETENTION_DAYS,
+    _detect_repo_root,
     load_log_retention_days,
     load_projects,
 )
@@ -82,3 +83,23 @@ def test_load_log_retention_days_clamps_non_positive_value_to_one(tmp_path: Path
     )
 
     assert load_log_retention_days(config_path=config_path) == 1
+
+
+def test_detect_repo_root_uses_file_ancestor_for_editable_install(tmp_path: Path) -> None:
+    repo_root = tmp_path / "producer-desk"
+    (repo_root / "orchestrator" / "orchestrator").mkdir(parents=True)
+    (repo_root / "orchestrator" / "pyproject.toml").write_text("", encoding="utf-8")
+    module_file = repo_root / "orchestrator" / "orchestrator" / "config.py"
+
+    assert _detect_repo_root(str(module_file)) == repo_root
+
+
+def test_detect_repo_root_falls_back_to_cwd_for_wheel_install(monkeypatch, tmp_path: Path) -> None:
+    site_packages = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
+    (site_packages / "orchestrator").mkdir(parents=True)
+    module_file = site_packages / "orchestrator" / "config.py"
+    cwd = tmp_path / "producer-desk-0.1.0"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    assert _detect_repo_root(str(module_file)) == cwd

@@ -2,6 +2,8 @@
 
 自走型AI開発オーケストレーションシステム。設計ドキュメントは [`docs/`](./docs/) を参照（[`CLAUDE.md`](./CLAUDE.md) に読む順序の案内あり）。
 
+**開発せず利用するだけの場合は、git cloneせず [GitHub Releases](https://github.com/nosetech/producer-desk/releases) からビルド済みのtarballをダウンロードする方が簡単**（同梱の `SETUP.md` 参照、[`docs/basic-design.md` 7章](./docs/basic-design.md#7-配布パッケージ化設計)）。以下は開発者向けのgit clone前提のセットアップ手順。
+
 ## 構成
 
 ```

@@ -38,3 +38,15 @@ orchestrator/venv/
 orchestrator/.pytest_cache/
 orchestrator/build/
 orchestrator/dist/
+
+# --- dist/（配布パッケージ用レイアウト、issue #110） ---
+# dist/bin/start.sh をリポジトリチェックアウト内で動作確認した際に生成される
+# 実データ・実行時生成物（上記と同じ理由で無視する。dist/自体はスラッシュを
+# 含まないパスにアンカーされる既存ルールの対象外のため個別に追加している）。
+dist/config/projects.yaml
+dist/config/sessions.json
+dist/config/usage.db
+dist/logs/*
+!dist/logs/.gitkeep
+dist/orchestrator/.venv/
+dist/orchestrator/dist/
