@@ -84,3 +84,4 @@ launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage
 - **`config/projects.yaml が見つかりません`**: 手順2を実施していない。`config/projects.yaml.example` からコピーして作成する。
 - **`orchestrator/dist/*.whl が見つかりません`**: 配布パッケージ（tarball）が壊れている可能性がある。ダウンロードし直す。
 - **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` で別ポートを指定する。
+- **`orchestrator/.venv/bin/orchestrator` コマンドを直接実行しても `config/projects.yaml` が見つからないと言われる**: このコマンドは実行時のカレントディレクトリを展開先ルート（このファイルがある場所）とみなして`config/`・`logs/`を探す。必ず展開先ルートで `./bin/start.sh` 経由で起動し、`orchestrator`コマンドを別ディレクトリから直接実行しないこと。
