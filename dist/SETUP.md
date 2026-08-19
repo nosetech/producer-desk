@@ -77,7 +77,29 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 ./bin/stop.sh
 ```
 
-## 5. DBバックアップ（macOS launchd、任意）
+## 5. 使い方
+
+起動後、ブラウザで`http://127.0.0.1:3000`（またはLAN IP経由）を開くとダッシュボードが表示される。
+
+- **判断待ち一覧**: `needs-human-decision`ラベルが付いたissue（Agent Runnerが自ら「人間の判断が必要」と判断して停止したもの）が横断的に並ぶ。各カードから「承認」（定型文「承認します。進めてください。」をissueにコメント投稿し、Agent Runnerを再開させる）、または自由記述での指示（方針変更・追加情報の提供等をそのままコメント投稿する）ができる。専用の「却下」操作はなく、方針を変えたい場合も自由記述で伝える。
+- **レビュー待ち一覧**: `status:in-review`ラベルが付いたissue（Agent RunnerがPRを作成し終えたもの）が並ぶ。紐づくPRへのリンクが表示されるので内容を確認し、「承認」でそのPRをsquash mergeしてissueをクローズする。差し戻したい場合は自由記述で修正指示を送ると、Agent Runnerが同じPRブランチで対応を続ける。
+- **新規タスクの作成**: プロジェクトを選び、タイトルと自由記述のプロンプト（指示内容）を入力してissueを新規作成できる。「即時着手」を選ぶとすぐにAgent Runnerがディスパッチされ、「todo登録」を選ぶと`status:todo`のまま登録だけ行われ、後で着手を指示できる。
+- **プロジェクトの並行状況**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態と状態別のissue件数が表示される。ラベルは付いているのに対応するAgent Runnerのプロセスが実際には動いていない異常（`status:in-progress`のまま停止している等）は警告アイコンで示される。
+- **Slack通知**: 判断待ち・レビュー待ちが新規に発生すると、設定したSlackチャンネルに通知が届く（起動時点で既に判断待ち・レビュー待ちだったissueは再通知しない）。
+
+GitHub issueに直接コメントを書いても（ダッシュボードを介さなくても）、次回ポーリング（最大5分後）でAgent Runnerへの指示として検知される。
+
+## 6. システムの動作仕様（概要）
+
+producer-deskは独自のデータベースを持たず、**GitHub Issuesを正のデータストア**として動作する。詳細設計は[`docs/basic-design.md`](https://github.com/nosetech/producer-desk/blob/master/docs/basic-design.md)（GitHubリポジトリ側、このtarballには同梱されない）を参照。ここでは運用者が押さえておくべき挙動の要点のみをまとめる。
+
+- **状態はラベルで管理される**: 各issueには常に1つだけ状態ラベルが付与される。`status:todo`（未着手）→ `status:in-progress`（作業中）→ `needs-human-decision`（判断待ち）または`status:in-review`（レビュー待ち）→ `status:closed`（完了）という流れで遷移し、いずれのラベル付け替えもAgent Runnerまたはオーケストレータ自身が自動で行う（人間が手動でラベルを付け替える必要は基本的にない）。
+- **5分間隔のポーリング**: オーケストレータは5分ごとに対象リポジトリのissue一覧を取得し、ラベル遷移の検知・判断待ち/レビュー待ちの集約・Slack通知を行う。ダッシュボードから操作した直後は同期的に最新状態へ更新されるため、5分待たずに反映される。
+- **Agent Runnerが自動で行うこと**: ディスパッチされると、Claude Code CLI（`claude -p --dangerously-skip-permissions`）が対象プロジェクトのworktree内でフル自動実行され、調査・実装・テスト・PR作成・ラベルの自己更新までを行う。1プロジェクトにつき同時に実行されるAgent Runnerは1つのみで、複数の指示が重なった場合はプロジェクトごとのキューで順次処理される。
+- **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはない。issueのクローズ・再オープン自体（GitHub上の状態）もproducer-deskの操作範囲外で、人間またはPRマージ経由の自動クローズに委ねる。
+- **権限・ネットワーク**: MVPでは同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
+
+## 7. DBバックアップ（macOS launchd、任意）
 
 `config/usage.db`（利用量・コスト記録用SQLite）はローカルファイルで自動的にはバックアップされない。`scripts/backup_usage_db.sh` と launchd の per-user LaunchAgent を使って日次バックアップする場合は、以下の手順を行う。
 
