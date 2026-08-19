@@ -89,7 +89,15 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 
 GitHub issueに直接コメントを書いても（ダッシュボードを介さなくても）、次回ポーリング（最大5分後）でAgent Runnerへの指示として検知される。
 
-## 6. システムの動作仕様（概要）
+## 6. ログ
+
+各種ログはすべて展開先ルート直下の`logs/`ディレクトリに出力される。
+
+- **Agent Runnerの実行ログ**: `logs/<repo>/<timestamp>.log`（`<repo>`は対象リポジトリ名、`<timestamp>`は日本時間基準の実行開始時刻）に、issueへのディスパッチ1回ごとに1ファイルとして記録される。実行中も随時追記されるため、`tail -f logs/<repo>/<timestamp>.log`で進行状況をリアルタイムに確認できる。ダッシュボードの「プロジェクトの並行状況」で異常（実行中プロセスが見つからない等）が疑われる場合の一次切り分けにも使える。古いログファイルは、`config/projects.yaml`の`log_retention_days`（既定7日）より更新日時が古くなった時点で、次回の実行完了時に自動削除される。
+- **dashboardのログ**: `logs/dashboard.log`にNext.jsサーバー自体の標準出力・標準エラー出力が記録される。
+- **orchestratorのログ**: `logs/orchestrator.log`に`時刻(JST) [レベル] メッセージ`形式で記録される。日付単位でローテーションし、`log_retention_days`（既定7日）分保持される。万一この仕組み自体が動き出す前にクラッシュした場合の記録は、フォールバックとして`logs/orchestrator.stderr.log`に残る。
+
+## 7. システムの動作仕様（概要）
 
 producer-deskは独自のデータベースを持たず、**GitHub Issuesを正のデータストア**として動作する。詳細設計は[`docs/basic-design.md`](https://github.com/nosetech/producer-desk/blob/master/docs/basic-design.md)（GitHubリポジトリ側、このtarballには同梱されない）を参照。ここでは運用者が押さえておくべき挙動の要点のみをまとめる。
 
@@ -97,9 +105,9 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **5分間隔のポーリング**: オーケストレータは5分ごとに対象リポジトリのissue一覧を取得し、ラベル遷移の検知・判断待ち/レビュー待ちの集約・Slack通知を行う。ダッシュボードから操作した直後は同期的に最新状態へ更新されるため、5分待たずに反映される。
 - **Agent Runnerが自動で行うこと**: ディスパッチされると、Claude Code CLI（`claude -p --dangerously-skip-permissions`）が対象プロジェクトのworktree内でフル自動実行され、調査・実装・テスト・PR作成・ラベルの自己更新までを行う。1プロジェクトにつき同時に実行されるAgent Runnerは1つのみで、複数の指示が重なった場合はプロジェクトごとのキューで順次処理される。
 - **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはない。issueの再オープンはproducer-deskの操作範囲外で、再着手させたい場合は人間がGitHub上でreopenする必要がある。issueのクローズ自体は、レビュー承認時にproducer-desk（オーケストレータ）がPRのsquash merge後に明示的に行う（GitHubのPRマージによる自動クローズには依存しない。本プロジェクトのPRは`develop`向けのため、GitHubの`Closes #`による自動クローズが働かないための対処）。
-- **権限・ネットワーク**: MVPでは同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
+- **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
 
-## 7. DBバックアップ（macOS launchd、任意）
+## 8. DBバックアップ（macOS launchd、任意）
 
 `config/usage.db`（利用量・コスト記録用SQLite）はローカルファイルで自動的にはバックアップされない。`scripts/backup_usage_db.sh` と launchd の per-user LaunchAgent を使って日次バックアップする場合は、以下の手順を行う。
 
