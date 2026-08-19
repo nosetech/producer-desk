@@ -14,7 +14,9 @@ import re
 import sys
 
 REPO_LINE_RE = re.compile(r"^\s*-\s*repo:\s*(\S+)\s*$")
-WORKTREE_LINE_RE = re.compile(r"^\s*worktree_path:\s*\S+\s*$")
+# worktree_pathの値はスペースを含みうる（\S+だと「My Documents」等を含むパスの
+# 行を検出できず、挿入位置が意図しない場所にずれる）ため .+ で緩く受ける。
+WORKTREE_LINE_RE = re.compile(r"^\s*worktree_path:\s+\S.*$")
 
 
 def main() -> int:
