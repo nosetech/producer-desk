@@ -65,6 +65,12 @@ jobs:
         with:
           name: dashboard-standalone
           path: dashboard/pkg/dashboard
+          # actions/upload-artifact@v4はドット始まりのファイル/ディレクトリを既定で
+          # 除外する。standalone出力の`.next`ディレクトリ（BUILD_ID・サーバー
+          # チャンク等を含む）が丸ごと欠落し、配布tarball展開後に`node server.js`が
+          # 「Could not find a production build in the './.next' directory」で
+          # 起動失敗する不具合があったため、明示的に含める。
+          include-hidden-files: true
 
   orchestrator:
     needs: validate-version
