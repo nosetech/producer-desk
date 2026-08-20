@@ -11,20 +11,26 @@
 #
 # 使い方:
 #   ./scripts/add_project.sh <owner/repo> <worktree-path> [base-branch]
+#       [--projects-config-path=<path>] [--base-clone-root=<path>]
 #
-#   owner/repo     対象リポジトリ（例: nosetech/project-a）
-#   worktree-path  Agent Runner実行用worktreeを作成するパス（絶対パス推奨）
-#   base-branch    worktreeのベースブランチ（省略時: develop。省略時のみ、対象
-#                  リポジトリに存在しなければ main → master の順にフォールバック
-#                  する。明示的に指定した場合はフォールバックせず、見つからなければ
-#                  エラーになる）
+#   owner/repo             対象リポジトリ（例: nosetech/project-a）
+#   worktree-path          Agent Runner実行用worktreeを作成するパス（絶対パス推奨）
+#   base-branch            worktreeのベースブランチ（省略時: develop。省略時のみ、
+#                          対象リポジトリに存在しなければ main → master の順に
+#                          フォールバックする。明示的に指定した場合はフォールバック
+#                          せず、見つからなければエラーになる）
+#   --projects-config-path  config/projects.yamlの更新先パス（省略時の解決方法は
+#                          下記参照）
+#   --base-clone-root       対象リポジトリのベースcloneを配置するルートディレクトリ
+#                          （省略時: ~/.producer-desk/repos）
 #
-# config/projects.yamlの既定パスは、このスクリプト自身の1階層上（ROOT_DIR）を
-# 基準に解決する。展開済みtarball内（scripts/add_project.sh）ではROOT_DIRが
-# 展開先ルートと一致するためそのままでよいが、git clone環境でこのファイルを
-# dist/scripts/add_project.shとして直接実行する場合はROOT_DIRがdist/になって
-# しまうため、環境変数 PROJECTS_CONFIG_PATH でリポジトリルートのconfig/projects.yaml
-# を明示的に指定すること。
+# config/projects.yamlの既定パスは、--projects-config-path未指定時、環境変数
+# PROJECTS_CONFIG_PATH（未設定ならこのスクリプト自身の1階層上=ROOT_DIRを基準に
+# 解決した config/projects.yaml）を使う。展開済みtarball内（scripts/add_project.sh）
+# ではROOT_DIRが展開先ルートと一致するためそのままでよいが、git clone環境でこの
+# ファイルをdist/scripts/add_project.shとして直接実行する場合はROOT_DIRがdist/に
+# なってしまうため、--projects-config-path または環境変数 PROJECTS_CONFIG_PATH で
+# リポジトリルートのconfig/projects.yamlを明示的に指定すること。
 #
 # 前提: gh CLI（gh auth login済み）・git・python3（config/projects.yaml更新に
 # 使用、追加パッケージのインストールは不要）
@@ -37,9 +43,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PROJECTS_CONFIG_PATH="${PROJECTS_CONFIG_PATH:-${ROOT_DIR}/config/projects.yaml}"
-BASE_CLONE_ROOT="${HOME}/.producer-desk/repos"
-
 log() {
     echo "[add_project] $*"
 }
@@ -51,27 +54,63 @@ err() {
 usage() {
     cat <<EOF
 使い方: $(basename "$0") <owner/repo> <worktree-path> [base-branch]
+       [--projects-config-path=<path>] [--base-clone-root=<path>]
 
-  owner/repo     対象リポジトリ（例: nosetech/project-a）
-  worktree-path  Agent Runner実行用worktreeを作成するパス
-  base-branch    worktreeのベースブランチ（省略時: develop、無ければ main → master。
-                 明示指定時はフォールバックせず見つからなければエラー）
+  owner/repo              対象リポジトリ（例: nosetech/project-a）
+  worktree-path           Agent Runner実行用worktreeを作成するパス
+  base-branch             worktreeのベースブランチ（省略時: develop、無ければ
+                          main → master。明示指定時はフォールバックせず見つから
+                          なければエラー）
+  --projects-config-path  config/projects.yamlの更新先パス（省略時: 環境変数
+                          PROJECTS_CONFIG_PATH、それも無ければこのスクリプトの
+                          1階層上を基準に解決したconfig/projects.yaml）
+  --base-clone-root       ベースcloneを配置するルートディレクトリ（省略時:
+                          ~/.producer-desk/repos）
 EOF
 }
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+if [ "$#" -lt 2 ]; then
     usage
     exit 1
 fi
 
 TARGET_REPO="$1"
 WORKTREE_PATH="$2"
-REQUESTED_BASE_BRANCH="${3:-develop}"
-if [ "$#" -eq 3 ]; then
-    BASE_BRANCH_EXPLICIT=true
-else
-    BASE_BRANCH_EXPLICIT=false
-fi
+shift 2
+
+REQUESTED_BASE_BRANCH="develop"
+BASE_BRANCH_EXPLICIT=false
+PROJECTS_CONFIG_PATH_ARG=""
+BASE_CLONE_ROOT_ARG=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --projects-config-path=*)
+            PROJECTS_CONFIG_PATH_ARG="${1#*=}"
+            ;;
+        --base-clone-root=*)
+            BASE_CLONE_ROOT_ARG="${1#*=}"
+            ;;
+        --*)
+            err "不明なオプション: $1"
+            usage
+            exit 1
+            ;;
+        *)
+            if [ "${BASE_BRANCH_EXPLICIT}" = true ]; then
+                err "base-branchは1つだけ指定してください: $1"
+                usage
+                exit 1
+            fi
+            REQUESTED_BASE_BRANCH="$1"
+            BASE_BRANCH_EXPLICIT=true
+            ;;
+    esac
+    shift
+done
+
+PROJECTS_CONFIG_PATH="${PROJECTS_CONFIG_PATH_ARG:-${PROJECTS_CONFIG_PATH:-${ROOT_DIR}/config/projects.yaml}}"
+BASE_CLONE_ROOT="${BASE_CLONE_ROOT_ARG:-${HOME}/.producer-desk/repos}"
 
 if ! [[ "${TARGET_REPO}" =~ ^[^/]+/[^/]+$ ]]; then
     err "owner/repo 形式で指定してください（例: nosetech/project-a）: ${TARGET_REPO}"
