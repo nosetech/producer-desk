@@ -86,7 +86,11 @@ Agent Runnerの起動コマンドには常に `--dangerously-skip-permissions` �
 cp config/projects.yaml.example config/projects.yaml
 ```
 
-対象リポジトリへの状態ラベル作成・worktreeの用意・このファイルへの追記は、`scripts/add_project.sh <owner/repo> <worktree-path> [base-branch]`で1コマンドにまとめて行える（`gh auth login`済みであること。冪等実装のため既にラベル・worktree・エントリが存在する場合はそれぞれスキップされる。issue #128）。
+対象リポジトリへの状態ラベル作成・worktreeの用意・このファイルへの追記は、`dist/scripts/add_project.sh`（配布パッケージ同梱用と共通の実体。リリース時にtarball展開先ルートの`scripts/add_project.sh`として同梱される）で1コマンドにまとめて行える（`gh auth login`済みであること。冪等実装のため既にラベル・worktree・エントリが存在する場合はそれぞれスキップされる。issue #128）。このスクリプトはconfig/projects.yamlの既定パスを自身の1階層上を基準に解決するため、git clone環境でリポジトリ直下の`config/projects.yaml`を対象にする場合は`PROJECTS_CONFIG_PATH`で明示的に指定すること。
+
+```bash
+PROJECTS_CONFIG_PATH="$(pwd)/config/projects.yaml" ./dist/scripts/add_project.sh nosetech/project-a /path/to/worktree/project-a
+```
 
 ### 4. Slack Webhook URL等のsecrets
 

@@ -1,6 +1,10 @@
 #!/bin/bash
 # 新規プロジェクトをproducer-deskの管理対象に追加するサポートツール。
-# 以下を1コマンドで行う（SETUP.md「2. 対象プロジェクトの設定」、issue #128）。
+# 以下を1コマンドで行う（issue #128）。配布パッケージ展開後はSETUP.md
+# 「2. 対象プロジェクトの設定」、git clone開発環境ではCONTRIBUTING.md
+# 「3. config/projects.yaml の作成」を参照（このリポジトリ内ではdist/scripts/
+# 配下が唯一の実体で、リリース時にtarballの展開先ルート直下scripts/として
+# 同梱される。docs/basic-design.md 2-1参照）。
 #   1. 対象リポジトリへの5つの状態ラベルの作成（冪等）
 #   2. 対象リポジトリのベースcloneとAgent Runner実行用worktreeの用意（冪等）
 #   3. config/projects.yaml への repo/worktree_path エントリ追記
@@ -15,8 +19,15 @@
 #                  する。明示的に指定した場合はフォールバックせず、見つからなければ
 #                  エラーになる）
 #
-# 前提: gh CLI（gh auth login済み）・git・python3（同梱のorchestrator/.venvではなくOS標準のpython3を使う。config/projects.yaml更新に使用、
-# 追加パッケージのインストールは不要）
+# config/projects.yamlの既定パスは、このスクリプト自身の1階層上（ROOT_DIR）を
+# 基準に解決する。展開済みtarball内（scripts/add_project.sh）ではROOT_DIRが
+# 展開先ルートと一致するためそのままでよいが、git clone環境でこのファイルを
+# dist/scripts/add_project.shとして直接実行する場合はROOT_DIRがdist/になって
+# しまうため、環境変数 PROJECTS_CONFIG_PATH でリポジトリルートのconfig/projects.yaml
+# を明示的に指定すること。
+#
+# 前提: gh CLI（gh auth login済み）・git・python3（config/projects.yaml更新に
+# 使用、追加パッケージのインストールは不要）
 #
 # 非スコープ: プロジェクトの削除・無効化、オーケストレータの自動再起動（実行完了後、
 # 再起動が必要な旨を案内するのみに留める。運用中の他プロジェクトのディスパッチ
