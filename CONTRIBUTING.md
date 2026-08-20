@@ -86,6 +86,12 @@ Agent Runnerの起動コマンドには常に `--dangerously-skip-permissions` �
 cp config/projects.yaml.example config/projects.yaml
 ```
 
+対象リポジトリへの状態ラベル作成・worktreeの用意・このファイルへの追記は、`dist/scripts/add_project.sh`（配布パッケージ同梱用と共通の実体。リリース時にtarball展開先ルートの`scripts/add_project.sh`として同梱される）で1コマンドにまとめて行える（`gh auth login`済みであること。冪等実装のため既にラベル・worktree・エントリが存在する場合はそれぞれスキップされる。issue #128）。このスクリプトはconfig/projects.yamlの既定パスを自身の1階層上を基準に解決するため、git clone環境でリポジトリ直下の`config/projects.yaml`を対象にする場合は`PROJECTS_CONFIG_PATH`で明示的に指定すること。
+
+```bash
+PROJECTS_CONFIG_PATH="$(pwd)/config/projects.yaml" ./dist/scripts/add_project.sh nosetech/project-a /path/to/worktree/project-a
+```
+
 ### 4. Slack Webhook URL等のsecrets
 
 Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（[`orchestrator/.env.example`](./orchestrator/.env.example) をコピーして作成する `orchestrator/.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。未設定の場合、オーケストレータは判断待ち発生時のSlack通知処理を単にスキップする（起動エラーにはならない）。`python -m orchestrator.main` を直接起動する開発時のフローでは`.env`は自動で読み込まれないため、`set -a; source orchestrator/.env; set +a` 等で自分でexportすること（`bin/start.sh` を使う場合は起動時に自動で読み込まれる。後述）。
