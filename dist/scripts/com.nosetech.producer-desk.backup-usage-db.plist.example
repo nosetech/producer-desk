@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- config/usage.db の日次バックアップ（scripts/backup_usage_db.sh）を launchd の
-     per-user LaunchAgent として定期実行するための設定サンプル（配布パッケージ用）。
+     per-user LaunchAgent として定期実行するための設定サンプル。
 
-     使い方（SETUP.md参照）:
+     使い方（配布パッケージ展開後はSETUP.md、git clone開発環境ではCONTRIBUTING.mdの
+     「DBバックアップ（macOS launchd）」参照）:
        1. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
           にコピーする
-       2. コピー後のファイル内の /path/to/producer-desk を展開先の実パスに書き換える
+       2. コピー後のファイル内の /path/to/producer-desk を実パス（展開先ルート、
+          またはgit clone先）に書き換える。git clone環境ではProgramArgumentsの
+          scripts/backup_usage_db.sh を dist/scripts/backup_usage_db.sh に読み替え、
+          EnvironmentVariablesキーでUSAGE_DB_PATHをリポジトリルートのconfig/usage.db
+          に設定すること（詳細はCONTRIBUTING.md参照）
        3. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage-db.plist
           で読み込む -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
