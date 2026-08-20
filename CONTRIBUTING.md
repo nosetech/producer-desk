@@ -19,8 +19,9 @@ orchestrator/   オーケストレータ（Python、GitHub Issuesポーリング
 config/         設定ファイル（projects.yaml 等。実データはコミットしない）
 logs/           Agent Runner実行ログ・bin/start.shのログ/PIDファイル（コミットしない）
 bin/            開発環境向け起動・停止スクリプト（bin/start.sh / bin/stop.sh）
-scripts/        運用スクリプト（config/usage.dbの日次バックアップ等）
-dist/           配布パッケージ（tarball）向けレイアウト。開発環境向けのbin/とは別物（docs/basic-design.md 7章参照）
+dist/           配布パッケージ（tarball）向けレイアウト。開発環境向けのbin/とは別物（docs/basic-design.md 7章参照）。
+                運用スクリプト（dist/scripts/、config/usage.dbの日次バックアップ・add_project.sh等）は
+                配布パッケージ同梱用と共通の実体で、git clone環境でもこちらを直接使う（二重管理を避けるため）
 ```
 
 ## ローカル開発環境のセットアップ
@@ -167,7 +168,10 @@ ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
 
 ## DBバックアップ（macOS launchd）
 
-git clone環境での`config/usage.db`のバックアップ手順は、配布パッケージ利用時と同じ（[README.mdの「バックアップ・トラブルシューティング」](./README.md#バックアップトラブルシューティング)参照）。plist内の`/path/to/producer-desk`には、tarball展開先ではなくこのリポジトリのgit clone先の絶対パスを指定する。
+バックアップスクリプト（[`dist/scripts/backup_usage_db.sh`](./dist/scripts/backup_usage_db.sh)）とplistサンプル（[`dist/scripts/com.nosetech.producer-desk.backup-usage-db.plist.example`](./dist/scripts/com.nosetech.producer-desk.backup-usage-db.plist.example)）は配布パッケージ同梱用と共通の実体で、git clone環境でもこちらを直接使う（基本的な手順は[README.mdの「バックアップ・トラブルシューティング」](./README.md#バックアップトラブルシューティング)参照）。ただし以下の2点はgit clone環境固有の差分として読み替えること。
+
+- plist内の`/path/to/producer-desk/scripts/backup_usage_db.sh`は、tarball展開先ではなくこのリポジトリのgit clone先の絶対パスを使った`/path/to/producer-desk/dist/scripts/backup_usage_db.sh`に読み替える（`StandardOutPath`・`StandardErrorPath`の`/path/to/producer-desk`部分も同様にgit clone先の絶対パスにする）
+- `backup_usage_db.sh`はconfig/usage.dbの既定パスを自身の1階層上を基準に解決するため、`dist/scripts/`から実行するgit clone環境ではリポジトリルートの`config/usage.db`を対象にするよう環境変数`USAGE_DB_PATH`で明示的に指定する必要がある（plistから実行する場合は`EnvironmentVariables`キーに追加する）
 
 ## 開発ワークフロー
 
