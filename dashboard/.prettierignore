@@ -1,0 +1,8 @@
+.next
+out
+build
+node_modules
+next-env.d.ts
+
+# Next.js CLIが自動挿入するファイル（フォーマット対象外）
+AGENTS.md

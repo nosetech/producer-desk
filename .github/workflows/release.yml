@@ -1,0 +1,125 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write # gh release create / アセットアップロードに必要
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false # リリース処理は途中キャンセルさせない
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PYPROJECT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('orchestrator/pyproject.toml','rb'))['project']['version'])")
+          PACKAGE_VERSION=$(jq -r .version dashboard/package.json)
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ] || [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "::error::タグ($TAG_VERSION) / orchestrator($PYPROJECT_VERSION) / dashboard($PACKAGE_VERSION) のバージョンが一致していません"
+            exit 1
+          fi
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+  dashboard:
+    needs: validate-version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - name: next build (standalone)
+        run: npm run build
+        env:
+          NODE_ENV: production # NODE_ENV非標準値によるビルド失敗を防ぐ（README「NODE_ENVについて」参照）
+      - name: assemble standalone package
+        run: |
+          if [ ! -d .next/standalone ]; then
+            echo "::error::next.config.tsにoutput: \"standalone\"が設定されていません"
+            exit 1
+          fi
+          mkdir -p pkg/dashboard/.next
+          cp -r .next/standalone/. pkg/dashboard/
+          cp -r .next/static pkg/dashboard/.next/static
+          [ -d public ] && cp -r public pkg/dashboard/public
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-standalone
+          path: dashboard/pkg/dashboard
+
+  orchestrator:
+    needs: validate-version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff format --check .
+      - run: ruff check .
+      - run: pytest
+      - run: pip install build
+      - run: python -m build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchestrator-wheel
+          path: orchestrator/dist/*.whl
+
+  package-and-release:
+    needs: [validate-version, dashboard, orchestrator]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: dashboard-standalone, path: pkg/dashboard }
+      - uses: actions/download-artifact@v4
+        with: { name: orchestrator-wheel, path: pkg/orchestrator/dist }
+      - name: assemble tarball
+        env:
+          VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          ROOT="producer-desk-${VERSION}"
+          mkdir -p "${ROOT}"
+          cp -r pkg/dashboard "${ROOT}/dashboard"
+          cp -r pkg/orchestrator "${ROOT}/orchestrator"
+          cp -r dist/bin "${ROOT}/bin"
+          cp -r dist/config "${ROOT}/config"
+          cp -r dist/scripts "${ROOT}/scripts"
+          cp dist/SETUP.md "${ROOT}/SETUP.md"
+          cp dist/.env.example "${ROOT}/.env.example"
+          echo "${VERSION}" > "${ROOT}/VERSION"
+          tar czf "${ROOT}.tar.gz" "${ROOT}"
+          sha256sum "${ROOT}.tar.gz" > "${ROOT}.tar.gz.sha256"
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate-version.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "producer-desk-${VERSION}.tar.gz" \
+            "producer-desk-${VERSION}.tar.gz.sha256" \
+            --title "producer-desk ${GITHUB_REF_NAME}" \
+            --generate-notes

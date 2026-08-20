@@ -1,0 +1,16 @@
+# config/projects.yaml のサンプル（配布パッケージ用）。
+# 実データは config/projects.yaml にコピーして作成する。
+#
+#   cp config/projects.yaml.example config/projects.yaml
+#
+# 詳細は SETUP.md を参照。
+
+projects:
+  - repo: nosetech/project-a
+    worktree_path: /Users/producer/worktrees/project-a
+  - repo: nosetech/project-b
+    worktree_path: /Users/producer/worktrees/project-b
+
+# logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
+# 保持日数（未設定時は7）。
+# log_retention_days: 7

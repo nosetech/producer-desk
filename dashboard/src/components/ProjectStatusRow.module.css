@@ -1,0 +1,160 @@
+.section {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 15px 16px;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.sectionTitle {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(262px, 1fr));
+  gap: 10px;
+}
+
+.chip {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.chipTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.repoName {
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.repoName:hover {
+  color: var(--accent-blue);
+  text-decoration: underline;
+}
+
+.orphanBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-red);
+  flex-shrink: 0;
+}
+
+.addButton {
+  /* Claude Designの実値(22px/14px)より意図的に拡大（プラスの視認性向上のため、プロデューサーの明示的な指示）。 */
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.addButton:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.countCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+}
+
+.countCellUntagged {
+  background: var(--accent-red-bg);
+  border-color: var(--accent-red);
+}
+
+.countDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.countIcon {
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.countLabel {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.countValue {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+@media (max-width: 640px) {
+  .section {
+    padding: 12px 14px;
+  }
+
+  .row {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+}
