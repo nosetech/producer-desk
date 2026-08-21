@@ -122,7 +122,8 @@ orchestrator自体のログは `logs/orchestrator.log` に、`logging`モジュ�
 - orchestrator用のPython仮想環境（`orchestrator/.venv`）が無ければ自動的に作成し、`pip install -e .`で依存関係を導入してから起動する。既に`orchestrator/.venv`または`orchestrator/venv`が存在する場合はそれをそのまま使う（`pyproject.toml`との整合性は検証しない）
 - 起動したプロセスのPIDを `logs/orchestrator.pid` / `logs/dashboard.pid` に記録する（`bin/stop.sh`が参照する）
 - 待受ポートは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）・`DASHBOARD_PORT`（既定: `3000`）で上書きできる。同一LAN内の別端末にdashboardを公開する場合は環境変数 `LAN_IP` を設定する（`next start --hostname "$LAN_IP"` で起動する。オーケストレータの内部APIは常に`127.0.0.1`のみで待ち受けるためLAN公開時もこちらの設定は不要。[ネットワークアクセスの認証設計](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
-- これらの環境変数はシェルでのexportに加えて、`orchestrator/.env`（`ORCHESTRATOR_PORT`等、[`orchestrator/.env.example`](./orchestrator/.env.example)参照）・`dashboard/.env`（`DASHBOARD_PORT`・`LAN_IP`、[`dashboard/.env.example`](./dashboard/.env.example)参照）に設定してもよい（`bin/start.sh`が起動時に読み込む）
+- `ORCHESTRATOR_PORT`を変更すると、dashboardの接続先（`ORCHESTRATOR_URL`）も`bin/start.sh`が自動的に`http://127.0.0.1:${ORCHESTRATOR_PORT}`へ追従させる。dashboard/.envに`ORCHESTRATOR_URL`が明示指定されている場合はそちらが優先される
+- これらの環境変数はシェルでのexportに加えて、`orchestrator/.env`（`ORCHESTRATOR_PORT`等、[`orchestrator/.env.example`](./orchestrator/.env.example)参照）・`dashboard/.env`（`DASHBOARD_PORT`・`LAN_IP`・`ORCHESTRATOR_URL`、[`dashboard/.env.example`](./dashboard/.env.example)参照）に設定してもよい（`bin/start.sh`が起動時に読み込む）
 
 ```bash
 LAN_IP=192.168.1.xx ./bin/start.sh

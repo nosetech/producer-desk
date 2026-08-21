@@ -68,7 +68,7 @@ export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 初回起動時、`orchestrator/.venv` を自動作成し、同梱の `orchestrator/dist/*.whl` をインストールしてから起動する（ネットワークアクセス不要、`pip install`のみ）。dashboardは`npm install`・ビルド不要のビルド済みNext.js standalone出力をそのまま起動する。
 
-- orchestrator: `http://127.0.0.1:8787`（環境変数 `ORCHESTRATOR_PORT` で上書き可）
+- orchestrator: `http://127.0.0.1:8787`（環境変数 `ORCHESTRATOR_PORT` で上書き可。dashboardの接続先もこのポートに自動追従する）
 - dashboard: `http://127.0.0.1:3000`（環境変数 `DASHBOARD_PORT` で上書き可）
 
 同一LAN内の別端末（スマートフォン等）からdashboardにアクセスする場合は、自機のLAN IPを環境変数 `LAN_IP` に設定してから起動する。
