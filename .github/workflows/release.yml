@@ -18,7 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: check
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -37,8 +37,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -61,7 +61,7 @@ jobs:
           cp -r .next/standalone/. pkg/dashboard/
           cp -r .next/static pkg/dashboard/.next/static
           [ -d public ] && cp -r public pkg/dashboard/public
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: dashboard-standalone
           path: dashboard/pkg/dashboard
@@ -79,8 +79,8 @@ jobs:
       run:
         working-directory: orchestrator
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
@@ -89,7 +89,7 @@ jobs:
       - run: pytest
       - run: pip install build
       - run: python -m build --wheel
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: orchestrator-wheel
           path: orchestrator/dist/*.whl
@@ -98,10 +98,10 @@ jobs:
     needs: [validate-version, dashboard, orchestrator]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
         with: { name: dashboard-standalone, path: pkg/dashboard }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with: { name: orchestrator-wheel, path: pkg/orchestrator/dist }
       - name: assemble tarball
         env:
