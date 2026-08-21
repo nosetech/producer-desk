@@ -11,7 +11,11 @@
 # ポート・LAN公開設定は環境変数で上書きできる（shellでexportする方法に加えて、
 # orchestrator/.env・dashboard/.env（それぞれの.env.example参照）でも指定可能）。
 #
-#   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）
+#   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）。dashboardの
+#                       接続先（ORCHESTRATOR_URL）はこのポートに自動追従する
+#   ORCHESTRATOR_URL    dashboardからorchestratorへの接続先URL（既定:
+#                       http://127.0.0.1:${ORCHESTRATOR_PORT}）。dashboard/.env
+#                       で明示指定されている場合はそちらが優先される
 #   DASHBOARD_PORT      dashboardのbindポート（既定: 3000）
 #   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
 #                       `next start --hostname "$LAN_IP"` で起動する。未設定時は
@@ -102,7 +106,11 @@ fi
 
 : "${ORCHESTRATOR_PORT:=8787}"
 : "${DASHBOARD_PORT:=3000}"
-export ORCHESTRATOR_PORT DASHBOARD_PORT
+# dashboard/.envでORCHESTRATOR_URLが明示指定されていればそちらを優先する
+# （上のdashboard/.env読み込みの後にこの行を置くことで、シェルの既定値展開
+# （未設定時のみ代入）がその指定を上書きしないようにしている）。
+: "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
+export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
 
 if [ -z "${ORCHESTRATOR_PYTHON:-}" ]; then
     if [ -x "${ORCHESTRATOR_DIR}/.venv/bin/python" ]; then
