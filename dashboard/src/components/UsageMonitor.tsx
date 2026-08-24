@@ -48,6 +48,7 @@ export default function UsageMonitor() {
   const chart = buildChartGeometry(daily, colors, metric);
   const modelBreakdown = buildModelBreakdown(daily, colors, metric);
   const warn = buildLimitWarning(currentLimit);
+  const isEmpty = daily.length === 0;
 
   return (
     <div className={styles.panel}>
@@ -139,136 +140,166 @@ export default function UsageMonitor() {
         </div>
       </div>
 
-      <div className={styles.chartSection}>
-        <div className={styles.chartHeader}>
-          <span className={styles.chartLabel}>過去7日間の日次トークン</span>
-          <div className={styles.metricToggle}>
-            {CHART_METRICS.map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMetric(m)}
-                className={
-                  metric === m
-                    ? styles.metricToggleBtnActive
-                    : styles.metricToggleBtn
-                }
-              >
-                {METRIC_LABEL[m]}
-              </button>
-            ))}
+      {isEmpty ? (
+        <div className={styles.empty}>
+          <div className={styles.emptyIcon}>
+            <svg
+              width="26"
+              height="26"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--accent-green)"
+              strokeWidth={2.4}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 6 9 17l-5-5"></path>
+            </svg>
+          </div>
+          <div>
+            <div className={styles.emptyTitle}>利用量データがありません</div>
+            <div className={styles.emptySub}>
+              Agent Runnerの実行後に表示されます。
+            </div>
           </div>
         </div>
-        <div className={styles.chartLegend}>
-          {chart.series.map((s) => (
-            <span key={s.model} className={styles.legendItem}>
-              <span
-                className={styles.legendSwatch}
-                style={{ backgroundColor: `var(${s.colorVar})` }}
-              />
-              <span className={styles.legendName}>{s.shortName}</span>
-            </span>
-          ))}
-        </div>
-        <svg
-          viewBox="0 0 320 122"
-          width="100%"
-          className={styles.chartSvg}
-          role="img"
-          aria-label="過去7日間の日次トークン推移"
-        >
-          {chart.yTicks.map((tick) => (
-            <line
-              key={tick.y}
-              x1={40}
-              y1={tick.y}
-              x2={312}
-              y2={tick.y}
-              className={styles.chartGrid}
-            />
-          ))}
-          {chart.yTicks.map((tick) => (
-            <text
-              key={`y-${tick.y}`}
-              x={35}
-              y={tick.textY}
-              textAnchor="end"
-              fontSize={8}
-              className={styles.chartAxisLabel}
-            >
-              {tick.label}
-            </text>
-          ))}
-          {chart.series.map((s) => (
-            <polyline
-              key={s.model}
-              points={s.points}
-              fill="none"
-              strokeWidth={2}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              style={{ stroke: `var(${s.colorVar})` }}
-            />
-          ))}
-          {chart.series.map((s) =>
-            s.dots.map((pt) => (
-              <circle
-                key={`${s.model}-${pt.cx}-${pt.cy}`}
-                cx={pt.cx}
-                cy={pt.cy}
-                r={2.6}
-                style={{ fill: `var(${s.colorVar})` }}
-              />
-            )),
-          )}
-          {chart.xLabels.map((xl) => (
-            <text
-              key={xl.x}
-              x={xl.x}
-              y={114}
-              textAnchor="middle"
-              fontSize={8}
-              className={styles.chartAxisLabel}
-            >
-              {xl.label}
-            </text>
-          ))}
-        </svg>
-      </div>
-
-      <div>
-        <div className={styles.breakdownLabel}>
-          モデル別内訳 · 7日間累計（{METRIC_LABEL[metric]}）
-        </div>
-        <div className={styles.breakdownList}>
-          {modelBreakdown.map((m) => (
-            <div key={m.model}>
-              <div className={styles.breakdownRow}>
-                <span className={styles.breakdownName}>
-                  <span
-                    className={styles.dot}
-                    style={{ backgroundColor: `var(${m.colorVar})` }}
-                  />
-                  <span className={styles.breakdownModel}>{m.model}</span>
-                </span>
-                <span className={styles.breakdownValues}>
-                  <span className={styles.breakdownTokens}>{m.tokensText}</span>
-                  <span className={styles.breakdownCost}>{m.costText}</span>
-                </span>
-              </div>
-              <div className={styles.breakdownTrack}>
-                <div
-                  className={styles.breakdownFill}
-                  style={{
-                    width: `${m.barPercent}%`,
-                    backgroundColor: `var(${m.colorVar})`,
-                  }}
-                />
+      ) : (
+        <>
+          <div className={styles.chartSection}>
+            <div className={styles.chartHeader}>
+              <span className={styles.chartLabel}>過去7日間の日次トークン</span>
+              <div className={styles.metricToggle}>
+                {CHART_METRICS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMetric(m)}
+                    className={
+                      metric === m
+                        ? styles.metricToggleBtnActive
+                        : styles.metricToggleBtn
+                    }
+                  >
+                    {METRIC_LABEL[m]}
+                  </button>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
+            <div className={styles.chartLegend}>
+              {chart.series.map((s) => (
+                <span key={s.model} className={styles.legendItem}>
+                  <span
+                    className={styles.legendSwatch}
+                    style={{ backgroundColor: `var(${s.colorVar})` }}
+                  />
+                  <span className={styles.legendName}>{s.shortName}</span>
+                </span>
+              ))}
+            </div>
+            <svg
+              viewBox="0 0 320 122"
+              width="100%"
+              className={styles.chartSvg}
+              role="img"
+              aria-label="過去7日間の日次トークン推移"
+            >
+              {chart.yTicks.map((tick) => (
+                <line
+                  key={tick.y}
+                  x1={40}
+                  y1={tick.y}
+                  x2={312}
+                  y2={tick.y}
+                  className={styles.chartGrid}
+                />
+              ))}
+              {chart.yTicks.map((tick) => (
+                <text
+                  key={`y-${tick.y}`}
+                  x={35}
+                  y={tick.textY}
+                  textAnchor="end"
+                  fontSize={8}
+                  className={styles.chartAxisLabel}
+                >
+                  {tick.label}
+                </text>
+              ))}
+              {chart.series.map((s) => (
+                <polyline
+                  key={s.model}
+                  points={s.points}
+                  fill="none"
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  style={{ stroke: `var(${s.colorVar})` }}
+                />
+              ))}
+              {chart.series.map((s) =>
+                s.dots.map((pt) => (
+                  <circle
+                    key={`${s.model}-${pt.cx}-${pt.cy}`}
+                    cx={pt.cx}
+                    cy={pt.cy}
+                    r={2.6}
+                    style={{ fill: `var(${s.colorVar})` }}
+                  />
+                )),
+              )}
+              {chart.xLabels.map((xl) => (
+                <text
+                  key={xl.x}
+                  x={xl.x}
+                  y={114}
+                  textAnchor="middle"
+                  fontSize={8}
+                  className={styles.chartAxisLabel}
+                >
+                  {xl.label}
+                </text>
+              ))}
+            </svg>
+          </div>
+
+          <div>
+            <div className={styles.breakdownLabel}>
+              モデル別内訳 · 7日間累計（{METRIC_LABEL[metric]}）
+            </div>
+            <div className={styles.breakdownList}>
+              {modelBreakdown.map((m) => (
+                <div key={m.model}>
+                  <div className={styles.breakdownRow}>
+                    <span className={styles.breakdownName}>
+                      <span
+                        className={styles.dot}
+                        style={{ backgroundColor: `var(${m.colorVar})` }}
+                      />
+                      <span className={styles.breakdownModel}>{m.model}</span>
+                    </span>
+                    <span className={styles.breakdownValues}>
+                      <span className={styles.breakdownTokens}>
+                        {m.tokensText}
+                      </span>
+                      <span className={styles.breakdownCost}>{m.costText}</span>
+                    </span>
+                  </div>
+                  <div className={styles.breakdownTrack}>
+                    <div
+                      className={styles.breakdownFill}
+                      style={{
+                        width: `${m.barPercent}%`,
+                        backgroundColor: `var(${m.colorVar})`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
