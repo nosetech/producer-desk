@@ -18,8 +18,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import DEFAULT_LOG_RETENTION_DAYS, REPO_ROOT, Project
-from orchestrator.github_client import BOT_COMMENT_MARKER, PostCommentFn
+from orchestrator.github_client import (
+    BOT_COMMENT_MARKER,
+    AppendPrIssueReferenceFn,
+    FindOpenPrByBranchFn,
+    GetCurrentBranchFn,
+    PostCommentFn,
+    ResolvePrNumberFn,
+)
+from orchestrator.github_client import append_pr_issue_reference as gh_append_pr_issue_reference
+from orchestrator.github_client import find_open_pr_by_branch as gh_find_open_pr_by_branch
+from orchestrator.github_client import get_current_branch as gh_get_current_branch
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -482,6 +493,74 @@ def _extract_usage_records(
     return []
 
 
+# issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
+# 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
+# PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
+# 未生成のケースとは異なり、そもそも言及自体が存在しないため`resolve_pr_number`の
+# フォールバック（OPEN PR全文検索）でも解決できない）を検知・補完する仕組みが無かった
+# （issue #136 / PR #143で実際に発生）。issue #78の「ラベル遷移漏れをオーケストレータ側で
+# 決定的に補完する」パターンを踏襲し、status:in-review到達時にPRのissue参照を検証する。
+#
+# この処理自体の失敗（`gh`/`git`呼び出しの一時的な失敗等）は、呼び出し元の
+# `run_agent_runner`が`DispatchQueue._run_worker`（例外を捕捉せず、失敗すると
+# ワーカースレッドが`self._running`から自身を除去できないまま停止し、以後その
+# プロジェクトの全ディスパッチがキューに溜まったまま処理されなくなる）から
+# 呼ばれるため、ここで捕捉せずに伝播させるとオーケストレータ全体を壊しかねない。
+# PR参照の補完はあくまで「できれば直す」ベストエフォートの後始末であり、この
+# 処理の成否がissueの状態遷移（既に`status:in-review`に到達済み）自体を左右する
+# 必要は無いため、失敗時は警告ログに留めて握りつぶす。
+def _ensure_pr_issue_reference(
+    repo: str,
+    issue_number: int,
+    worktree_path: Path,
+    *,
+    resolve_pr_number_fn: ResolvePrNumberFn,
+    get_current_branch_fn: GetCurrentBranchFn,
+    find_open_pr_by_branch_fn: FindOpenPrByBranchFn,
+    append_pr_issue_reference_fn: AppendPrIssueReferenceFn,
+) -> None:
+    """status:in-review到達時、issueに紐づくPRを解決できるか確認し、できなければ補完する。
+
+    `resolve_pr_number_fn`（cross-referenceイベント・OPEN PR全文検索）のどちらでも
+    解決できない場合、Agent Runnerセッション終了時点のworktreeのカレントブランチを
+    headとするOPEN PRを検索し、見つかればPR本文へ`Closes #<issue番号>`を追記する。
+    ブランチからも一意にPRを特定できない場合や`gh`/`git`呼び出し自体が失敗した場合は
+    警告ログに留め、ラベル遷移等の強制操作は行わない（PR自体は既に作成されており
+    issueの状態遷移自体は正しいため）。
+    """
+    try:
+        if resolve_pr_number_fn(repo, issue_number) is not None:
+            return
+
+        branch = get_current_branch_fn(str(worktree_path))
+        pr = find_open_pr_by_branch_fn(repo, branch)
+        if pr is None:
+            logger.warning(
+                "issue %s#%d はstatus:in-reviewだがPRへのissue参照を解決できず、"
+                "worktreeのカレントブランチ(%s)からも一意なOPEN PRを特定できませんでした。",
+                repo,
+                issue_number,
+                branch,
+            )
+            return
+
+        existing_body = pr.get("body") or ""
+        if f"Closes #{issue_number}" in existing_body:
+            # 前回の呼び出しで既に追記済みだが、GitHub側のcross-reference
+            # イベント生成がまだ反映されておらず`resolve_pr_number_fn`が
+            # 追いついていないだけのケース。二重追記を避けるため何もしない。
+            return
+
+        append_pr_issue_reference_fn(repo, pr["number"], issue_number, existing_body)
+    except subprocess.CalledProcessError:
+        logger.warning(
+            "issue %s#%d のPR参照補完処理中にghまたはgitコマンドが失敗しました。",
+            repo,
+            issue_number,
+            exc_info=True,
+        )
+
+
 def run_agent_runner(
     project: Project,
     issue_number: int,
@@ -499,6 +578,10 @@ def run_agent_runner(
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+    resolve_pr_number_fn: ResolvePrNumberFn = gh_resolve_pr_number,
+    get_current_branch_fn: GetCurrentBranchFn = gh_get_current_branch,
+    find_open_pr_by_branch_fn: FindOpenPrByBranchFn = gh_find_open_pr_by_branch,
+    append_pr_issue_reference_fn: AppendPrIssueReferenceFn = gh_append_pr_issue_reference,
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
@@ -601,6 +684,16 @@ def run_agent_runner(
                 get_labels=get_labels,
                 add_label=add_label,
                 remove_label=remove_label,
+            )
+        elif STATUS_IN_REVIEW in current_labels:
+            _ensure_pr_issue_reference(
+                project.repo,
+                issue_number,
+                worktree_path,
+                resolve_pr_number_fn=resolve_pr_number_fn,
+                get_current_branch_fn=get_current_branch_fn,
+                find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+                append_pr_issue_reference_fn=append_pr_issue_reference_fn,
             )
     else:
         error_comment = (
