@@ -111,6 +111,44 @@ class FakeRecordUsage:
         self.calls.append(list(records))
 
 
+class FakeResolvePrNumber:
+    def __init__(self, pr_number: int | None) -> None:
+        self.pr_number = pr_number
+        self.calls: list[tuple[str, int]] = []
+
+    def __call__(self, repo: str, issue_number: int) -> int | None:
+        self.calls.append((repo, issue_number))
+        return self.pr_number
+
+
+class FakeGetCurrentBranch:
+    def __init__(self, branch: str) -> None:
+        self.branch = branch
+        self.calls: list[str] = []
+
+    def __call__(self, worktree_path: str) -> str:
+        self.calls.append(worktree_path)
+        return self.branch
+
+
+class FakeFindOpenPrByBranch:
+    def __init__(self, pr: dict | None) -> None:
+        self.pr = pr
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, repo: str, branch: str) -> dict | None:
+        self.calls.append((repo, branch))
+        return self.pr
+
+
+class FakeAppendPrIssueReference:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int, int, str]] = []
+
+    def __call__(self, repo: str, pr_number: int, issue_number: int, existing_body: str) -> None:
+        self.calls.append((repo, pr_number, issue_number, existing_body))
+
+
 def test_build_claude_command_new_session_uses_session_id_flag() -> None:
     command = build_claude_command(
         "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
@@ -684,10 +722,156 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
         logs_dir=tmp_path / "logs",
         get_session_id_fn=get_session,
         now=FIXED_NOW,
+        resolve_pr_number_fn=FakeResolvePrNumber(81),
     )
 
     assert result.success is True
     assert labels.labels == {STATUS_IN_REVIEW}
+
+
+def test_run_agent_runner_status_in_review_with_resolvable_pr_skips_pr_reference_fallback(
+    tmp_path: Path,
+) -> None:
+    """issue #144の再発防止テスト（正常ケース）。
+
+    status:in-reviewに到達しており`resolve_pr_number`が通常どおりPRを解決できる
+    場合、ブランチ検索・PR本文追記のフォールバック処理は呼ばれないことを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    resolve_pr_number_fn = FakeResolvePrNumber(81)
+    get_current_branch_fn = FakeGetCurrentBranch("feature/71-something")
+    find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
+    append_pr_issue_reference_fn = FakeAppendPrIssueReference()
+
+    result = run_agent_runner(
+        project,
+        71,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        resolve_pr_number_fn=resolve_pr_number_fn,
+        get_current_branch_fn=get_current_branch_fn,
+        find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+        append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+    )
+
+    assert result.success is True
+    assert resolve_pr_number_fn.calls == [("nosetech/project-a", 71)]
+    assert get_current_branch_fn.calls == []
+    assert find_open_pr_by_branch_fn.calls == []
+    assert append_pr_issue_reference_fn.calls == []
+
+
+def test_run_agent_runner_status_in_review_without_resolvable_pr_appends_issue_reference(
+    tmp_path: Path,
+) -> None:
+    """issue #144の再発防止テスト（issue #136 / PR #143で実際に発生したケース）。
+
+    PR本文にissue参照が一切含まれず`resolve_pr_number`が解決できない場合でも、
+    worktreeのカレントブランチをheadとするOPEN PRが一意に見つかれば、その本文へ
+    `Closes #<issue番号>`を追記して解決できる状態にすることを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    resolve_pr_number_fn = FakeResolvePrNumber(None)
+    get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
+    find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
+        {"number": 143, "body": "利用量パネルに空状態UIを追加しました。"}
+    )
+    append_pr_issue_reference_fn = FakeAppendPrIssueReference()
+
+    result = run_agent_runner(
+        project,
+        136,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        resolve_pr_number_fn=resolve_pr_number_fn,
+        get_current_branch_fn=get_current_branch_fn,
+        find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+        append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+    )
+
+    assert result.success is True
+    assert get_current_branch_fn.calls == [str(worktree)]
+    assert find_open_pr_by_branch_fn.calls == [
+        ("nosetech/project-a", "feature/136-usage-panel-empty-state")
+    ]
+    assert append_pr_issue_reference_fn.calls == [
+        (
+            "nosetech/project-a",
+            143,
+            136,
+            "利用量パネルに空状態UIを追加しました。",
+        )
+    ]
+
+
+def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warning_only(
+    tmp_path: Path,
+) -> None:
+    """issue #144の再発防止テスト（想定外ケース）。
+
+    `resolve_pr_number`が解決できず、かつworktreeのカレントブランチをheadとする
+    OPEN PRも一意に見つからない場合、例外を送出せず警告ログに留め、ラベル遷移等の
+    強制操作は行わないことを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    resolve_pr_number_fn = FakeResolvePrNumber(None)
+    get_current_branch_fn = FakeGetCurrentBranch("develop")
+    find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
+    append_pr_issue_reference_fn = FakeAppendPrIssueReference()
+
+    result = run_agent_runner(
+        project,
+        71,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        resolve_pr_number_fn=resolve_pr_number_fn,
+        get_current_branch_fn=get_current_branch_fn,
+        find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+        append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_REVIEW}
+    assert append_pr_issue_reference_fn.calls == []
 
 
 def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output(
