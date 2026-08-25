@@ -874,6 +874,95 @@ def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warni
     assert append_pr_issue_reference_fn.calls == []
 
 
+def test_run_agent_runner_status_in_review_skips_append_when_reference_already_present(
+    tmp_path: Path,
+) -> None:
+    """issue #144の再発防止テスト（重複追記防止）。
+
+    直前の呼び出しで既に`Closes #<issue番号>`をPR本文へ追記済みだが、GitHub側の
+    cross-referenceイベント生成がまだ`resolve_pr_number`に反映されていないだけの
+    場合、ブランチ一致PRが見つかっても同じ参照を二重に追記しないことを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    resolve_pr_number_fn = FakeResolvePrNumber(None)
+    get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
+    find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
+        {
+            "number": 143,
+            "body": "利用量パネルに空状態UIを追加しました。\n\nCloses #136",
+        }
+    )
+    append_pr_issue_reference_fn = FakeAppendPrIssueReference()
+
+    result = run_agent_runner(
+        project,
+        136,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        resolve_pr_number_fn=resolve_pr_number_fn,
+        get_current_branch_fn=get_current_branch_fn,
+        find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+        append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+    )
+
+    assert result.success is True
+    assert append_pr_issue_reference_fn.calls == []
+
+
+def test_run_agent_runner_status_in_review_swallows_called_process_error(
+    tmp_path: Path,
+) -> None:
+    """issue #144の再発防止テスト（gh/git呼び出し失敗時の握りつぶし）。
+
+    PR参照補完処理中に`gh`/`git`呼び出しが失敗（`subprocess.CalledProcessError`）
+    しても、`run_agent_runner`から例外が伝播しないことを確認する。この処理は
+    `DispatchQueue._run_worker`から例外捕捉なしに呼ばれるため、ここで伝播すると
+    ワーカースレッドが停止し、対象プロジェクトの以後のディスパッチが永久に
+    処理されなくなる（issue #144のコードレビューで指摘）。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+
+    def resolve_pr_number_fn(repo: str, issue_number: int) -> int | None:
+        raise subprocess.CalledProcessError(1, ["gh", "api", "..."])
+
+    result = run_agent_runner(
+        project,
+        71,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        resolve_pr_number_fn=resolve_pr_number_fn,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_REVIEW}
+
+
 def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output(
     tmp_path: Path,
 ) -> None:

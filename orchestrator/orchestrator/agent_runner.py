@@ -500,6 +500,15 @@ def _extract_usage_records(
 # フォールバック（OPEN PR全文検索）でも解決できない）を検知・補完する仕組みが無かった
 # （issue #136 / PR #143で実際に発生）。issue #78の「ラベル遷移漏れをオーケストレータ側で
 # 決定的に補完する」パターンを踏襲し、status:in-review到達時にPRのissue参照を検証する。
+#
+# この処理自体の失敗（`gh`/`git`呼び出しの一時的な失敗等）は、呼び出し元の
+# `run_agent_runner`が`DispatchQueue._run_worker`（例外を捕捉せず、失敗すると
+# ワーカースレッドが`self._running`から自身を除去できないまま停止し、以後その
+# プロジェクトの全ディスパッチがキューに溜まったまま処理されなくなる）から
+# 呼ばれるため、ここで捕捉せずに伝播させるとオーケストレータ全体を壊しかねない。
+# PR参照の補完はあくまで「できれば直す」ベストエフォートの後始末であり、この
+# 処理の成否がissueの状態遷移（既に`status:in-review`に到達済み）自体を左右する
+# 必要は無いため、失敗時は警告ログに留めて握りつぶす。
 def _ensure_pr_issue_reference(
     repo: str,
     issue_number: int,
@@ -515,25 +524,41 @@ def _ensure_pr_issue_reference(
     `resolve_pr_number_fn`（cross-referenceイベント・OPEN PR全文検索）のどちらでも
     解決できない場合、Agent Runnerセッション終了時点のworktreeのカレントブランチを
     headとするOPEN PRを検索し、見つかればPR本文へ`Closes #<issue番号>`を追記する。
-    ブランチからも一意にPRを特定できない場合は警告ログに留め、ラベル遷移等の強制操作は
-    行わない（PR自体は既に作成されておりissueの状態遷移自体は正しいため）。
+    ブランチからも一意にPRを特定できない場合や`gh`/`git`呼び出し自体が失敗した場合は
+    警告ログに留め、ラベル遷移等の強制操作は行わない（PR自体は既に作成されており
+    issueの状態遷移自体は正しいため）。
     """
-    if resolve_pr_number_fn(repo, issue_number) is not None:
-        return
+    try:
+        if resolve_pr_number_fn(repo, issue_number) is not None:
+            return
 
-    branch = get_current_branch_fn(str(worktree_path))
-    pr = find_open_pr_by_branch_fn(repo, branch)
-    if pr is None:
+        branch = get_current_branch_fn(str(worktree_path))
+        pr = find_open_pr_by_branch_fn(repo, branch)
+        if pr is None:
+            logger.warning(
+                "issue %s#%d はstatus:in-reviewだがPRへのissue参照を解決できず、"
+                "worktreeのカレントブランチ(%s)からも一意なOPEN PRを特定できませんでした。",
+                repo,
+                issue_number,
+                branch,
+            )
+            return
+
+        existing_body = pr.get("body") or ""
+        if f"Closes #{issue_number}" in existing_body:
+            # 前回の呼び出しで既に追記済みだが、GitHub側のcross-reference
+            # イベント生成がまだ反映されておらず`resolve_pr_number_fn`が
+            # 追いついていないだけのケース。二重追記を避けるため何もしない。
+            return
+
+        append_pr_issue_reference_fn(repo, pr["number"], issue_number, existing_body)
+    except subprocess.CalledProcessError:
         logger.warning(
-            "issue %s#%d はstatus:in-reviewだがPRへのissue参照を解決できず、"
-            "worktreeのカレントブランチ(%s)からも一意なOPEN PRを特定できませんでした。",
+            "issue %s#%d のPR参照補完処理中にghまたはgitコマンドが失敗しました。",
             repo,
             issue_number,
-            branch,
+            exc_info=True,
         )
-        return
-
-    append_pr_issue_reference_fn(repo, pr["number"], issue_number, pr.get("body") or "")
 
 
 def run_agent_runner(
