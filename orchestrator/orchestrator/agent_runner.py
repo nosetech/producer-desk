@@ -106,6 +106,12 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "それらを全て終えるまでこのラベル遷移を実行しないでください。PR作成直後に"
     "即座に実行すると、まだレビュー結果が投稿されていないのにダッシュボードの"
     "レビュー待ち一覧に表示されてしまいます（ラベルの有無だけで判定するため）。\n"
+    "  なお、CI完了待ちのように単に時間経過を要するだけの状況は、それ自体が"
+    "needs-human-decisionへ遷移すべき理由にはなりません。CIが実行中"
+    "（PENDING/IN_PROGRESS）の間はneeds-human-decisionを使わず、"
+    f"`gh pr view <PR番号> --repo {{repo}} --json statusCheckRollup` をBashツールで"
+    "sleepを挟みながら繰り返し確認するポーリングにより、このセッション内で"
+    "status:in-progressのまま待機を継続し、CI完了後に後続作業へ進んでください。\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )

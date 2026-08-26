@@ -60,7 +60,7 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
 7. **CI 完了待機と確認**
 
 - GitHub Actions による CI が実行される
-- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）
+- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）。**CI実行中であること自体は人間の判断が必要な状況ではない。** `PENDING`/`IN_PROGRESS`の間はneeds-human-decisionへ遷移させず、Bashツールで`sleep`を挟んで再度`statusCheckRollup`を確認するポーリングループ等により、同一セッション内で待機を継続しながら`status:in-progress`のまま処理を続ける
 - **CI が SUCCESS で完了したことを確認してから次へ進む**
 - エラーがあれば、原因を調査して修正する
 
