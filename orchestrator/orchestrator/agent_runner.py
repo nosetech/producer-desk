@@ -414,6 +414,42 @@ def _extract_summary(payload: dict | None) -> str | None:
     return result if isinstance(result, str) else None
 
 
+@dataclass
+class _RunErrorInfo:
+    is_error: bool
+    api_error_status: int | None
+    result_text: str | None
+    limit_reset_text: str | None
+
+
+# issue #146: 429到達時の異常終了通知（`_build_failure_comment`）でも、ここと
+# 同じ`is_error`/`api_error_status`/`limit_reset_text`の抽出が必要になった。
+# 2箇所で独立に同じ抽出ロジックを書くと、将来どちらか一方だけを変更した際に
+# issueコメントとusage.dbの記録内容が食い違いかねないため、抽出処理自体を
+# 共通化する。
+def _classify_run_error(payload: dict | None) -> _RunErrorInfo:
+    if payload is None:
+        return _RunErrorInfo(
+            is_error=False, api_error_status=None, result_text=None, limit_reset_text=None
+        )
+
+    is_error = bool(payload.get("is_error"))
+    api_error_status = payload.get("api_error_status")
+    result_text = payload.get("result")
+    result_text = result_text if isinstance(result_text, str) else None
+
+    limit_reset_text = None
+    if is_error and api_error_status == 429 and result_text:
+        limit_reset_text = parse_limit_reset_text(result_text) or result_text
+
+    return _RunErrorInfo(
+        is_error=is_error,
+        api_error_status=api_error_status,
+        result_text=result_text,
+        limit_reset_text=limit_reset_text,
+    )
+
+
 # issue #60: `_extract_summary`は`result`フィールドしか使わず、`total_cost_usd`/
 # `usage.*`/`modelUsage.*`を破棄していたため、利用量モニターに実データを
 # 表示できなかった。ここでモデル別の利用量レコードに変換し、usage_store経由で
@@ -425,21 +461,15 @@ def _extract_usage_records(
     if payload is None:
         return []
 
-    is_error = bool(payload.get("is_error"))
-    api_error_status = payload.get("api_error_status")
-    result_text = payload.get("result")
-    result_text = result_text if isinstance(result_text, str) else None
-
-    error_message = result_text if is_error else None
-    limit_reset_text = None
-    if is_error and api_error_status == 429 and result_text:
-        limit_reset_text = parse_limit_reset_text(result_text) or result_text
+    error_info = _classify_run_error(payload)
+    is_error = error_info.is_error
+    error_message = error_info.result_text if is_error else None
 
     common_error_fields = {
         "is_error": is_error,
-        "api_error_status": api_error_status,
+        "api_error_status": error_info.api_error_status,
         "error_message": error_message,
-        "limit_reset_text": limit_reset_text,
+        "limit_reset_text": error_info.limit_reset_text,
     }
 
     model_usage = payload.get("modelUsage")
@@ -568,17 +598,16 @@ def _ensure_pr_issue_reference(
 # ログパスの代わりにリミット到達である旨と解除予定時刻を伝える。429以外の
 # 異常終了（予期しない例外等）ではデバッグに必要なため従来通りログパスを含める。
 def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: Path) -> str:
-    is_error = bool(payload.get("is_error")) if payload else False
-    api_error_status = payload.get("api_error_status") if payload else None
-    result_text = payload.get("result") if payload else None
-    result_text = result_text if isinstance(result_text, str) else None
+    error_info = _classify_run_error(payload)
 
-    if is_error and api_error_status == 429:
-        limit_reset_text = (result_text and parse_limit_reset_text(result_text)) or result_text
-        message = ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
-        if limit_reset_text:
-            message += f"（{limit_reset_text}）"
-        return message
+    # `result`が空/非文字列で解除予定時刻等の情報が一切得られない場合、
+    # ログパスを省いた文面では人間が調査する手がかりが無くなってしまうため、
+    # 429以外の異常終了と同じ従来通りのログパス付きメッセージにフォールバックする。
+    if error_info.is_error and error_info.api_error_status == 429 and error_info.limit_reset_text:
+        return (
+            ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
+            f"（{error_info.limit_reset_text}）"
+        )
 
     return f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。ログ: {log_path}"
 

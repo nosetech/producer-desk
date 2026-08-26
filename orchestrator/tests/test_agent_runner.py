@@ -742,6 +742,48 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
     assert "ログ:" in posted_comment
 
 
+def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_path_message(
+    tmp_path: Path,
+) -> None:
+    """issue #146: 429到達時でも`result`が空/非文字列で解除予定時刻等の
+
+    情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り
+    ログパスを含むメッセージにフォールバックすることを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+        }
+    )
+    popen = FakePopenFactory(lines=[payload_line], returncode=1)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is False
+    posted_comment = comments.posted[0][2]
+    assert "異常終了" in posted_comment
+    assert "ログ:" in posted_comment
+
+
 def test_run_agent_runner_success_without_label_self_transition_falls_back_to_needs_human_decision(
     tmp_path: Path,
 ) -> None:
