@@ -654,6 +654,94 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
     assert "1" in comments.posted[0][2]
 
 
+def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_path(
+    tmp_path: Path,
+) -> None:
+    """issue #146: 429到達時は、ログパス提示ではなくリミット到達の旨と
+
+    解除予定時刻を含むメッセージを投稿することを確認する。ラベル遷移
+    （needs-human-decisionへの遷移）自体は従来通り。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "You've hit your session limit · resets 1pm (Asia/Tokyo)",
+        }
+    )
+    popen = FakePopenFactory(lines=[payload_line], returncode=1)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is False
+    assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+    posted_comment = comments.posted[0][2]
+    assert "API利用リミット" in posted_comment
+    assert "resets 1pm (Asia/Tokyo)" in posted_comment
+    assert "ログ:" not in posted_comment
+    assert "異常終了" not in posted_comment
+
+
+def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
+    tmp_path: Path,
+) -> None:
+    """issue #146: 429以外のAPIエラー（is_error=Trueだが別ステータス）では、
+
+    デバッグに必要なため従来通りログパスを含むメッセージを投稿することを確認する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line(
+        {
+            "is_error": True,
+            "api_error_status": 500,
+            "result": "internal server error",
+        }
+    )
+    popen = FakePopenFactory(lines=[payload_line], returncode=1)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is False
+    posted_comment = comments.posted[0][2]
+    assert "異常終了" in posted_comment
+    assert "ログ:" in posted_comment
+
+
 def test_run_agent_runner_success_without_label_self_transition_falls_back_to_needs_human_decision(
     tmp_path: Path,
 ) -> None:

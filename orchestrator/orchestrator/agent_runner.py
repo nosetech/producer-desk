@@ -561,6 +561,28 @@ def _ensure_pr_issue_reference(
         )
 
 
+# issue #146: プロセスが異常終了（returncode != 0）した際、原因を問わず一律で
+# 「ログを見てください」という文面を投稿していた。この手の異常終了は大抵の場合
+# APIリミット到達（429）が原因であり、`_extract_usage_records`（issue #60）が
+# 既に検知している`is_error`/`api_error_status`をここでも参照し、429の場合は
+# ログパスの代わりにリミット到達である旨と解除予定時刻を伝える。429以外の
+# 異常終了（予期しない例外等）ではデバッグに必要なため従来通りログパスを含める。
+def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: Path) -> str:
+    is_error = bool(payload.get("is_error")) if payload else False
+    api_error_status = payload.get("api_error_status") if payload else None
+    result_text = payload.get("result") if payload else None
+    result_text = result_text if isinstance(result_text, str) else None
+
+    if is_error and api_error_status == 429:
+        limit_reset_text = (result_text and parse_limit_reset_text(result_text)) or result_text
+        message = ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
+        if limit_reset_text:
+            message += f"（{limit_reset_text}）"
+        return message
+
+    return f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。ログ: {log_path}"
+
+
 def run_agent_runner(
     project: Project,
     issue_number: int,
@@ -696,10 +718,7 @@ def run_agent_runner(
                 append_pr_issue_reference_fn=append_pr_issue_reference_fn,
             )
     else:
-        error_comment = (
-            f":warning: Agent Runnerが異常終了しました"
-            f"（終了コード: {returncode}）。ログ: {log_path}"
-        )
+        error_comment = _build_failure_comment(payload, returncode=returncode, log_path=log_path)
         post_comment(project.repo, issue_number, error_comment)
         transition_label(
             project.repo,
