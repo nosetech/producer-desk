@@ -124,8 +124,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.validate-version.outputs.version }}
         run: |
+          # release-prepareスキルがステップ4で作成し、そのままsquash mergeで
+          # masterに刻まれたコミット（＝このタグが指すコミット）の本文には、
+          # 前バージョンからの変更点サマリが記載されている。これをリリース
+          # ノート本文としてそのまま再利用し、変更点サマリの生成ロジックを
+          # 二重に持たない（`--generate-notes`は使わない。masterにはリリース
+          # PRしか載らないため、マージ済みPRベースの自動生成ノートはリリース
+          # PR1件を示すだけで有用な情報にならない）。
+          NOTES="$(git log -1 --format=%b HEAD)"
+          if [ -z "${NOTES}" ]; then
+            NOTES="(変更点サマリがコミットメッセージに含まれていません)"
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             "producer-desk-${VERSION}.tar.gz" \
             "producer-desk-${VERSION}.tar.gz.sha256" \
             --title "producer-desk ${GITHUB_REF_NAME}" \
-            --generate-notes
+            --notes "${NOTES}"

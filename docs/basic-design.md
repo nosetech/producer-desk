@@ -333,11 +333,11 @@ git cloneに依存せず、必要なファイルだけを配布し好きなデ�
 
 ### `.github/workflows/release.yml`
 
-セマンティックバージョンタグ（`v*.*.*`）のpushでのみ起動する（`pull_request`・`workflow_dispatch`トリガーは持たない）。タグのバージョンと`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`が一致することを検証する`validate-version`ジョブを経て、`dashboard`・`orchestrator`それぞれで既存CI（`dashboard-ci.yml`/`orchestrator-ci.yml`）相当のformat/lint/test/typecheckを再実行した上でビルドし、`package-and-release`ジョブが`dist/`の内容とビルド成果物を1つのtarball（`producer-desk-<version>.tar.gz`）にまとめて`gh release create --generate-notes`でアセット添付する。同一タグへのリリース再実行は非対応（タグ・リリースの手動削除が必要）。
+セマンティックバージョンタグ（`v*.*.*`）のpushでのみ起動する（`pull_request`・`workflow_dispatch`トリガーは持たない）。タグのバージョンと`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`が一致することを検証する`validate-version`ジョブを経て、`dashboard`・`orchestrator`それぞれで既存CI（`dashboard-ci.yml`/`orchestrator-ci.yml`）相当のformat/lint/test/typecheckを再実行した上でビルドし、`package-and-release`ジョブが`dist/`の内容とビルド成果物を1つのtarball（`producer-desk-<version>.tar.gz`）にまとめて`gh release create`でアセット添付する。リリースノート本文には`--generate-notes`（マージ済みPRベースの自動生成）は使わず、タグが指す`master`上のコミット本文（release-prepareスキルが作成し前バージョンからの変更点サマリを含む、後述）をそのまま採用する（生成ロジックの二重化を避けるため）。同一タグへのリリース再実行は非対応（タグ・リリースの手動削除が必要）。
 
 ### リリース準備（`.claude/skills/release-prepare`）
 
-タグを打つ前段として、バージョン番号の確定（`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`更新）と`develop`→`master`のプルリクエスト作成を補助するSKILL。**`master`へのマージ・タグ付け（`git tag vX.Y.Z` → push）は人間が最終承認した上で行い、本SKILLの範囲では実施しない**（`master`への直接コミット禁止というブランチ運用ルールと整合させるため、あくまでPR経由の変更に限定する）。マージ後、`master`上のマージコミットにタグを打つことで`release.yml`が起動する。
+タグを打つ前段として、バージョン番号の確定（`orchestrator/pyproject.toml`・`dashboard/package.json`の`version`更新）と`develop`→`master`のプルリクエスト作成を補助するSKILL。**`master`へのマージ・タグ付け（`git tag vX.Y.Z` → push）は人間が最終承認した上で行い、本SKILLの範囲では実施しない**（`master`への直接コミット禁止というブランチ運用ルールと整合させるため、あくまでPR経由の変更に限定する）。マージ後、`master`上のマージコミットにタグを打つことで`release.yml`が起動する。コミットメッセージはタイトル`vX.Y.Z リリース`・本文に`git describe --tags --abbrev=0`で特定した前バージョンからの変更点サマリという形式に統一しており、このメッセージがsquash mergeでそのまま`master`に刻まれ、`release.yml`のリリースノート本文としても再利用される。
 
 ### 前提・注意点
 
