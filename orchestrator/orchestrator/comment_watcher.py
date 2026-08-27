@@ -21,6 +21,13 @@ Agent Runnerの実行結果報告、承認/却下/自由記述の定型コメン
 では拾わない。拾ってしまうと、PRマージに伴うissueクローズと同時に書いた説明コメント
 （作業再開の指示ではない）を誤って指示と解釈し、Agent Runnerを不要に再起動させて
 しまう（issue #51）。
+
+`labels.STATUS_LABELS`（`status:todo`等の5つの状態ラベル）がいずれも付いていない
+issueへの新規コメントもディスパッチ対象から除外する。この5ラベルのいずれも無い
+issueはCLAUDE.mdの定義上producer-deskの管理対象外（設計ドキュメントの議論用issue等）
+であり、`resolve_instruction_label()`は状態ラベルが無い場合を「本来発生しない想定」
+としつつ`status:in-progress`への遷移を返すため、素のissueにコメントしただけで
+意図せずAgent Runnerが起動してしまう（issue #150）。
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from orchestrator.close_watcher import CLOSED_STATE
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.instruct import apply_instruction
-from orchestrator.labels import AddLabelFn, GetLabelsFn, RemoveLabelFn
+from orchestrator.labels import STATUS_LABELS, AddLabelFn, GetLabelsFn, RemoveLabelFn
 
 
 class CommentTracker:
@@ -65,6 +72,8 @@ def process_new_comments(
         for issue in issues:
             new_comments = tracker.new_comments(repo, issue.number, issue.comments)
             if issue.state == CLOSED_STATE:
+                continue
+            if not (set(issue.labels) & STATUS_LABELS):
                 continue
             human_comments = [c for c in new_comments if BOT_COMMENT_MARKER not in c["body"]]
             if not human_comments:
