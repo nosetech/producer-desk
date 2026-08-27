@@ -133,6 +133,27 @@ launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage
 
 読み込み後は毎日3:00（システムのタイムゾーン設定に従う）に自動実行される。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできる（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定する）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできる。
 
+## 9. アップグレード手順
+
+新バージョンのtarballへ移行する際、`scripts/migrate.sh`を使うと、旧バージョンの展開先ディレクトリに蓄積したユーザー固有の状態ファイル（`config/projects.yaml`・`config/usage.db`・`config/sessions.json`・`.env`・任意で`logs/`）を手動コピー無しで引き継げる。
+
+```bash
+# 1. 新バージョンのtarballを別ディレクトリに展開する（旧ディレクトリは残したまま）
+tar xzf producer-desk-<new-version>.tar.gz
+cd producer-desk-<new-version>
+
+# 2. 旧バージョンの展開先ディレクトリを指定して移行する
+./scripts/migrate.sh /path/to/producer-desk-<old-version>
+
+# 3. 移行後、新バージョン側で起動する
+./bin/start.sh
+```
+
+- 実行ログ（`logs/`）も引き継ぎたい場合は `--with-logs` を付ける（必須ではないファイルのため既定では対象外）
+- 新バージョン側に同名ファイルが既に存在する場合、既定ではスキップされる（何度実行しても安全）。上書きしたい場合は `--force` を付ける。この場合、既存ファイルは`<file>.bak-<timestamp>`にバックアップされてから上書きされる
+- `config/usage.db`はSQLiteのオンラインバックアップ機能でコピーされるため、旧バージョンのオーケストレータを稼働させたまま安全に実行できる。スキーマバージョンが移行ツール側の対応バージョンと一致しない場合（将来テーブル定義が変更された場合）は自動移行せずエラーで停止するので、その場合は都度案内に従うこと
+- 移行後、旧ディレクトリは自動では削除されない。新バージョンの動作確認（ダッシュボードでプロジェクト一覧・利用量履歴が表示されること等）が済むまでは残しておき、問題なければ利用者自身の判断で削除してよい
+
 ## トラブルシューティング
 
 - **`config/projects.yaml が見つかりません`**: 手順2を実施していない。`config/projects.yaml.example` からコピーして作成する。

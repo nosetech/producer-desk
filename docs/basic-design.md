@@ -344,6 +344,17 @@ git cloneに依存せず、必要なファイルだけを配布し好きなデ�
 - Node.js／Python 3.11以降／`gh` CLI／Claude Code CLI（サブスクリプション認証）は引き続きOS側の前提としてユーザー自身にインストールしてもらう（Docker不使用の方針上、tarballに同梱できない）
 - Homebrew formula化も選択肢にあるが、公開tap運用のオーバーヘッドに見合うほどの配布規模（不特定多数への公開）ではないため、まずはGitHub Releasesのtarballで十分と判断した
 
+### バージョンアップ時のユーザー状態ファイル移行（`dist/scripts/migrate.sh`）
+
+対応issue: [#155](https://github.com/nosetech/producer-desk/issues/155)
+
+tarballを新バージョンの別ディレクトリに展開する運用のため、旧展開先に蓄積したtarball非同梱・ユーザー固有の状態ファイル（`config/projects.yaml`・`config/usage.db`・`config/sessions.json`・`.env`・`logs/`）は、展開のたびに手動でコピーする必要があった。`add_project.sh`/`_add_project_entry.py`と同様の構成で`dist/scripts/migrate.sh`（単体のbashスクリプト、追加依存なし）を用意し、旧展開先ディレクトリを引数に取って新展開先（カレントディレクトリ）へコピーする。
+
+- **対象ファイルと検証**: `config/projects.yaml`はPyYAMLが利用可能な場合にYAMLとしてパース可能か検証、`config/sessions.json`は標準ライブラリの`json`でパース可能か検証してからコピーする（不正な場合は移行を中止）。`.env`はそのままコピー。`logs/`は必須ではないため`--with-logs`指定時のみ対象
+- **`config/usage.db`のスキーマバージョニング**: `orchestrator/orchestrator/usage_store.py`にSQLiteの`PRAGMA user_version`を使った最小限のスキーマバージョン管理（`SCHEMA_VERSION`定数）を導入した。新規作成時・スキーマバージョン管理導入以前に作成されたDB（`user_version`が未設定=0）ではバージョンを書き込むだけで通す一方、`SCHEMA_VERSION`と異なる値が設定されている場合は`_connect()`が`RuntimeError`で処理を止める。`migrate.sh`側も独立した定数`EXPECTED_USAGE_DB_SCHEMA_VERSION`を持ち、コピー前に`PRAGMA user_version`を比較して不一致なら自動移行せずエラーで停止する（将来テーブル定義を変更する際は、`usage_store.py`の`SCHEMA_VERSION`と`migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`を両方インクリメントし、`_connect()`に変換ロジックを追加する運用を想定。現時点ではスキーマ変更の予定が無いため、フルのマイグレーションフレームワークは導入せず、この最小限の枠組みに留めている）。コピー自体は`sqlite3 <src> ".backup '<dst>'"`（オンラインバックアップAPI）で行うため、旧バージョンのオーケストレータを稼働させたまま実行しても不整合なコピーにならない（`scripts/backup_usage_db.sh`と同じ手法）
+- **上書き挙動**: 新展開先に同名ファイルが既に存在する場合、既定ではスキップ（何度実行しても安全）。`--force`指定時は`<file>.bak-<timestamp>`へリネームしてバックアップした上で上書きする
+- **旧ディレクトリの扱い**: 移行ツールは旧ディレクトリを読み取り専用で扱い、削除・アーカイブは行わない。新バージョンの動作確認（`bin/start.sh`起動後、ダッシュボードでプロジェクト一覧・利用量履歴が表示されること）が済むまで旧バージョンを併用できるようにするため、削除するかどうかは利用者の判断に委ねる（SETUP.md「9. アップグレード手順」参照）
+
 ## 成果物
 
 - 本書（データモデル定義、状態遷移フロー、API仕様、Agent Runner連携仕様、通知フロー、権限設計、配布パッケージ化設計）

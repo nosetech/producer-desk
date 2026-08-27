@@ -63,6 +63,14 @@ CREATE TABLE IF NOT EXISTS usage_records (
 )
 """
 
+# config/usage.dbのスキーマバージョン（SQLiteの`PRAGMA user_version`で管理）。
+# 将来テーブル定義を変更する場合はこの値をインクリメントし、_connect()に
+# 旧バージョンからの変換ロジックを追加する。配布パッケージのバージョンアップ時に
+# 状態ファイルを引き継ぐ dist/scripts/migrate.sh は、コピー可否の判定にこの値と
+# 同じ値（EXPECTED_USAGE_DB_SCHEMA_VERSION）を独立に保持しているため、この値を
+# 変更する際は同スクリプトも合わせて更新すること（issue #155）。
+SCHEMA_VERSION = 1
+
 
 @dataclass
 class UsageRecord:
@@ -113,6 +121,19 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute(_CREATE_TABLE_SQL)
+
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version == 0:
+        # 新規作成時、またはスキーマバージョン管理導入（issue #155）より前に
+        # 作成された既存DB。後者はテーブル定義に変更が無いため、そのまま
+        # SCHEMA_VERSIONを書き込んで問題ない。
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    elif current_version != SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{db_path} のスキーマバージョン({current_version})が、現在のコードが"
+            f"期待するバージョン({SCHEMA_VERSION})と一致しません。対応するバージョン"
+            "の dist/scripts/migrate.sh を使うか、手動でスキーマを移行してください。"
+        )
     return conn
 
 
