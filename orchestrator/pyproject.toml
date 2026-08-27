@@ -1,6 +1,6 @@
 [project]
 name = "orchestrator"
-version = "0.1.1"
+version = "0.1.2"
 description = "producer-desk オーケストレータ: GitHub Issuesポーリング・状態集約・Agent Runnerディスパッチ"
 requires-python = ">=3.11"
 dependencies = [
