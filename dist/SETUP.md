@@ -68,7 +68,7 @@ export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 初回起動時、`orchestrator/.venv` を自動作成し、同梱の `orchestrator/dist/*.whl` をインストールしてから起動する（ネットワークアクセス不要、`pip install`のみ）。dashboardは`npm install`・ビルド不要のビルド済みNext.js standalone出力をそのまま起動する。
 
-- orchestrator: `http://127.0.0.1:8787`（環境変数 `ORCHESTRATOR_PORT` で上書き可）
+- orchestrator: `http://127.0.0.1:8787`（環境変数 `ORCHESTRATOR_PORT` で上書き可。dashboardの接続先もこのポートに自動追従する）
 - dashboard: `http://127.0.0.1:3000`（環境変数 `DASHBOARD_PORT` で上書き可）
 
 同一LAN内の別端末（スマートフォン等）からdashboardにアクセスする場合は、自機のLAN IPを環境変数 `LAN_IP` に設定してから起動する。
@@ -114,6 +114,7 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **Agent Runnerが自動で行うこと**: ディスパッチされると、Claude Code CLI（`claude -p --dangerously-skip-permissions`）が対象プロジェクトのworktree内でフル自動実行され、調査・実装・テスト・PR作成・ラベルの自己更新までを行う。1プロジェクトにつき同時に実行されるAgent Runnerは1つのみで、複数の指示が重なった場合はプロジェクトごとのキューで順次処理される。
 - **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはない。issueの再オープンはproducer-deskの操作範囲外で、再着手させたい場合は人間がGitHub上でreopenする必要がある。issueのクローズ自体は、レビュー承認時にproducer-desk（オーケストレータ）がPRのsquash merge後に明示的に行う（GitHubのPRマージによる自動クローズには依存しない。本プロジェクトのPRは`develop`向けのため、GitHubの`Closes #`による自動クローズが働かないための対処）。
 - **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
+- **Agent Runner実行時はユーザー個別のClaude Code設定が適用されない場合がある**: Agent Runnerは`claude -p`によるheadless（非対話）実行のため、対話セッションでは有効な利用者個人の`~/.claude/settings.json`のフック（特に`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示が、Agent Runner実行時には適用されない場合がある。確実に反映させたい指示（回答言語等）は、対象プロジェクトリポジトリ自身の`CLAUDE.md`に明記する（Agent Runnerは対象プロジェクトのworktreeをカレントディレクトリとして起動されるため、そのプロジェクトのCLAUDE.mdは確実に読み込まれる）。
 
 ## 8. DBバックアップ（macOS launchd、任意）
 
@@ -131,6 +132,27 @@ launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage
 ```
 
 読み込み後は毎日3:00（システムのタイムゾーン設定に従う）に自動実行される。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできる（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定する）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできる。
+
+## 9. アップグレード手順
+
+新バージョンのtarballへ移行する際、`scripts/migrate.sh`を使うと、旧バージョンの展開先ディレクトリに蓄積したユーザー固有の状態ファイル（`config/projects.yaml`・`config/usage.db`・`config/sessions.json`・`.env`・任意で`logs/`）を手動コピー無しで引き継げる。
+
+```bash
+# 1. 新バージョンのtarballを別ディレクトリに展開する（旧ディレクトリは残したまま）
+tar xzf producer-desk-<new-version>.tar.gz
+cd producer-desk-<new-version>
+
+# 2. 旧バージョンの展開先ディレクトリを指定して移行する
+./scripts/migrate.sh /path/to/producer-desk-<old-version>
+
+# 3. 移行後、新バージョン側で起動する
+./bin/start.sh
+```
+
+- 実行ログ（`logs/`）も引き継ぎたい場合は `--with-logs` を付ける（必須ではないファイルのため既定では対象外）
+- 新バージョン側に同名ファイルが既に存在する場合、既定ではスキップされる（何度実行しても安全）。上書きしたい場合は `--force` を付ける。この場合、既存ファイルは`<file>.bak-<timestamp>`にバックアップされてから上書きされる
+- `config/usage.db`はSQLiteのオンラインバックアップ機能でコピーされるため、旧バージョンのオーケストレータを稼働させたまま安全に実行できる。スキーマバージョンが移行ツール側の対応バージョンと一致しない場合（将来テーブル定義が変更された場合）は自動移行せずエラーで停止するので、その場合は都度案内に従うこと
+- 移行後、旧ディレクトリは自動では削除されない。新バージョンの動作確認（ダッシュボードでプロジェクト一覧・利用量履歴が表示されること等）が済むまでは残しておき、問題なければ利用者自身の判断で削除してよい
 
 ## トラブルシューティング
 

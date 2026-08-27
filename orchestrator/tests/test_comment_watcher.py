@@ -265,6 +265,51 @@ def test_bot_authored_comment_does_not_trigger_redispatch() -> None:
     assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
 
 
+def test_new_comment_on_unmanaged_issue_does_not_trigger_dispatch() -> None:
+    """issue #150の再発防止テスト。
+
+    `labels.STATUS_LABELS`のいずれも付いていないissue（producer-desk管理対象外の、
+    設計ドキュメントの議論用issue等）に新規コメントが投稿されても、指示として
+    誤検知して`status:in-progress`への遷移・Agent Runnerのディスパッチを行っては
+    ならない。
+    """
+    tracker = CommentTracker()
+    labels = FakeLabels({1: set()})
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+
+    first_poll = {"nosetech/project-a": [_issue("nosetech/project-a", 1, [], [])]}
+    process_new_comments(
+        first_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    second_poll = {
+        "nosetech/project-a": [
+            _issue(
+                "nosetech/project-a",
+                1,
+                [],
+                [{"id": "c1", "body": "対応を進めてください"}],
+            )
+        ]
+    }
+    process_new_comments(
+        second_poll,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+    )
+
+    assert calls == []
+    assert labels.labels_by_issue[1] == set()
+
+
 def test_new_comment_on_closed_issue_does_not_trigger_dispatch() -> None:
     """issue #45の再発防止テスト。
 

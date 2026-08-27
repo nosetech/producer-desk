@@ -15,7 +15,12 @@
 # exportに加えて、展開先ルートに .env（.env.example参照）を作成しておけば
 # このスクリプトが起動時に読み込む。
 #
-#   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）
+#   ORCHESTRATOR_PORT   orchestratorのbindポート（既定: 8787）。dashboardの
+#                       接続先（ORCHESTRATOR_URL）はこのポートに自動追従する
+#   ORCHESTRATOR_URL    dashboardからorchestratorへの接続先URL（既定:
+#                       http://127.0.0.1:${ORCHESTRATOR_PORT}）。dashboardのみ
+#                       別ホスト・別ポートのorchestratorに向けたい場合にのみ
+#                       明示的に指定する
 #   DASHBOARD_PORT      dashboardのbindポート（既定: 3000）
 #   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
 #                       そのLAN IPでbindする。未設定時は全インターフェースで
@@ -85,7 +90,8 @@ fi
 
 : "${ORCHESTRATOR_PORT:=8787}"
 : "${DASHBOARD_PORT:=3000}"
-export ORCHESTRATOR_PORT DASHBOARD_PORT
+: "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
+export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
 
 if [ ! -x "${ORCHESTRATOR_DIR}/.venv/bin/orchestrator" ]; then
     log "orchestrator/.venv が見つからないため作成します..."
@@ -115,6 +121,7 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
     cd "${DASHBOARD_DIR}"
     export NODE_ENV=production
     export PORT="${DASHBOARD_PORT}"
+    export ORCHESTRATOR_URL
     if [ -n "${LAN_IP:-}" ]; then
         export HOSTNAME="${LAN_IP}"
     fi

@@ -34,6 +34,9 @@ MergePrFn = Callable[[str, int], None]
 CloseIssueFn = Callable[[str, int], None]
 GetPrBranchFn = Callable[[str, int], str]
 DeleteBranchFn = Callable[[str, str], None]
+GetCurrentBranchFn = Callable[[str], str]
+FindOpenPrByBranchFn = Callable[[str, str], dict | None]
+AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -177,6 +180,76 @@ def _resolve_pr_number_from_open_prs(
 
     latest_pr = max(matched_prs, key=lambda pr: pr["updatedAt"])
     return latest_pr["number"]
+
+
+def get_current_branch(worktree_path: str, *, run: RunFn = subprocess.run) -> str:
+    """worktreeのカレントブランチ名を取得する。
+
+    `git -C {worktree_path} rev-parse --abbrev-ref HEAD`相当。`resolve_pr_number`が
+    解決できなかった場合のフォールバック（issue #144）で、Agent Runnerセッション
+    終了時点のworktreeのカレントブランチをPR特定の手がかりとして使う。
+    """
+    result = run(
+        ["git", "-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def find_open_pr_by_branch(repo: str, branch: str, *, run: RunFn = subprocess.run) -> dict | None:
+    """指定ブランチをheadとするOPEN PRを検索する（issue #144）。
+
+    `gh pr list --head {branch} --state open --json number,body`相当。1ブランチにつき
+    OPEN PRは高々1件のはずという運用上の前提（`docs/basic-design.md`の開発ワークフロー）
+    のため、0件または複数件ヒットした場合は一意に特定できないとみなし`None`を返す。
+    """
+    result = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "number,body",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    prs = json.loads(result.stdout)
+    if len(prs) != 1:
+        return None
+    return prs[0]
+
+
+def append_pr_issue_reference(
+    repo: str,
+    pr_number: int,
+    issue_number: int,
+    existing_body: str,
+    *,
+    run: RunFn = subprocess.run,
+) -> None:
+    """PR本文の末尾に`Closes #<issue番号>`を追記する（issue #144）。
+
+    既存本文をまるごと上書きするのではなく末尾に追記する。これによりGitHub側の
+    cross-referenceイベントが新たに生成され、以降のポーリングでは通常の
+    `resolve_pr_number`の解決経路（cross-referenceイベント方式）でも解決できるようになる。
+    """
+    new_body = f"{existing_body}\n\nCloses #{issue_number}"
+    run(
+        ["gh", "pr", "edit", str(pr_number), "--repo", repo, "--body", new_body],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
 
 def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:

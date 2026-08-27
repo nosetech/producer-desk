@@ -18,8 +18,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.config import DEFAULT_LOG_RETENTION_DAYS, REPO_ROOT, Project
-from orchestrator.github_client import BOT_COMMENT_MARKER, PostCommentFn
+from orchestrator.github_client import (
+    BOT_COMMENT_MARKER,
+    AppendPrIssueReferenceFn,
+    FindOpenPrByBranchFn,
+    GetCurrentBranchFn,
+    PostCommentFn,
+    ResolvePrNumberFn,
+)
+from orchestrator.github_client import append_pr_issue_reference as gh_append_pr_issue_reference
+from orchestrator.github_client import find_open_pr_by_branch as gh_find_open_pr_by_branch
+from orchestrator.github_client import get_current_branch as gh_get_current_branch
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -95,6 +106,12 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "それらを全て終えるまでこのラベル遷移を実行しないでください。PR作成直後に"
     "即座に実行すると、まだレビュー結果が投稿されていないのにダッシュボードの"
     "レビュー待ち一覧に表示されてしまいます（ラベルの有無だけで判定するため）。\n"
+    "  なお、CI完了待ちのように単に時間経過を要するだけの状況は、それ自体が"
+    "needs-human-decisionへ遷移すべき理由にはなりません。CIが実行中"
+    "（PENDING/IN_PROGRESS）の間はneeds-human-decisionを使わず、"
+    f"`gh pr view <PR番号> --repo {{repo}} --json statusCheckRollup` をBashツールで"
+    "sleepを挟みながら繰り返し確認するポーリングにより、このセッション内で"
+    "status:in-progressのまま待機を継続し、CI完了後に後続作業へ進んでください。\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
@@ -403,6 +420,42 @@ def _extract_summary(payload: dict | None) -> str | None:
     return result if isinstance(result, str) else None
 
 
+@dataclass
+class _RunErrorInfo:
+    is_error: bool
+    api_error_status: int | None
+    result_text: str | None
+    limit_reset_text: str | None
+
+
+# issue #146: 429到達時の異常終了通知（`_build_failure_comment`）でも、ここと
+# 同じ`is_error`/`api_error_status`/`limit_reset_text`の抽出が必要になった。
+# 2箇所で独立に同じ抽出ロジックを書くと、将来どちらか一方だけを変更した際に
+# issueコメントとusage.dbの記録内容が食い違いかねないため、抽出処理自体を
+# 共通化する。
+def _classify_run_error(payload: dict | None) -> _RunErrorInfo:
+    if payload is None:
+        return _RunErrorInfo(
+            is_error=False, api_error_status=None, result_text=None, limit_reset_text=None
+        )
+
+    is_error = bool(payload.get("is_error"))
+    api_error_status = payload.get("api_error_status")
+    result_text = payload.get("result")
+    result_text = result_text if isinstance(result_text, str) else None
+
+    limit_reset_text = None
+    if is_error and api_error_status == 429 and result_text:
+        limit_reset_text = parse_limit_reset_text(result_text) or result_text
+
+    return _RunErrorInfo(
+        is_error=is_error,
+        api_error_status=api_error_status,
+        result_text=result_text,
+        limit_reset_text=limit_reset_text,
+    )
+
+
 # issue #60: `_extract_summary`は`result`フィールドしか使わず、`total_cost_usd`/
 # `usage.*`/`modelUsage.*`を破棄していたため、利用量モニターに実データを
 # 表示できなかった。ここでモデル別の利用量レコードに変換し、usage_store経由で
@@ -414,21 +467,15 @@ def _extract_usage_records(
     if payload is None:
         return []
 
-    is_error = bool(payload.get("is_error"))
-    api_error_status = payload.get("api_error_status")
-    result_text = payload.get("result")
-    result_text = result_text if isinstance(result_text, str) else None
-
-    error_message = result_text if is_error else None
-    limit_reset_text = None
-    if is_error and api_error_status == 429 and result_text:
-        limit_reset_text = parse_limit_reset_text(result_text) or result_text
+    error_info = _classify_run_error(payload)
+    is_error = error_info.is_error
+    error_message = error_info.result_text if is_error else None
 
     common_error_fields = {
         "is_error": is_error,
-        "api_error_status": api_error_status,
+        "api_error_status": error_info.api_error_status,
         "error_message": error_message,
-        "limit_reset_text": limit_reset_text,
+        "limit_reset_text": error_info.limit_reset_text,
     }
 
     model_usage = payload.get("modelUsage")
@@ -482,6 +529,95 @@ def _extract_usage_records(
     return []
 
 
+# issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
+# 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
+# PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
+# 未生成のケースとは異なり、そもそも言及自体が存在しないため`resolve_pr_number`の
+# フォールバック（OPEN PR全文検索）でも解決できない）を検知・補完する仕組みが無かった
+# （issue #136 / PR #143で実際に発生）。issue #78の「ラベル遷移漏れをオーケストレータ側で
+# 決定的に補完する」パターンを踏襲し、status:in-review到達時にPRのissue参照を検証する。
+#
+# この処理自体の失敗（`gh`/`git`呼び出しの一時的な失敗等）は、呼び出し元の
+# `run_agent_runner`が`DispatchQueue._run_worker`（例外を捕捉せず、失敗すると
+# ワーカースレッドが`self._running`から自身を除去できないまま停止し、以後その
+# プロジェクトの全ディスパッチがキューに溜まったまま処理されなくなる）から
+# 呼ばれるため、ここで捕捉せずに伝播させるとオーケストレータ全体を壊しかねない。
+# PR参照の補完はあくまで「できれば直す」ベストエフォートの後始末であり、この
+# 処理の成否がissueの状態遷移（既に`status:in-review`に到達済み）自体を左右する
+# 必要は無いため、失敗時は警告ログに留めて握りつぶす。
+def _ensure_pr_issue_reference(
+    repo: str,
+    issue_number: int,
+    worktree_path: Path,
+    *,
+    resolve_pr_number_fn: ResolvePrNumberFn,
+    get_current_branch_fn: GetCurrentBranchFn,
+    find_open_pr_by_branch_fn: FindOpenPrByBranchFn,
+    append_pr_issue_reference_fn: AppendPrIssueReferenceFn,
+) -> None:
+    """status:in-review到達時、issueに紐づくPRを解決できるか確認し、できなければ補完する。
+
+    `resolve_pr_number_fn`（cross-referenceイベント・OPEN PR全文検索）のどちらでも
+    解決できない場合、Agent Runnerセッション終了時点のworktreeのカレントブランチを
+    headとするOPEN PRを検索し、見つかればPR本文へ`Closes #<issue番号>`を追記する。
+    ブランチからも一意にPRを特定できない場合や`gh`/`git`呼び出し自体が失敗した場合は
+    警告ログに留め、ラベル遷移等の強制操作は行わない（PR自体は既に作成されており
+    issueの状態遷移自体は正しいため）。
+    """
+    try:
+        if resolve_pr_number_fn(repo, issue_number) is not None:
+            return
+
+        branch = get_current_branch_fn(str(worktree_path))
+        pr = find_open_pr_by_branch_fn(repo, branch)
+        if pr is None:
+            logger.warning(
+                "issue %s#%d はstatus:in-reviewだがPRへのissue参照を解決できず、"
+                "worktreeのカレントブランチ(%s)からも一意なOPEN PRを特定できませんでした。",
+                repo,
+                issue_number,
+                branch,
+            )
+            return
+
+        existing_body = pr.get("body") or ""
+        if f"Closes #{issue_number}" in existing_body:
+            # 前回の呼び出しで既に追記済みだが、GitHub側のcross-reference
+            # イベント生成がまだ反映されておらず`resolve_pr_number_fn`が
+            # 追いついていないだけのケース。二重追記を避けるため何もしない。
+            return
+
+        append_pr_issue_reference_fn(repo, pr["number"], issue_number, existing_body)
+    except subprocess.CalledProcessError:
+        logger.warning(
+            "issue %s#%d のPR参照補完処理中にghまたはgitコマンドが失敗しました。",
+            repo,
+            issue_number,
+            exc_info=True,
+        )
+
+
+# issue #146: プロセスが異常終了（returncode != 0）した際、原因を問わず一律で
+# 「ログを見てください」という文面を投稿していた。この手の異常終了は大抵の場合
+# APIリミット到達（429）が原因であり、`_extract_usage_records`（issue #60）が
+# 既に検知している`is_error`/`api_error_status`をここでも参照し、429の場合は
+# ログパスの代わりにリミット到達である旨と解除予定時刻を伝える。429以外の
+# 異常終了（予期しない例外等）ではデバッグに必要なため従来通りログパスを含める。
+def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: Path) -> str:
+    error_info = _classify_run_error(payload)
+
+    # `result`が空/非文字列で解除予定時刻等の情報が一切得られない場合、
+    # ログパスを省いた文面では人間が調査する手がかりが無くなってしまうため、
+    # 429以外の異常終了と同じ従来通りのログパス付きメッセージにフォールバックする。
+    if error_info.is_error and error_info.api_error_status == 429 and error_info.limit_reset_text:
+        return (
+            ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
+            f"（{error_info.limit_reset_text}）"
+        )
+
+    return f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。ログ: {log_path}"
+
+
 def run_agent_runner(
     project: Project,
     issue_number: int,
@@ -499,6 +635,10 @@ def run_agent_runner(
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+    resolve_pr_number_fn: ResolvePrNumberFn = gh_resolve_pr_number,
+    get_current_branch_fn: GetCurrentBranchFn = gh_get_current_branch,
+    find_open_pr_by_branch_fn: FindOpenPrByBranchFn = gh_find_open_pr_by_branch,
+    append_pr_issue_reference_fn: AppendPrIssueReferenceFn = gh_append_pr_issue_reference,
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
@@ -602,11 +742,18 @@ def run_agent_runner(
                 add_label=add_label,
                 remove_label=remove_label,
             )
+        elif STATUS_IN_REVIEW in current_labels:
+            _ensure_pr_issue_reference(
+                project.repo,
+                issue_number,
+                worktree_path,
+                resolve_pr_number_fn=resolve_pr_number_fn,
+                get_current_branch_fn=get_current_branch_fn,
+                find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+                append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+            )
     else:
-        error_comment = (
-            f":warning: Agent Runnerが異常終了しました"
-            f"（終了コード: {returncode}）。ログ: {log_path}"
-        )
+        error_comment = _build_failure_comment(payload, returncode=returncode, log_path=log_path)
         post_comment(project.repo, issue_number, error_comment)
         transition_label(
             project.repo,

@@ -8,10 +8,14 @@ issue #71: 日次集計の「本日」判定・日付グルーピングがJST（
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
+
 from orchestrator.usage_store import (
+    SCHEMA_VERSION,
     DailyModelUsage,
     UsageRecord,
     current_limit_status,
@@ -294,3 +298,83 @@ def test_current_limit_status_clears_after_subsequent_successful_run(tmp_path: P
     )
 
     assert current_limit_status(db_path=db_path) is None
+
+
+def test_record_usage_sets_schema_version_on_new_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "usage.db"
+
+    record_usage(
+        [
+            UsageRecord(
+                repo="nosetech/project-a",
+                issue_number=1,
+                model="m",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        ],
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_record_usage_upgrades_legacy_db_with_unset_schema_version(tmp_path: Path) -> None:
+    """スキーマバージョン管理導入（issue #155）より前に作成されたDBを模す。
+
+    テーブル定義そのものに変更は無いため、user_versionが未設定(0)のまま
+    次回アクセス時にSCHEMA_VERSIONへ引き上げられ、以後は通常通り読み書きできる。
+    """
+    db_path = tmp_path / "usage.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE usage_records ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at TEXT NOT NULL, "
+            "repo TEXT NOT NULL, issue_number INTEGER NOT NULL, model TEXT NOT NULL, "
+            "input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, "
+            "cache_creation_input_tokens INTEGER NOT NULL, "
+            "cache_read_input_tokens INTEGER NOT NULL, "
+            "total_cost_usd REAL, is_error INTEGER NOT NULL, api_error_status INTEGER, "
+            "error_message TEXT, limit_reset_text TEXT, duration_seconds REAL)"
+        )
+
+    record_usage(
+        [
+            UsageRecord(
+                repo="nosetech/project-a",
+                issue_number=1,
+                model="m",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        ],
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert daily_model_usage(db_path=db_path, today=date(2026, 8, 9))
+
+
+def test_record_usage_raises_when_schema_version_is_incompatible(tmp_path: Path) -> None:
+    db_path = tmp_path / "usage.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+
+    with pytest.raises(RuntimeError, match="スキーマバージョン"):
+        record_usage(
+            [
+                UsageRecord(
+                    repo="nosetech/project-a",
+                    issue_number=1,
+                    model="m",
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            ],
+            db_path=db_path,
+            now=FIXED_NOW,
+        )
