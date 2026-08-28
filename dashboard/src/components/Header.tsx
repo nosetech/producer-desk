@@ -1,6 +1,7 @@
 import { formatRelativeTime } from "@/lib/time";
 import ThemeToggle from "./ThemeToggle";
 import styles from "./Header.module.css";
+import packageJson from "../../package.json";
 
 export default function Header({ lastUpdated }: { lastUpdated: Date | null }) {
   return (
@@ -45,7 +46,10 @@ export default function Header({ lastUpdated }: { lastUpdated: Date | null }) {
         </svg>
       </div>
       <div className={styles.titleBlock}>
-        <div className={styles.title}>producer-desk</div>
+        <div className={styles.titleRow}>
+          <div className={styles.title}>producer-desk</div>
+          <span className={styles.version}>v{packageJson.version}</span>
+        </div>
         <div className={styles.subtitle}>自走型AI開発オーケストレーション</div>
       </div>
       <div className={styles.meta}>
