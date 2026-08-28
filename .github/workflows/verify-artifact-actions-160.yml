@@ -1,0 +1,24 @@
+name: verify-artifact-actions-160
+
+on:
+  push:
+    branches:
+      - feature/160-release-workflow-artifact-actions
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "hello" > file.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verify-160-artifact
+          path: file.txt
+
+  download:
+    needs: upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: verify-160-artifact, path: downloaded }
+      - run: cat downloaded/file.txt

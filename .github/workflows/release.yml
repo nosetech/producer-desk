@@ -61,7 +61,7 @@ jobs:
           cp -r .next/standalone/. pkg/dashboard/
           cp -r .next/static pkg/dashboard/.next/static
           [ -d public ] && cp -r public pkg/dashboard/public
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dashboard-standalone
           path: dashboard/pkg/dashboard
@@ -89,7 +89,7 @@ jobs:
       - run: pytest
       - run: pip install build
       - run: python -m build --wheel
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: orchestrator-wheel
           path: orchestrator/dist/*.whl
@@ -99,9 +99,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with: { name: dashboard-standalone, path: pkg/dashboard }
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with: { name: orchestrator-wheel, path: pkg/orchestrator/dist }
       - name: assemble tarball
         env:
