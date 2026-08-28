@@ -255,6 +255,31 @@ AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
 )
 
 
+# issue #164: `run_agent_runner`はセッション終了時、`claude -p`の最終応答を
+# 無編集で「Agent Runner実行結果:」としてissueコメント投稿する（本モジュール
+# 後方の`post_comment(..., f"Agent Runner実行結果:\n{summary}")`）。この投稿
+# 経路の存在自体はissue #84対応のAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONで
+# 既に伝えているが、「その最終応答がそのまま人間向け報告になる」ことを踏まえて
+# 内容を書くようには指示していなかったため、Monitor/ScheduleWakeupといった
+# 内部ツール名やポーリング方式を書き連ねただけの、人間が読んでも次に何を
+# すべきか分からない文面が投稿されていた（issue #161のコメントで発生。
+# PR #163作成・CI成功済みだったにもかかわらず、コメントからはレビュー待ちで
+# あることが読み取れなかった）。「最終応答が無編集で投稿される」という説明
+# 自体はAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONに既にあるため重複させず、
+# ここでは「人間向け報告として何を書くべきか」の指示のみを追加する。
+AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
+    "前述の通りセッション終了時の最終応答はissueコメントとして人間に投稿され"
+    "ます。人間向けの状況報告であることを踏まえ、次の点を意識して書いて"
+    "ください。\n"
+    "- needs-human-decisionラベルを付与した場合は、最終応答に"
+    "「何について・なぜ人間の判断が必要か」と「人間が具体的に何をすればよいか」"
+    "（例:「PR #163をレビューし、問題なければマージしてください」"
+    "「A案/B案のどちらで進めるか選んでください」）を明記してください。\n"
+    "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
+    "作業手順上の実装詳細は人間向け報告に含めないでください。"
+)
+
+
 def build_claude_command(
     message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
 ) -> list[str]:
@@ -272,6 +297,8 @@ def build_claude_command(
         + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION.format(repo=repo, issue_number=issue_number)
         + "\n\n"
         + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
+        + "\n\n"
+        + AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION
     )
     command = [
         "claude",
