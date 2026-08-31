@@ -250,6 +250,25 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - `--format json`を付けると、Ollama REST APIに構造化JSON出力を要求する（コードレビュー支援等でJSON形式のレビュー結果を受け取りたい場合に使う。任意）。
 - Agent Runner本番経路では`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`が`--record --repo {repo} --issue-number {issue_number}`付きでの呼び出しを指示する（`orchestrator/orchestrator/agent_runner.py`）。オーケストレータのポーリングループ自体からは呼び出さない（呼び出すのはあくまでAgent Runner=Claude Code CLIプロセス自身）。
 
+### ローカルLLM活用状況の可視化（issue #86）
+
+`ollama-bench --record`はローカルLLMの生成呼び出し自体の実測値（トークン数・処理時間）を記録するが、これはAgent Runnerが実際にローカルLLMを呼び出した場合にしか記録されない。「呼び出すかどうかをAgent Runnerが判断した結果」そのもの（使った／使わなかった、使わなかった場合はなぜか）は、issueコメントからもDBからも別途観測できるようにする。
+
+- **報告ルール**: `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`は、セッション終了時の最終応答（3-3の通りissueコメントとして投稿される）に、以下の両方を含めるようAgent Runnerへ指示する。
+  - 人間向け: 「## ローカルLLM活用」という見出しの下に、使用した場合はタスク種別・モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載する。
+  - 機械可読: 同見出しの直後にHTMLコメントとして次の形式のマーカーを埋め込む（前後を空行で区切る。[2-3共通仕様](#共通仕様)の`BOT_COMMENT_MARKER`と同様、レンダリングされない）。
+
+    ```
+    <!-- producer-desk:local-llm-usage
+    {"used": true, "model": "deepseek-coder-v2:16b", "task_type": "code_review_support", "note": "..."}
+    -->
+    ```
+
+    使用しなかった場合は`{"used": false, "reason": "..."}`。
+- **オーケストレータ側のパース**: `agent_runner.py`の`_extract_local_llm_usage_report`が、最終応答（`result`）から上記マーカーを正規表現で抽出しJSONとしてパースする。`_extract_usage_records`（[2-2](#2-2-データ取得仕様ポーリング)）と並ぶ形で`run_agent_runner`から呼び出す。マーカーが存在しない・JSONとしてパースできない場合は例外を送出せず記録をスキップする。この仕組みはAIが指示通りマーカーを埋め込むことに依存しており、issue #78・#82・#84で確認された「AIがsystem prompt指示の実行を忘れる」リスクと同種の限界がある。MCPサーバー側でのサーバーサイドロギング等による完全な保証は将来課題とし、まずは自己申告ベースでの可視化から始める。
+- **DBスキーマ**: `usage_store.py`に`usage_records`とは別テーブル`local_llm_usage_reports`（列: `id`・`recorded_at`・`repo`・`issue_number`・`used`・`model`（NULL可）・`task_type`（NULL可）・`note_or_reason`）を追加し、`record_local_llm_usage_report(...)`で書き込む。トークン数の実測ではなく「使ったかどうか」の自己申告という性質が`usage_records`と異なるため、既存テーブルへの列追加ではなく別テーブルとした（この変更で`config/usage.db`の`SCHEMA_VERSION`を2へ更新。`dist/scripts/migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`も同期させること）。
+- **振り返り用の集計**: `local_llm_usage_summary(days=...)`が、期間内の使用有無・モデル・タスク種別別の件数を集計して返す。ダッシュボードへの表示は本issueのスコープ外とし、まずはDBで参照可能にすることを優先する。
+
 ## 5. 通知・承認フロー詳細設計
 
 ### 5-1. Slack設定手順

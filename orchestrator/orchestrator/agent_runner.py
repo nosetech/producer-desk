@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,9 +47,14 @@ from orchestrator.labels import (
 from orchestrator.session_store import get_session_id, persist_session_id
 from orchestrator.timezone import JST
 from orchestrator.usage_store import (
+    LocalLlmUsageReport,
+    RecordLocalLlmUsageReportFn,
     RecordUsageFn,
     UsageRecord,
     parse_limit_reset_text,
+)
+from orchestrator.usage_store import (
+    record_local_llm_usage_report as store_record_local_llm_usage_report,
 )
 from orchestrator.usage_store import (
     record_usage as store_record_usage,
@@ -174,6 +180,18 @@ AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
 # 子プロセスの環境変数`OLLAMA_BENCH_PATH`に解決済みパスを設定し（`popen`の`env=`
 # 参照）、Agent Runnerには短く安定した`$OLLAMA_BENCH_PATH`という参照だけを
 # 覚えさせる。
+#
+# issue #86: 上記の指示は「呼び出すかどうか・どのモデルを使うか」の判断を
+# Agent Runnerの裁量に委ねるのみで、判断結果をどこかに報告する指示が無かった
+# ため、実際にローカルLLMが活用されているかどうかがissueコメントからもDBからも
+# 一切観測できなかった。判断も報告も両方AI自己申告に依存する以上、issue #78・
+# #82・#84と同種の「AIがsystem prompt指示の実行を忘れる」リスクは残るが、まずは
+# 自己申告ベースで可視化する。人間向け（コメント本文にそのまま表示される自然文）
+# と機械可読（DBパース用のHTMLコメントマーカー、`agent_runner._extract_
+# local_llm_usage_report`が正規表現で抽出しJSONとしてパースする）の両方を
+# 最終応答に含めるよう指示する。
+LOCAL_LLM_USAGE_MARKER_PREFIX = "<!-- producer-desk:local-llm-usage"
+
 AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
     "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
@@ -201,7 +219,23 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
     "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
     "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
-    "docs/requirements.md 2-5参照）。"
+    "docs/requirements.md 2-5参照）。\n"
+    "このセッションでローカルLLMを使ったか使わなかったかは、セッション終了時の"
+    "最終応答（issueコメントとして投稿されます）に必ず記載してください。\n"
+    "- 人間向け: 「## ローカルLLM活用」という見出しで、使用した場合はタスク種別・"
+    "モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載してください。\n"
+    "- 機械可読: 上記の見出しの直後に、以下の形式でHTMLコメントとして埋め込んで"
+    "ください（本文とマーカーの間は空行で区切る）。レンダリングされないため、"
+    "本文の内容と重複しても構いません。\n"
+    "  使用した場合:\n"
+    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+    '  {{"used": true, "model": "deepseek-coder-v2:16b", '
+    '"task_type": "code_review_support", "note": "..."}}\n'
+    "  -->\n"
+    "  使用しなかった場合:\n"
+    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+    '  {{"used": false, "reason": "..."}}\n'
+    "  -->"
 )
 
 
@@ -556,6 +590,51 @@ def _extract_usage_records(
     return []
 
 
+_LOCAL_LLM_USAGE_MARKER_PATTERN = re.compile(
+    re.escape(LOCAL_LLM_USAGE_MARKER_PREFIX) + r"\s*(.*?)-->", re.DOTALL
+)
+
+
+# issue #86: 最終応答（`result`）に埋め込まれた機械可読マーカーからローカルLLM
+# 活用状況の自己申告を抽出する。マーカー自体がAGENT_RUNNER_LOCAL_LLM_INSTRUCTION
+# による自己申告に依存するため、issue #78・#82・#84と同種の「AIが指示通りに
+# 出力しない」リスクがある。マーカーが存在しない・JSONとしてパースできない場合は
+# 例外を送出せず記録をスキップする（この機能の失敗でAgent Runnerの正常終了
+# レスポンス自体を壊さないようにする）。
+def _extract_local_llm_usage_report(
+    payload: dict | None, *, repo: str, issue_number: int
+) -> LocalLlmUsageReport | None:
+    summary = _extract_summary(payload)
+    if not summary:
+        return None
+
+    match = _LOCAL_LLM_USAGE_MARKER_PATTERN.search(summary)
+    if match is None:
+        return None
+
+    try:
+        data = json.loads(match.group(1).strip())
+    except json.JSONDecodeError:
+        logger.warning(
+            "issue %s#%d のローカルLLM活用マーカーをJSONとしてパースできませんでした。",
+            repo,
+            issue_number,
+        )
+        return None
+
+    if not isinstance(data, dict) or "used" not in data:
+        return None
+
+    return LocalLlmUsageReport(
+        repo=repo,
+        issue_number=issue_number,
+        used=bool(data.get("used")),
+        model=data.get("model"),
+        task_type=data.get("task_type"),
+        note_or_reason=data.get("note") or data.get("reason"),
+    )
+
+
 # issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
 # 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
 # PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
@@ -659,6 +738,9 @@ def run_agent_runner(
     get_session_id_fn: GetSessionIdFn = get_session_id,
     persist_session_id_fn: PersistSessionIdFn = persist_session_id,
     record_usage_fn: RecordUsageFn = store_record_usage,
+    record_local_llm_usage_report_fn: RecordLocalLlmUsageReportFn = (
+        store_record_local_llm_usage_report
+    ),
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
@@ -743,6 +825,12 @@ def run_agent_runner(
     usage_records = _extract_usage_records(payload, repo=project.repo, issue_number=issue_number)
     if usage_records:
         record_usage_fn(usage_records, now=now)
+
+    local_llm_usage_report = _extract_local_llm_usage_report(
+        payload, repo=project.repo, issue_number=issue_number
+    )
+    if local_llm_usage_report is not None:
+        record_local_llm_usage_report_fn(local_llm_usage_report, now=now)
 
     if success:
         summary = (

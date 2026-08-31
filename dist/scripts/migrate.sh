@@ -52,7 +52,8 @@ NEW_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # orchestrator/orchestrator/usage_store.py の SCHEMA_VERSION と同じ値を保つこと。
 # 一致しない値のままリリースすると、実際にはコピー不可能なスキーマ変更後の
 # usage.dbを誤って「コピー可能」と判定してしまう。
-EXPECTED_USAGE_DB_SCHEMA_VERSION=1
+# issue #86でlocal_llm_usage_reportsテーブルを追加したためversion 2へ更新。
+EXPECTED_USAGE_DB_SCHEMA_VERSION=2
 
 log() {
     echo "[migrate] $*"

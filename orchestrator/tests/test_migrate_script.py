@@ -37,7 +37,10 @@ def _make_old_root(tmp_path: Path) -> Path:
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE usage_records (id INTEGER PRIMARY KEY, repo TEXT)")
         conn.execute("INSERT INTO usage_records (repo) VALUES ('nosetech/project-a')")
-        conn.execute("PRAGMA user_version = 1")
+        # dist/scripts/migrate.shのEXPECTED_USAGE_DB_SCHEMA_VERSION
+        # （orchestrator/orchestrator/usage_store.pyのSCHEMA_VERSIONと同じ値）と
+        # 一致させる。
+        conn.execute("PRAGMA user_version = 2")
 
     logs_dir = old_root / "logs" / "nosetech-project-a"
     logs_dir.mkdir(parents=True)

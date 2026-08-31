@@ -17,10 +17,14 @@ import pytest
 from orchestrator.usage_store import (
     SCHEMA_VERSION,
     DailyModelUsage,
+    LocalLlmUsageReport,
+    LocalLlmUsageSummary,
     UsageRecord,
     current_limit_status,
     daily_model_usage,
+    local_llm_usage_summary,
     parse_limit_reset_text,
+    record_local_llm_usage_report,
     record_usage,
 )
 
@@ -378,3 +382,86 @@ def test_record_usage_raises_when_schema_version_is_incompatible(tmp_path: Path)
             db_path=db_path,
             now=FIXED_NOW,
         )
+
+
+def test_record_local_llm_usage_report_and_summary_groups_by_used_model_task_type(
+    tmp_path: Path,
+) -> None:
+    """issue #86: 使用有無・モデル・タスク種別ごとの回数集計を検証する。"""
+    db_path = tmp_path / "usage.db"
+    record_local_llm_usage_report(
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=1,
+            used=True,
+            model="deepseek-coder-v2:16b",
+            task_type="code_review_support",
+            note_or_reason="PRのレビュー補助に使用",
+        ),
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+    record_local_llm_usage_report(
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=2,
+            used=True,
+            model="deepseek-coder-v2:16b",
+            task_type="code_review_support",
+            note_or_reason="バグ調査の下調べに使用",
+        ),
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+    record_local_llm_usage_report(
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=3,
+            used=False,
+            note_or_reason="対象タスクが発生しなかった",
+        ),
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+
+    result = local_llm_usage_summary(db_path=db_path, today=FIXED_NOW().date())
+
+    assert result == [
+        LocalLlmUsageSummary(
+            used=True, model="deepseek-coder-v2:16b", task_type="code_review_support", count=2
+        ),
+        LocalLlmUsageSummary(used=False, model=None, task_type=None, count=1),
+    ]
+
+
+def test_local_llm_usage_summary_excludes_records_outside_window(tmp_path: Path) -> None:
+    db_path = tmp_path / "usage.db"
+    old_timestamp = "2026-08-01T00:00:00+00:00"
+    record_local_llm_usage_report(
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=1,
+            used=True,
+            model="gemma2",
+            task_type="japanese_doc_generation",
+            recorded_at=old_timestamp,
+        ),
+        db_path=db_path,
+    )
+
+    result = local_llm_usage_summary(db_path=db_path, days=7, today=FIXED_NOW().date())
+
+    assert result == []
+
+
+def test_record_local_llm_usage_report_sets_schema_version_on_new_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "usage.db"
+
+    record_local_llm_usage_report(
+        LocalLlmUsageReport(repo="nosetech/project-a", issue_number=1, used=False),
+        db_path=db_path,
+        now=FIXED_NOW,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
