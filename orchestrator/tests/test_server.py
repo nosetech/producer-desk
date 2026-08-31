@@ -365,6 +365,68 @@ def test_instruct_progress_reports_stage_while_in_flight_and_clears_after() -> N
         server.shutdown()
 
 
+def test_instruct_progress_stays_available_while_refresh_store_runs() -> None:
+    """`_refresh_store`（gh呼び出しを伴い数百ms〜数秒かかりうる）の実行中は、まだ
+    クライアントへ応答していないため`/api/progress`が最後の段階を返し続ける必要が
+    ある。以前は`handle_instruct`完了直後にprogress_storeをクリアしていたため、
+    この間のポーリングが`stage: null`を観測し、段階表示が先頭の段階へ巻き戻って
+    しまう不具合があった（ユーザー報告: 「worktreeを同期」完了後に「PRをマージ」が
+    再度アクティブ表示される）。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_TODO}})
+    comments = FakeComments()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+    release_refresh = threading.Event()
+    refresh_started = threading.Event()
+
+    def blocking_list_issues(repo: str) -> list[IssueSummary]:
+        refresh_started.set()
+        release_refresh.wait(timeout=2)
+        return []
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=blocking_list_issues,
+    )
+    try:
+        responses: dict[str, tuple[int, dict]] = {}
+
+        def do_post() -> None:
+            responses["result"] = _post(
+                server,
+                "/api/projects/nosetech/project-a/issues/1/instruct",
+                {"action": "instruct", "message": "進めて", "progressId": "req-refresh"},
+            )
+
+        poster = threading.Thread(target=do_post)
+        poster.start()
+        try:
+            assert refresh_started.wait(timeout=2), "_refresh_storeが開始されない"
+            # handle_instruct自体は完了し最終段階(dispatch)まで記録済みだが、
+            # _refresh_store実行中でまだ応答していないため段階は保持され続けるはず。
+            _, body = _get(server, "/api/progress/req-refresh")
+            assert body["stage"] == "dispatch"
+        finally:
+            release_refresh.set()
+            poster.join(timeout=2)
+
+        status, _ = responses["result"]
+        assert status == 200
+        assert event.wait(timeout=2)
+
+        _, body = _get(server, "/api/progress/req-refresh")
+        assert body == {"stage": None}
+    finally:
+        server.shutdown()
+
+
 def test_create_issue_progress_reports_stage_while_in_flight_and_clears_after() -> None:
     store = StateStore()
     labels = FakeLabels()
