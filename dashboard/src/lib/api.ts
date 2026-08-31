@@ -5,6 +5,7 @@ import {
   type Dispatch,
   type InstructAction,
   type InstructResult,
+  type ProgressResponse,
   type ProjectsResponse,
   type UsageResponse,
 } from "./types";
@@ -57,11 +58,12 @@ export function postInstruct(
   issueNumber: number,
   action: InstructAction,
   message?: string,
+  progressId?: string,
 ): Promise<InstructResult> {
   return fetch(`${repoPath(repo)}/issues/${issueNumber}/instruct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, message }),
+    body: JSON.stringify({ action, message, progressId }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
 }
 
@@ -70,10 +72,20 @@ export function postCreateIssue(
   title: string,
   prompt: string,
   dispatch: Dispatch,
+  progressId?: string,
 ): Promise<CreateIssueResult> {
   return fetch(`${repoPath(repo)}/issues`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, prompt, dispatch }),
+    body: JSON.stringify({ title, prompt, dispatch, progressId }),
   }).then((res) => parseJsonOrThrow<CreateIssueResult>(res));
+}
+
+// 指示送信中の実際の進捗（orchestrator/orchestrator/server.py の ProgressStore）を
+// 取得する。ComposerBarが送信中に短間隔でポーリングし、擬似進行ではなく実際に
+// 完了したステップを表示するために使う。
+export function fetchProgress(progressId: string): Promise<ProgressResponse> {
+  return fetch(`/api/progress/${progressId}`, { cache: "no-store" }).then(
+    (res) => parseJsonOrThrow<ProgressResponse>(res),
+  );
 }

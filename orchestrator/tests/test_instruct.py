@@ -620,6 +620,74 @@ def test_handle_create_issue_queued_does_not_dispatch() -> None:
     assert calls == []
 
 
+def test_handle_instruct_reports_on_stage_in_order() -> None:
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+    stages: list[str] = []
+
+    handle_instruct(
+        "nosetech/project-a",
+        1,
+        "instruct",
+        "進めてください",
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        on_stage=stages.append,
+    )
+
+    _wait_for(calls, 1)
+    assert stages == ["comment", "label", "dispatch"]
+
+
+def test_handle_create_issue_immediate_reports_on_stage_in_order() -> None:
+    labels = FakeLabels(set())
+    issue_creator = FakeIssueCreator(number=99)
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+    stages: list[str] = []
+
+    handle_create_issue(
+        "nosetech/project-a",
+        "新機能",
+        "プロンプト本文",
+        "immediate",
+        create_issue=issue_creator.create_issue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+        on_stage=stages.append,
+    )
+
+    _wait_for(calls, 1)
+    assert stages == ["issue", "label", "dispatch"]
+
+
+def test_handle_create_issue_queued_reports_on_stage_without_dispatch() -> None:
+    labels = FakeLabels(set())
+    issue_creator = FakeIssueCreator(number=99)
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    stages: list[str] = []
+
+    handle_create_issue(
+        "nosetech/project-a",
+        "新機能",
+        "プロンプト本文",
+        "queued",
+        create_issue=issue_creator.create_issue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        dispatch_queue=dispatch_queue,
+        on_stage=stages.append,
+    )
+
+    assert stages == ["issue", "label"]
+
+
 def test_handle_create_issue_invalid_dispatch_raises() -> None:
     labels = FakeLabels(set())
     issue_creator = FakeIssueCreator(number=99)

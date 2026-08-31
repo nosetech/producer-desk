@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -47,6 +48,17 @@ logger = logging.getLogger(__name__)
 Action = Literal["approve", "instruct"]
 Dispatch = Literal["immediate", "queued"]
 
+# ダッシュボードの段階表示（ComposerBar）向けに、処理の進み具合を1ステップ完了する
+# たびに通知するコールバック。`stage`は"comment"/"label"/"issue"/"dispatch"のいずれか
+# （server.pyのProgressStoreがこれをそのままポーリングレスポンスに詰める）。
+# comment_watcher.py等、ダッシュボード操作を経由しない呼び出し元ではデフォルトの
+# no-opのまま使われる。
+OnStageFn = Callable[[str], None]
+
+
+def _noop_on_stage(stage: str) -> None:
+    pass
+
 
 class ReviewMergeError(RuntimeError):
     """レビュー承認時、対象issueに紐づくPRが見つからない場合に送出する（issue #58）。"""
@@ -75,6 +87,7 @@ def apply_instruction(
     add_label: AddLabelFn,
     remove_label: RemoveLabelFn,
     dispatch_queue: DispatchQueue,
+    on_stage: OnStageFn = _noop_on_stage,
 ) -> str:
     """自由記述指示のラベル遷移ルールに従いラベルを更新し、ディスパッチキューに投入する。
 
@@ -92,7 +105,9 @@ def apply_instruction(
         add_label=add_label,
         remove_label=remove_label,
     )
+    on_stage("label")
     dispatch_queue.enqueue(repo, issue_number, message)
+    on_stage("dispatch")
     return new_label
 
 
@@ -114,6 +129,7 @@ def handle_instruct(
     delete_branch: DeleteBranchFn = gh_delete_branch,
     worktree_path: str | None = None,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
+    on_stage: OnStageFn = _noop_on_stage,
 ) -> InstructResult:
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
@@ -179,6 +195,7 @@ def handle_instruct(
         raise ValueError(f"不明なaction: {action}")
 
     post_comment(repo, issue_number, comment)
+    on_stage("comment")
 
     label = apply_instruction(
         repo,
@@ -188,6 +205,7 @@ def handle_instruct(
         add_label=add_label,
         remove_label=remove_label,
         dispatch_queue=dispatch_queue,
+        on_stage=on_stage,
     )
     return InstructResult(action=action, comment=comment, label=label, dispatched=True)
 
@@ -203,12 +221,15 @@ def handle_create_issue(
     add_label: AddLabelFn,
     remove_label: RemoveLabelFn,
     dispatch_queue: DispatchQueue,
+    on_stage: OnStageFn = _noop_on_stage,
 ) -> CreateIssueResult:
     if dispatch not in ("immediate", "queued"):
         raise ValueError(f"不明なdispatch: {dispatch}")
 
     issue_number = create_issue(repo, title, prompt)
+    on_stage("issue")
     add_label(repo, issue_number, STATUS_TODO)
+    on_stage("label")
 
     if dispatch == "queued":
         return CreateIssueResult(issue_number=issue_number, dispatched=False)
@@ -222,4 +243,5 @@ def handle_create_issue(
         remove_label=remove_label,
     )
     dispatch_queue.enqueue(repo, issue_number, prompt)
+    on_stage("dispatch")
     return CreateIssueResult(issue_number=issue_number, dispatched=True)
