@@ -1,0 +1,128 @@
+/* Claude Design SendingSpinner.dc.html の「1C 段階リング（推奨）」案、および
+   feature/issue-167-approve-progress.dc.html（承認ダイアログ向け拡張）。
+   om-spin/om-dashに相当。 */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dash {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -226;
+  }
+}
+
+@keyframes stageFade {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.spinnerSvg {
+  flex-shrink: 0;
+  animation: spin 1.5s linear infinite;
+}
+
+.spinnerTrack {
+  opacity: 0.32;
+}
+
+.spinnerArc {
+  animation: dash 1.5s linear infinite;
+}
+
+.stagePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 12px 13px;
+  animation: stageFade 0.2s ease;
+}
+
+.stageRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stageDot {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stageActiveSpinner {
+  animation: spin 1.5s linear infinite;
+  color: var(--accent-green);
+}
+
+.stageDotPending {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-tertiary);
+}
+
+.stageLabel {
+  font-size: 12.5px;
+}
+
+.stageLabelActive {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stageLabelDone {
+  color: var(--text-secondary);
+}
+
+.stageLabelPending {
+  color: var(--text-tertiary);
+}
+
+.stageLabelSkipped {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-tertiary);
+}
+
+.stageLabelFailed {
+  color: var(--warn);
+}
+
+.stageLine {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.stageNote {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.stageNoteFailed {
+  color: var(--warn);
+}
+
+.stageRowSkipped {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}

@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { postCreateIssue, postInstruct } from "@/lib/api";
 import { shortRepoName } from "@/lib/projectStatus";
+import {
+  resolveStages,
+  useStageProgress,
+  type StageDef,
+} from "@/lib/stageProgress";
 import type { Dispatch, InstructAction } from "@/lib/types";
+import { SpinnerIcon, StageList } from "./StageProgress";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -13,6 +19,24 @@ export interface IssueRef {
 }
 
 export type ComposerMode = "reply" | "new";
+
+// 実際の処理順（orchestrator/orchestrator/instruct.py の handle_instruct /
+// handle_create_issue）に合わせた段階。表示中の段階は擬似進行ではなく、
+// サーバがon_stageコールバックで実際に完了したタイミングをポーリングで反映する。
+const REPLY_STAGES: StageDef[] = [
+  { key: "comment", label: "コメントを投稿", note: "POST comment" },
+  { key: "label", label: "ラベルを更新", note: "label" },
+  { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
+];
+const CREATE_IMMEDIATE_STAGES: StageDef[] = [
+  { key: "issue", label: "issueを作成", note: "POST /issues" },
+  { key: "label", label: "ラベルを付与", note: "label" },
+  { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
+];
+const CREATE_QUEUED_STAGES: StageDef[] = [
+  { key: "issue", label: "issueを作成", note: "POST /issues" },
+  { key: "label", label: "todoとして登録", note: "label" },
+];
 
 export default function ComposerBar({
   open,
@@ -44,9 +68,22 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeStages, setActiveStages] = useState<StageDef[] | null>(null);
+  const [activeDispatch, setActiveDispatch] = useState<Dispatch | null>(null);
+  const {
+    polledStage,
+    start: startProgress,
+    reset: resetProgress,
+  } = useStageProgress();
 
   const newRepo = newTaskRepo || repos[0] || "";
   const isReply = mode === "reply";
+
+  function endStages() {
+    resetProgress();
+    setActiveStages(null);
+    setActiveDispatch(null);
+  }
 
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
@@ -64,10 +101,12 @@ export default function ComposerBar({
     if (!message.trim()) return;
     setSubmitting(true);
     setError(null);
+    setActiveStages(REPLY_STAGES);
+    const progressId = startProgress();
     const action: InstructAction = "instruct";
     const target = replyTarget;
     onReplySubmittingChange(target);
-    postInstruct(target.repo, target.number, action, message.trim())
+    postInstruct(target.repo, target.number, action, message.trim(), progressId)
       .then(() => {
         onClearReplyTarget();
         onClose();
@@ -79,6 +118,7 @@ export default function ComposerBar({
       .finally(() => {
         setSubmitting(false);
         onReplySubmittingChange(null);
+        endStages();
       });
   }
 
@@ -86,7 +126,12 @@ export default function ComposerBar({
     if (!newRepo || !title.trim() || !prompt.trim()) return;
     setSubmitting(true);
     setError(null);
-    postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch)
+    setActiveDispatch(dispatch);
+    setActiveStages(
+      dispatch === "immediate" ? CREATE_IMMEDIATE_STAGES : CREATE_QUEUED_STAGES,
+    );
+    const progressId = startProgress();
+    postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch, progressId)
       .then(() => {
         onClose();
         return onSubmitted();
@@ -94,8 +139,15 @@ export default function ComposerBar({
       .catch((e) =>
         setError(e instanceof Error ? e.message : "作成に失敗しました"),
       )
-      .finally(() => setSubmitting(false));
+      .finally(() => {
+        setSubmitting(false);
+        endStages();
+      });
   }
+
+  const resolvedStages = activeStages
+    ? resolveStages(activeStages, polledStage, "busy")
+    : null;
 
   if (!open) {
     return (
@@ -230,22 +282,29 @@ export default function ComposerBar({
                 onClick={handleSendReply}
                 disabled={submitting || !replyTarget || !message.trim()}
               >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M22 2 11 13" />
-                  <path d="M22 2 15 22l-4-9-9-4Z" />
-                </svg>
-                指示を送信
+                {submitting ? (
+                  <SpinnerIcon />
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M22 2 11 13" />
+                    <path d="M22 2 15 22l-4-9-9-4Z" />
+                  </svg>
+                )}
+                {submitting ? "送信中…" : "指示を送信"}
               </button>
             </div>
+            {submitting && resolvedStages && (
+              <StageList stages={resolvedStages} />
+            )}
           </div>
         ) : (
           <div className={styles.body}>
@@ -292,19 +351,25 @@ export default function ComposerBar({
                   submitting || !newRepo || !title.trim() || !prompt.trim()
                 }
               >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
-                </svg>
-                今すぐ着手
+                {submitting && activeDispatch === "immediate" ? (
+                  <SpinnerIcon />
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+                  </svg>
+                )}
+                {submitting && activeDispatch === "immediate"
+                  ? "送信中…"
+                  : "今すぐ着手"}
               </button>
               <button
                 type="button"
@@ -314,22 +379,31 @@ export default function ComposerBar({
                   submitting || !newRepo || !title.trim() || !prompt.trim()
                 }
               >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <rect x="3" y="5" width="18" height="16" rx="2" />
-                  <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
-                </svg>
-                あとで着手（todo）
+                {submitting && activeDispatch === "queued" ? (
+                  <SpinnerIcon />
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="3" y="5" width="18" height="16" rx="2" />
+                    <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+                  </svg>
+                )}
+                {submitting && activeDispatch === "queued"
+                  ? "送信中…"
+                  : "あとで着手（todo）"}
               </button>
             </div>
+            {submitting && resolvedStages && (
+              <StageList stages={resolvedStages} />
+            )}
           </div>
         )}
         {error && <span className={styles.error}>{error}</span>}

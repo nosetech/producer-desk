@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -18,7 +19,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
-from orchestrator.server import StateStore, make_server
+from orchestrator.server import ProgressStore, StateStore, make_server
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
 PROJECT_A = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
@@ -273,6 +274,154 @@ def test_get_api_usage_returns_current_limit_status_when_present() -> None:
         assert status == 200
         assert body["currentLimit"]["repo"] == "nosetech/project-a"
         assert body["currentLimit"]["reset_at_text"] == "resets 1pm (Asia/Tokyo)"
+    finally:
+        server.shutdown()
+
+
+def test_progress_store_set_get_clear() -> None:
+    progress = ProgressStore()
+
+    assert progress.get("abc") is None
+
+    progress.set("abc", "comment")
+    assert progress.get("abc") == "comment"
+
+    progress.set("abc", "label")
+    assert progress.get("abc") == "label"
+
+    progress.clear("abc")
+    assert progress.get("abc") is None
+
+
+def test_get_api_progress_returns_null_stage_for_unknown_id() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, body = _get(server, "/api/progress/does-not-exist")
+
+        assert status == 200
+        assert body == {"stage": None}
+    finally:
+        server.shutdown()
+
+
+def test_instruct_progress_reports_stage_while_in_flight_and_clears_after() -> None:
+    """段階表示（ComposerBar）向けの/api/progressが、処理中の実際の段階を反映し、
+    完了後は破棄されることを検証する（擬似進行ではなくon_stageコールバック経由）。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_TODO}})
+    comments = FakeComments()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+    release_label_step = threading.Event()
+
+    def blocking_get_labels(repo: str, issue_number: int) -> set[str]:
+        release_label_step.wait(timeout=2)
+        return labels.get_labels(repo, issue_number)
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=blocking_get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+    )
+    try:
+        responses: dict[str, tuple[int, dict]] = {}
+
+        def do_post() -> None:
+            responses["result"] = _post(
+                server,
+                "/api/projects/nosetech/project-a/issues/1/instruct",
+                {"action": "instruct", "message": "進めて", "progressId": "req-1"},
+            )
+
+        poster = threading.Thread(target=do_post)
+        poster.start()
+        try:
+            deadline = time.monotonic() + 2
+            stage = None
+            while time.monotonic() < deadline:
+                _, body = _get(server, "/api/progress/req-1")
+                stage = body["stage"]
+                if stage == "comment":
+                    break
+                time.sleep(0.01)
+            assert stage == "comment", "post_comment直後の段階がポーリングで観測できない"
+        finally:
+            release_label_step.set()
+            poster.join(timeout=2)
+
+        status, _ = responses["result"]
+        assert status == 200
+        assert event.wait(timeout=2)
+
+        _, body = _get(server, "/api/progress/req-1")
+        assert body == {"stage": None}
+    finally:
+        server.shutdown()
+
+
+def test_create_issue_progress_reports_stage_while_in_flight_and_clears_after() -> None:
+    store = StateStore()
+    labels = FakeLabels()
+    issue_creator = FakeIssueCreator()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+    release_add_label = threading.Event()
+
+    def blocking_add_label(repo: str, issue_number: int, label: str) -> None:
+        release_add_label.wait(timeout=2)
+        labels.add_label(repo, issue_number, label)
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=blocking_add_label,
+        remove_label=labels.remove_label,
+        create_issue=issue_creator.create_issue,
+    )
+    try:
+        responses: dict[str, tuple[int, dict]] = {}
+
+        def do_post() -> None:
+            responses["result"] = _post(
+                server,
+                "/api/projects/nosetech/project-a/issues",
+                {
+                    "title": "新機能",
+                    "prompt": "プロンプト本文",
+                    "dispatch": "immediate",
+                    "progressId": "req-2",
+                },
+            )
+
+        poster = threading.Thread(target=do_post)
+        poster.start()
+        try:
+            deadline = time.monotonic() + 2
+            stage = None
+            while time.monotonic() < deadline:
+                _, body = _get(server, "/api/progress/req-2")
+                stage = body["stage"]
+                if stage == "issue":
+                    break
+                time.sleep(0.01)
+            assert stage == "issue", "issue作成直後の段階がポーリングで観測できない"
+        finally:
+            release_add_label.set()
+            poster.join(timeout=2)
+
+        status, _ = responses["result"]
+        assert status == 201
+        assert event.wait(timeout=2)
+
+        _, body = _get(server, "/api/progress/req-2")
+        assert body == {"stage": None}
     finally:
         server.shutdown()
 

@@ -93,6 +93,13 @@ export interface CreateIssueResult {
   dispatched: boolean;
 }
 
+// instruct/create_issueの処理中にサーバ側（orchestrator/orchestrator/instruct.py の
+// on_stageコールバック）が実際に完了したステップを返す（"comment"/"label"/"issue"/
+// "dispatch"）。処理が見つからない・未開始の場合はnull。
+export interface ProgressResponse {
+  stage: string | null;
+}
+
 /** GET /api/usage の daily 配列要素。オーケストレータのDailyModelUsageに対応。 */
 export interface DailyUsage {
   date: string;

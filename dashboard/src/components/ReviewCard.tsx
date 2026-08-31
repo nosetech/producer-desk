@@ -2,9 +2,27 @@
 
 import { useState } from "react";
 import { postInstruct } from "@/lib/api";
+import {
+  resolveStages,
+  useStageProgress,
+  type StageDef,
+} from "@/lib/stageProgress";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
+import { SpinnerIcon, StageList } from "./StageProgress";
 import styles from "./ReviewCard.module.css";
+
+// orchestrator/orchestrator/instruct.py の handle_instruct（STATUS_IN_REVIEW分岐）の
+// on_stageコールバックと対応する。ブランチ削除・worktree同期は失敗しても処理全体は
+// 成功扱いになるため、on_stageは成功時と区別できるよう `${key}_skipped` を返すことがある
+// （StageProgress.resolveStagesが解釈する）。
+const MERGE_STAGES: StageDef[] = [
+  { key: "merge", label: "PRをマージ", note: "merge" },
+  { key: "close", label: "issueをクローズ", note: "close" },
+  { key: "label", label: "ラベルを更新", note: "label" },
+  { key: "branch_delete", label: "ブランチを削除", note: "branch" },
+  { key: "worktree_sync", label: "worktreeを同期", note: "worktree" },
+];
 
 function latestComment(issue: IssueSummary): IssueComment | undefined {
   return issue.comments[issue.comments.length - 1];
@@ -106,6 +124,7 @@ export default function ReviewCard({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const stageProgress = useStageProgress();
 
   const busy = approving || locked;
 
@@ -128,28 +147,46 @@ export default function ReviewCard({
   function closeConfirm() {
     if (busy) return;
     setConfirmOpen(false);
+    setError(null);
+    stageProgress.reset();
   }
 
   function handleConfirmApprove() {
     setApproving(true);
     setError(null);
-    postInstruct(review.repo, review.number, "approve")
+    const progressId = stageProgress.start();
+    postInstruct(review.repo, review.number, "approve", undefined, progressId)
       .then(() => {
+        stageProgress.reset();
         setConfirmOpen(false);
         onToast(`${repoName} #${review.number} をマージ & クローズしました。`);
         return onApproved();
       })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "承認に失敗しました"),
-      )
+      .catch((e) => {
+        stageProgress.stop();
+        setError(e instanceof Error ? e.message : "承認に失敗しました");
+      })
       .finally(() => setApproving(false));
   }
+
+  const resolvedStages =
+    approving || error
+      ? resolveStages(
+          MERGE_STAGES,
+          stageProgress.polledStage,
+          approving ? "busy" : "error",
+        )
+      : null;
 
   return (
     <div
       className={styles.card}
       aria-busy={busy}
-      style={busy ? { opacity: 0.6, pointerEvents: "none" } : undefined}
+      style={
+        busy && !confirmOpen
+          ? { opacity: 0.6, pointerEvents: "none" }
+          : undefined
+      }
     >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
@@ -251,15 +288,41 @@ export default function ReviewCard({
               </span>{" "}
               — {review.title}
             </p>
-            <div className={styles.warningBanner}>
-              <WarningIcon />
-              <div className={styles.warningText}>
-                承認すると、
-                <strong>対象PRのマージと該当issueのクローズ</strong>
-                まで自動で実行されます。この操作は元に戻せません。
+            {!approving && !error && (
+              <div className={styles.warningBanner}>
+                <WarningIcon />
+                <div className={styles.warningText}>
+                  承認すると、
+                  <strong>対象PRのマージと該当issueのクローズ</strong>
+                  まで自動で実行されます。この操作は元に戻せません。
+                </div>
               </div>
-            </div>
-            {error && <span className={styles.confirmError}>{error}</span>}
+            )}
+            {resolvedStages && <StageList stages={resolvedStages} />}
+            {error && (
+              <div className={styles.confirmErrorBanner}>
+                <svg
+                  className={styles.confirmErrorIcon}
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7v6M12 16.5v.01" />
+                </svg>
+                <div>
+                  <div className={styles.confirmErrorHeading}>
+                    マージ処理に失敗しました
+                  </div>
+                  <div className={styles.confirmErrorDetail}>{error}</div>
+                </div>
+              </div>
+            )}
             <div className={styles.confirmActions}>
               <button
                 type="button"
@@ -267,7 +330,7 @@ export default function ReviewCard({
                 onClick={closeConfirm}
                 disabled={busy}
               >
-                キャンセル
+                {error ? "閉じる" : "キャンセル"}
               </button>
               <button
                 type="button"
@@ -275,8 +338,12 @@ export default function ReviewCard({
                 onClick={handleConfirmApprove}
                 disabled={busy}
               >
-                <CheckIcon />
-                {approving ? "マージ中…" : "マージして承認"}
+                {approving ? (
+                  <SpinnerIcon trackOpacity={0.34} />
+                ) : (
+                  <CheckIcon />
+                )}
+                {approving ? "マージ中…" : error ? "再試行" : "マージして承認"}
               </button>
             </div>
           </div>

@@ -341,6 +341,28 @@ def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
     assert "qwen2.5-coder:7b" in instruction
 
 
+def test_build_claude_command_instructs_human_readable_final_message() -> None:
+    """issue #164の再発防止テスト。
+
+    セッション終了時の最終応答が無編集でissueコメントに投稿されることを踏まえ、
+    needs-human-decision時は「何について・なぜ判断が必要か」「人間が具体的に
+    何をすればよいか」を明記し、Monitor/ScheduleWakeup等の内部ツール名や
+    ポーリング方式といった実装詳細を人間向け報告に含めないよう指示することを
+    確認する（issue #161で、内部的なツール運用の独り言がそのまま投稿された）。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "人間が具体的に何をすればよいか" in instruction
+    assert "Monitor" in instruction
+    assert "ScheduleWakeup" in instruction
+    assert "実装詳細は人間向け報告に含めないでください" in instruction
+
+
 def test_build_claude_command_uses_stream_json_output_format() -> None:
     """issue #49の再発防止テスト。
 
