@@ -275,48 +275,58 @@ def _make_handler(
             progress_id: str | None = None
             try:
                 try:
-                    payload = self._read_json_body()
-                    progress_id = payload.get("progressId")
-                    on_stage = (
-                        (lambda stage: progress_store.set(progress_id, stage))
-                        if progress_id
-                        else (lambda _stage: None)
-                    )
-                    result = handle_instruct(
-                        repo,
-                        issue_number,
-                        payload["action"],
-                        payload.get("message"),
-                        get_labels=get_labels,
-                        add_label=add_label,
-                        remove_label=remove_label,
-                        post_comment=post_comment,
-                        dispatch_queue=dispatch_queue,
-                        resolve_pr_number=resolve_pr_number,
-                        merge_pr=merge_pr,
-                        close_issue=close_issue,
-                        get_pr_branch=get_pr_branch,
-                        delete_branch=delete_branch,
-                        worktree_path=projects_by_repo[repo].worktree_path,
-                        sync_worktree=sync_worktree,
-                        on_stage=on_stage,
-                    )
-                except (KeyError, ValueError) as e:
-                    self._send_json(400, {"error": str(e)})
-                    return
-                except ReviewMergeError as e:
-                    self._send_json(502, {"error": str(e)})
-                    return
-                except subprocess.CalledProcessError as e:
-                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
-                    return
+                    try:
+                        payload = self._read_json_body()
+                        progress_id = payload.get("progressId")
+                        on_stage = (
+                            (lambda stage: progress_store.set(progress_id, stage))
+                            if progress_id
+                            else (lambda _stage: None)
+                        )
+                        result = handle_instruct(
+                            repo,
+                            issue_number,
+                            payload["action"],
+                            payload.get("message"),
+                            get_labels=get_labels,
+                            add_label=add_label,
+                            remove_label=remove_label,
+                            post_comment=post_comment,
+                            dispatch_queue=dispatch_queue,
+                            resolve_pr_number=resolve_pr_number,
+                            merge_pr=merge_pr,
+                            close_issue=close_issue,
+                            get_pr_branch=get_pr_branch,
+                            delete_branch=delete_branch,
+                            worktree_path=projects_by_repo[repo].worktree_path,
+                            sync_worktree=sync_worktree,
+                            on_stage=on_stage,
+                        )
+                    except (KeyError, ValueError) as e:
+                        self._send_json(400, {"error": str(e)})
+                        return
+                    except ReviewMergeError as e:
+                        self._send_json(502, {"error": str(e)})
+                        return
+                    except subprocess.CalledProcessError as e:
+                        self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                        return
+                finally:
+                    instruct_locks.release(repo, issue_number)
+
+                self._refresh_store()
+                self._send_json(200, dataclasses.asdict(result))
             finally:
-                instruct_locks.release(repo, issue_number)
+                # progress_storeのクリアは、_refresh_store・_send_jsonが完了し
+                # クライアントへの応答が完全に済んだ後に行う（issue報告: 「worktreeを
+                # 同期」完了後に「PRをマージ」が再度アクティブ表示される不具合）。
+                # ここより前でクリアすると、_refresh_store（gh APIでのissue一覧再取得
+                # を伴い数百ms〜数秒かかりうる）の実行中にダッシュボードの
+                # /api/progress ポーリングが空振り（stage: null）を観測してしまい、
+                # まだ何も完了していない状態と誤解して先頭の段階を再度アクティブ表示
+                # してしまっていた。
                 if progress_id:
                     progress_store.clear(progress_id)
-
-            self._refresh_store()
-            self._send_json(200, dataclasses.asdict(result))
 
         def _handle_create_issue(self, repo: str) -> None:
             if repo not in known_repos:
@@ -325,37 +335,41 @@ def _make_handler(
 
             progress_id: str | None = None
             try:
-                payload = self._read_json_body()
-                progress_id = payload.get("progressId")
-                on_stage = (
-                    (lambda stage: progress_store.set(progress_id, stage))
-                    if progress_id
-                    else (lambda _stage: None)
-                )
-                result = handle_create_issue(
-                    repo,
-                    payload["title"],
-                    payload["prompt"],
-                    payload["dispatch"],
-                    create_issue=create_issue,
-                    get_labels=get_labels,
-                    add_label=add_label,
-                    remove_label=remove_label,
-                    dispatch_queue=dispatch_queue,
-                    on_stage=on_stage,
-                )
-            except (KeyError, ValueError) as e:
-                self._send_json(400, {"error": str(e)})
-                return
-            except subprocess.CalledProcessError as e:
-                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
-                return
+                try:
+                    payload = self._read_json_body()
+                    progress_id = payload.get("progressId")
+                    on_stage = (
+                        (lambda stage: progress_store.set(progress_id, stage))
+                        if progress_id
+                        else (lambda _stage: None)
+                    )
+                    result = handle_create_issue(
+                        repo,
+                        payload["title"],
+                        payload["prompt"],
+                        payload["dispatch"],
+                        create_issue=create_issue,
+                        get_labels=get_labels,
+                        add_label=add_label,
+                        remove_label=remove_label,
+                        dispatch_queue=dispatch_queue,
+                        on_stage=on_stage,
+                    )
+                except (KeyError, ValueError) as e:
+                    self._send_json(400, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+
+                self._refresh_store()
+                self._send_json(201, dataclasses.asdict(result))
             finally:
+                # _handle_instructと同様、progress_storeのクリアは応答が完全に
+                # 済んだ後に行う（クリア直後のポーリング空振りによる段階表示の
+                # 巻き戻りを防ぐため）。
                 if progress_id:
                     progress_store.clear(progress_id)
-
-            self._refresh_store()
-            self._send_json(201, dataclasses.asdict(result))
 
     return Handler
 
