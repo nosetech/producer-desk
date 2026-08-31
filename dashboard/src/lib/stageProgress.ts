@@ -38,6 +38,12 @@ export function randomProgressId(): string {
  * インデックス比較（観測した段階より前は完了扱い）で吸収できるが、任意段階（スキップ
  * されうる段階）を観測し損ねた場合はスキップ表示にならず完了表示になる（狭い競合
  * 窓に限られる軽微な既知の制約）。
+ *
+ * また、最後の段階まで観測済みの状態でstatus==="error"になった場合（現状のバックエンド
+ * の呼び出し順では起こらないが、将来最終段階の後に処理が追加された場合に起こりうる）、
+ * i===resolvedIdx+1が配列範囲外になるためどの行も"failed"にならず全行"done"のまま
+ * 表示される。エラーバナー自体は別途表示されるため実害は小さいが、汎用関数としての
+ * 境界条件の抜けとして記録しておく。
  */
 export function resolveStages(
   defs: StageDef[],
@@ -55,7 +61,10 @@ export function resolveStages(
     if (i < resolvedIdx) {
       state = "done";
     } else if (i === resolvedIdx) {
-      state = skipped ? "skipped" : status === "busy" ? "active" : "done";
+      // on_stageは各段階が完了した後に呼ばれるため、observedIdx自体は既に完了して
+      // いる（進行中なのはその次の段階）。ここを"active"にすると、直後の
+      // resolvedIdx+1の分岐と2行同時にスピナー表示される不具合になる。
+      state = skipped ? "skipped" : "done";
     } else if (status === "error" && i === resolvedIdx + 1) {
       state = "failed";
     } else if (status === "busy" && i === resolvedIdx + 1) {

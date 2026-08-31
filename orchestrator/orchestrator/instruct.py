@@ -48,9 +48,12 @@ logger = logging.getLogger(__name__)
 Action = Literal["approve", "instruct"]
 Dispatch = Literal["immediate", "queued"]
 
-# ダッシュボードの段階表示（ComposerBar）向けに、処理の進み具合を1ステップ完了する
-# たびに通知するコールバック。`stage`は"comment"/"label"/"issue"/"dispatch"のいずれか
-# （server.pyのProgressStoreがこれをそのままポーリングレスポンスに詰める）。
+# ダッシュボードの段階表示（ComposerBar/DecisionCard/ReviewCard）向けに、処理の
+# 進み具合を1ステップ完了するたびに通知するコールバック。`stage`は"comment"/
+# "label"/"issue"/"dispatch"/"merge"/"close"/"branch_delete"/"worktree_sync"の
+# いずれか（server.pyのProgressStoreがこれをそのままポーリングレスポンスに詰める）。
+# ブランチ削除・worktree同期は失敗しても処理全体は成功扱いになるため、その場合は
+# 成功時と区別できるよう`${stage}_skipped`を通知する。
 # comment_watcher.py等、ダッシュボード操作を経由しない呼び出し元ではデフォルトの
 # no-opのまま使われる。
 OnStageFn = Callable[[str], None]

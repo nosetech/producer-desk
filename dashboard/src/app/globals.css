@@ -34,11 +34,10 @@
   --review: #b98cf7;
   --review-bg: rgba(185, 140, 247, 0.16);
   /* 承認処理の失敗表示専用トークン（Claude Design feature/issue-167-approve-progress.dc.htmlの
-     --warn/--warn-bg/--warn-on。--accent-red系に近いが完全には一致しないため専用に定義する。
+     --warn/--warn-bg。--accent-red系に近いが完全には一致しないため専用に定義する。
      issue #167）。 */
   --warn: #ff6a5b;
   --warn-bg: rgba(255, 106, 91, 0.15);
-  --warn-on: #1a0806;
   /* 枠で囲ったウィジェット用の影（Claude Design ProducerDesk.dc.htmlの --shadow、issue #121）。 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.32);
 
@@ -73,7 +72,6 @@
   --review-bg: rgba(122, 68, 198, 0.12);
   --warn: #d23a2c;
   --warn-bg: rgba(210, 58, 44, 0.1);
-  --warn-on: #ffffff;
   --shadow: 0 1px 2px rgba(20, 30, 45, 0.05), 0 8px 24px rgba(20, 30, 45, 0.08);
 
   color-scheme: light;
@@ -108,7 +106,6 @@
     --review-bg: rgba(122, 68, 198, 0.12);
     --warn: #d23a2c;
     --warn-bg: rgba(210, 58, 44, 0.1);
-    --warn-on: #ffffff;
     --shadow:
       0 1px 2px rgba(20, 30, 45, 0.05), 0 8px 24px rgba(20, 30, 45, 0.08);
 
