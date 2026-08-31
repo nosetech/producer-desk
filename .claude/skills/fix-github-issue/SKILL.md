@@ -1,7 +1,7 @@
 ---
 name: fix-github-issue
 description: github issueを対応する
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
@@ -31,7 +31,7 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
   - マスターファイル（`ProducerDesk.dc.html`）へのマージは人間がClaude Design上でレビュー・承認した後に行う操作であり、本スキルの範囲では実施しない
 - 実装後は `mcp__claude-in-chrome__*` で完成品と（マスターではなく）作業ブランチ名のデザインファイルのプレビューを並べて見た目が一致することを確認する
 
-3.6. **ローカルLLMの補助的活用**
+  3.6. **ローカルLLMの補助的活用**
 
 - コード変更そのものを伴わない補助的な作業（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）では、必要に応じてローカルLLM（Ollama）を併用してよい（PR #61 / docs/basic-design.md 4章「モデルルーター設定設計」と同じ方針。Agent Runner本体への実装は `orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION` 参照）。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは環境変数`$OLLAMA_BENCH_PATH`が指す`ollama-bench`コマンド（オーケストレータが解決済みの絶対パスを子プロセスの環境変数として渡す。`--record --repo <repo> --issue-number <issue番号>`付き）経由でOllama REST APIを直接呼び出す。MCP `mcp__ollama-client__ollama_chat`はトークン数・処理時間メトリクスを返さず`config/usage.db`に利用量を記録できないため使わない（issue #107）
 - タスク種別ごとの推奨モデル:
