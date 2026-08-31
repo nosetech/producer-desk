@@ -61,6 +61,7 @@ INSTRUCT_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/instruct$"
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
+PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
@@ -111,6 +112,34 @@ class InstructInFlightLocks:
             self._in_flight.discard((repo, issue_number))
 
 
+class ProgressStore:
+    """指示送信中の段階（"comment"/"label"/"issue"/"dispatch"）をprogress_id単位で保持する。
+
+    ダッシュボードの段階表示（ComposerBar）向け。POSTリクエストは
+    `instruct.py`のhandle_instruct/handle_create_issueを1リクエストの中で同期的に
+    最後まで実行し、途中経過を応答として返さない。`ThreadingHTTPServer`はリクエスト
+    ごとに別スレッドで動くため、その処理中に短間隔のGETポーリング（/api/progress/
+    {progress_id}）で参照できるよう、on_stageコールバックの呼び出し時点の値を
+    ここに書き込む。POSTが完了（成功/失敗いずれも）した時点でエントリを破棄する。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stages: dict[str, str] = {}
+
+    def set(self, progress_id: str, stage: str) -> None:
+        with self._lock:
+            self._stages[progress_id] = stage
+
+    def get(self, progress_id: str) -> str | None:
+        with self._lock:
+            return self._stages.get(progress_id)
+
+    def clear(self, progress_id: str) -> None:
+        with self._lock:
+            self._stages.pop(progress_id, None)
+
+
 def _make_handler(
     store: StateStore,
     *,
@@ -134,6 +163,7 @@ def _make_handler(
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
+    progress_store = ProgressStore()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
@@ -180,8 +210,16 @@ def _make_handler(
                 self._handle_usage()
                 return
 
+            progress_match = PROGRESS_PATH.match(self.path)
+            if progress_match:
+                self._handle_progress(progress_match.group("progress_id"))
+                return
+
             self.send_response(404)
             self.end_headers()
+
+        def _handle_progress(self, progress_id: str) -> None:
+            self._send_json(200, {"stage": progress_store.get(progress_id)})
 
         def _handle_state(self) -> None:
             state = store.get()
@@ -234,9 +272,16 @@ def _make_handler(
                 self._send_json(409, {"error": message})
                 return
 
+            progress_id: str | None = None
             try:
                 try:
                     payload = self._read_json_body()
+                    progress_id = payload.get("progressId")
+                    on_stage = (
+                        (lambda stage: progress_store.set(progress_id, stage))
+                        if progress_id
+                        else (lambda _stage: None)
+                    )
                     result = handle_instruct(
                         repo,
                         issue_number,
@@ -254,6 +299,7 @@ def _make_handler(
                         delete_branch=delete_branch,
                         worktree_path=projects_by_repo[repo].worktree_path,
                         sync_worktree=sync_worktree,
+                        on_stage=on_stage,
                     )
                 except (KeyError, ValueError) as e:
                     self._send_json(400, {"error": str(e)})
@@ -266,6 +312,8 @@ def _make_handler(
                     return
             finally:
                 instruct_locks.release(repo, issue_number)
+                if progress_id:
+                    progress_store.clear(progress_id)
 
             self._refresh_store()
             self._send_json(200, dataclasses.asdict(result))
@@ -275,8 +323,15 @@ def _make_handler(
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
                 return
 
+            progress_id: str | None = None
             try:
                 payload = self._read_json_body()
+                progress_id = payload.get("progressId")
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
                 result = handle_create_issue(
                     repo,
                     payload["title"],
@@ -287,6 +342,7 @@ def _make_handler(
                     add_label=add_label,
                     remove_label=remove_label,
                     dispatch_queue=dispatch_queue,
+                    on_stage=on_stage,
                 )
             except (KeyError, ValueError) as e:
                 self._send_json(400, {"error": str(e)})
@@ -294,6 +350,9 @@ def _make_handler(
             except subprocess.CalledProcessError as e:
                 self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
                 return
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
 
             self._refresh_store()
             self._send_json(201, dataclasses.asdict(result))
