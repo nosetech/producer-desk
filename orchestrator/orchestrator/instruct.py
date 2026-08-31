@@ -142,7 +142,9 @@ def handle_instruct(
         if pr_number is None:
             raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
         merge_pr(repo, pr_number)
+        on_stage("merge")
         close_issue(repo, issue_number)
+        on_stage("close")
         # ラベルもここで`status:closed`へ即時遷移させる。close_watcher.pyの背景ポーリング
         # （5分間隔）に委ねると、承認直後にserver.pyが行うStateStore同期更新（issue #70）の
         # 時点では`status:in-review`のままのため、aggregate()のreviews判定
@@ -155,6 +157,7 @@ def handle_instruct(
             add_label=add_label,
             remove_label=remove_label,
         )
+        on_stage("label")
         # ブランチ削除はマージ・issueクローズの後始末に過ぎない（issue #72）。
         # ここで失敗（保護ブランチ設定・既に削除済み等）しても、本質的な処理である
         # マージ・issueクローズが既に成功している以上、承認自体は成功として扱う
@@ -165,11 +168,13 @@ def handle_instruct(
         try:
             branch = get_pr_branch(repo, pr_number)
             delete_branch(repo, branch)
+            on_stage("branch_delete")
         except subprocess.CalledProcessError as e:
             logger.warning(
                 "%s#%s (PR #%s) のブランチ削除に失敗しました: %s", repo, issue_number, pr_number, e
             )
             branch = None
+            on_stage("branch_delete_skipped")
 
         # worktree同期はリモートブランチ削除の後始末に過ぎない（issue #80）。実行中の
         # Agent Runnerが同じプロジェクトの別issueで動いている場合、worktreeを横から
@@ -181,8 +186,12 @@ def handle_instruct(
                     repo,
                     branch,
                 )
+                on_stage("worktree_sync_skipped")
             else:
                 sync_worktree(worktree_path, branch)
+                on_stage("worktree_sync")
+        else:
+            on_stage("worktree_sync_skipped")
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":

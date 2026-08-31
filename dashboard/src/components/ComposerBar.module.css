@@ -18,34 +18,6 @@
   }
 }
 
-/* Claude Design SendingSpinner.dc.html の「1C 段階リング（推奨）」案。
-   om-spin/om-dashに相当。 */
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes dash {
-  0% {
-    stroke-dashoffset: 0;
-  }
-  100% {
-    stroke-dashoffset: -226;
-  }
-}
-
-@keyframes stageFade {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 .backdrop {
   position: fixed;
   z-index: 40;
@@ -301,90 +273,6 @@
 .error {
   font-size: 0.78rem;
   color: var(--accent-red);
-}
-
-.spinnerSvg {
-  flex-shrink: 0;
-  animation: spin 1.5s linear infinite;
-}
-
-.spinnerTrack {
-  opacity: 0.32;
-}
-
-.spinnerArc {
-  animation: dash 1.5s linear infinite;
-}
-
-.stagePanel {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 12px 13px;
-  animation: stageFade 0.2s ease;
-}
-
-.stageRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.stageDot {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.stageDotActive,
-.stageDotPending {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.stageDotActive {
-  background: var(--accent-blue);
-}
-
-.stageDotPending {
-  border: 1.5px solid var(--text-tertiary);
-}
-
-.stageLabel {
-  font-size: 12.5px;
-}
-
-.stageLabelActive {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.stageLabelDone {
-  color: var(--text-secondary);
-}
-
-.stageLabelPending {
-  color: var(--text-tertiary);
-}
-
-.stageLine {
-  flex: 1;
-  height: 1px;
-  background: var(--border-subtle);
-}
-
-.stageNote {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-tertiary);
 }
 
 @media (max-width: 640px) {
