@@ -142,6 +142,24 @@ def test_migrate_aborts_on_incompatible_usage_db_schema_version(tmp_path: Path) 
     assert (new_root / "config" / "projects.yaml").exists()
 
 
+def test_migrate_copies_usage_db_from_previous_schema_version(tmp_path: Path) -> None:
+    """issue #86: 直前リリースのSCHEMA_VERSION(1)のDBもコピー可能であることを確認する。
+
+    新バージョンのusage_store.py側で初回接続時に自動でEXPECTED_USAGE_DB_SCHEMA_VERSION
+    へ引き上げられるため、EXPECTED_USAGE_DB_SCHEMA_VERSIONと完全一致しない
+    バージョンでも、対応済みバージョンの範囲内であればコピー自体は成功する。
+    """
+    old_root = _make_old_root(tmp_path)
+    with sqlite3.connect(old_root / "config" / "usage.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root))
+
+    assert result.returncode == 0, result.stderr
+    assert (new_root / "config" / "usage.db").exists()
+
+
 def test_migrate_rejects_same_source_and_destination(tmp_path: Path) -> None:
     new_root = _make_new_root(tmp_path)
 

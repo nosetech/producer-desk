@@ -168,10 +168,16 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute(_CREATE_LOCAL_LLM_USAGE_TABLE_SQL)
 
     current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if current_version == 0:
-        # 新規作成時、またはスキーマバージョン管理導入（issue #155）より前に
-        # 作成された既存DB。後者はテーブル定義に変更が無いため、そのまま
-        # SCHEMA_VERSIONを書き込んで問題ない。
+    if current_version in (0, 1):
+        # version 0: 新規作成時、またはスキーマバージョン管理導入（issue #155）より前に
+        # 作成された既存DB。
+        # version 1: local_llm_usage_reportsテーブル追加（issue #86、SCHEMA_VERSION 2）
+        # より前に作成された既存DB。
+        # いずれもusage_recordsの既存列定義自体は変更されておらず、上のCREATE TABLE
+        # IF NOT EXISTSで新テーブルが追加されるだけのため、データ移行なしでそのまま
+        # SCHEMA_VERSIONへ引き上げてよい。列削除・列型変更等、データ移行が必要な
+        # 変更を将来加える場合はこの単純な引き上げでは済まないため、その時点で
+        # 個別の変換ロジックに置き換えること。
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif current_version != SCHEMA_VERSION:
         raise RuntimeError(

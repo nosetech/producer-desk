@@ -1444,6 +1444,59 @@ def test_extract_local_llm_usage_report_returns_none_when_marker_body_is_invalid
     )
 
 
+def test_extract_local_llm_usage_report_ignores_arrow_inside_note_text() -> None:
+    """note内に`-->`という部分文字列が含まれても、JSONオブジェクトの範囲だけを
+
+    正しく抽出できることを確認する（`.*?-->`の非貪欲マッチだけだと、note内の
+    `-->`で早期に閉じタグとみなしパースが壊れてしまう）。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": true, "model": "deepseek-coder-v2:16b", '
+            '"task_type": "code_review_support", '
+            '"note": "矢印記法(-->)に言及したレビュー"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=True,
+        model="deepseek-coder-v2:16b",
+        task_type="code_review_support",
+        note_or_reason="矢印記法(-->)に言及したレビュー",
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_used_is_not_a_bool() -> None:
+    """issue #78・#82・#84と同種のAI自己申告依存リスク。
+
+    `"used": "false"`のような文字列は`bool()`変換で誤って真になるため、
+    真偽値リテラルでない場合は信頼できる自己申告とみなさずスキップすることを
+    確認する。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": "false", "reason": "..."}\n'
+            "-->"
+        )
+    }
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
 def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()

@@ -266,7 +266,7 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 
     使用しなかった場合は`{"used": false, "reason": "..."}`。
 - **オーケストレータ側のパース**: `agent_runner.py`の`_extract_local_llm_usage_report`が、最終応答（`result`）から上記マーカーを正規表現で抽出しJSONとしてパースする。`_extract_usage_records`（[2-2](#2-2-データ取得仕様ポーリング)）と並ぶ形で`run_agent_runner`から呼び出す。マーカーが存在しない・JSONとしてパースできない場合は例外を送出せず記録をスキップする。この仕組みはAIが指示通りマーカーを埋め込むことに依存しており、issue #78・#82・#84で確認された「AIがsystem prompt指示の実行を忘れる」リスクと同種の限界がある。MCPサーバー側でのサーバーサイドロギング等による完全な保証は将来課題とし、まずは自己申告ベースでの可視化から始める。
-- **DBスキーマ**: `usage_store.py`に`usage_records`とは別テーブル`local_llm_usage_reports`（列: `id`・`recorded_at`・`repo`・`issue_number`・`used`・`model`（NULL可）・`task_type`（NULL可）・`note_or_reason`）を追加し、`record_local_llm_usage_report(...)`で書き込む。トークン数の実測ではなく「使ったかどうか」の自己申告という性質が`usage_records`と異なるため、既存テーブルへの列追加ではなく別テーブルとした（この変更で`config/usage.db`の`SCHEMA_VERSION`を2へ更新。`dist/scripts/migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`も同期させること）。
+- **DBスキーマ**: `usage_store.py`に`usage_records`とは別テーブル`local_llm_usage_reports`（列: `id`・`recorded_at`・`repo`・`issue_number`・`used`・`model`（NULL可）・`task_type`（NULL可）・`note_or_reason`）を追加し、`record_local_llm_usage_report(...)`で書き込む。トークン数の実測ではなく「使ったかどうか」の自己申告という性質が`usage_records`と異なるため、既存テーブルへの列追加ではなく別テーブルとした（この変更で`config/usage.db`の`SCHEMA_VERSION`を2へ更新。`dist/scripts/migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`も同期させた）。既存列の変更を伴わない非破壊的な追加のため、version=1（本変更より前に作成された既存DB）は`_connect()`が初回接続時に自動でversion 2へ引き上げる（`current_version in (0, 1)`の分岐）。`migrate.sh`側もversion 1のDBをコピー可能と判定するよう対応済みバージョンに1を含めている。
 - **振り返り用の集計**: `local_llm_usage_summary(days=...)`が、期間内の使用有無・モデル・タスク種別別の件数を集計して返す。ダッシュボードへの表示は本issueのスコープ外とし、まずはDBで参照可能にすることを優先する。
 
 ## 5. 通知・承認フロー詳細設計

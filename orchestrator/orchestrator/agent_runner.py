@@ -590,8 +590,12 @@ def _extract_usage_records(
     return []
 
 
+# `note`/`reason`はAIの自由記述であり、値の中に偶然`-->`という部分文字列が
+# 含まれる可能性がある。マーカー本文を素朴に`.*?-->`で非貪欲マッチすると、
+# その位置で早期に閉じタグとみなしてしまい後続のJSONパースが壊れる恐れが
+# あるため、キャプチャ対象を`{...}`（JSONオブジェクト）自体に絞り込む。
 _LOCAL_LLM_USAGE_MARKER_PATTERN = re.compile(
-    re.escape(LOCAL_LLM_USAGE_MARKER_PREFIX) + r"\s*(.*?)-->", re.DOTALL
+    re.escape(LOCAL_LLM_USAGE_MARKER_PREFIX) + r"\s*(\{.*?\})\s*-->", re.DOTALL
 )
 
 
@@ -613,7 +617,7 @@ def _extract_local_llm_usage_report(
         return None
 
     try:
-        data = json.loads(match.group(1).strip())
+        data = json.loads(match.group(1))
     except json.JSONDecodeError:
         logger.warning(
             "issue %s#%d のローカルLLM活用マーカーをJSONとしてパースできませんでした。",
@@ -622,13 +626,25 @@ def _extract_local_llm_usage_report(
         )
         return None
 
-    if not isinstance(data, dict) or "used" not in data:
+    if not isinstance(data, dict):
+        return None
+
+    used = data.get("used")
+    if not isinstance(used, bool):
+        # `"used": "false"`のような文字列化された値が来ると`bool()`変換で
+        # 誤って真になる（issue #78・#82・#84と同種のAI自己申告依存リスク）。
+        # 真偽値リテラルで無ければ信頼できる自己申告とはみなさずスキップする。
+        logger.warning(
+            "issue %s#%d のローカルLLM活用マーカーの`used`が真偽値ではありません。",
+            repo,
+            issue_number,
+        )
         return None
 
     return LocalLlmUsageReport(
         repo=repo,
         issue_number=issue_number,
-        used=bool(data.get("used")),
+        used=used,
         model=data.get("model"),
         task_type=data.get("task_type"),
         note_or_reason=data.get("note") or data.get("reason"),
