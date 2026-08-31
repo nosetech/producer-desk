@@ -415,6 +415,123 @@ def test_handle_instruct_approve_on_in_review_syncs_worktree_after_branch_delete
     assert sync_calls == [("/path/to/worktree", "feature/issue-30-something")]
 
 
+def test_handle_instruct_approve_on_in_review_reports_on_stage_in_order() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
+    stages: list[str] = []
+
+    handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        worktree_path="/path/to/worktree",
+        sync_worktree=lambda worktree_path, branch: None,
+        on_stage=stages.append,
+    )
+
+    assert stages == ["merge", "close", "label", "branch_delete", "worktree_sync"]
+
+
+def test_handle_instruct_approve_on_in_review_reports_skipped_stages_when_delete_branch_fails() -> (
+    None
+):
+    """ブランチ削除・worktree同期は失敗しても処理全体は成功扱いになるが、段階表示上は
+    スキップとして区別できるよう、成功時と異なるstage名を通知する（issue #167）。
+    """
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    review_merge = FakeReviewMerge(pr_number=33, fail_delete_branch=True)
+    stages: list[str] = []
+
+    handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        resolve_pr_number=review_merge.resolve_pr_number,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        worktree_path="/path/to/worktree",
+        sync_worktree=lambda worktree_path, branch: None,
+        on_stage=stages.append,
+    )
+
+    assert stages == [
+        "merge",
+        "close",
+        "label",
+        "branch_delete_skipped",
+        "worktree_sync_skipped",
+    ]
+
+
+def test_handle_instruct_approve_on_in_review_reports_worktree_skip_when_dispatch_running() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-30-something")
+    stages: list[str] = []
+
+    # 同一リポジトリの別issueが実行中の状態を、実際にディスパッチをブロックして作る
+    # （test_handle_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running
+    # と同じ手法）。
+    release_event = threading.Event()
+    started_event = threading.Event()
+
+    def blocking_dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started_event.set()
+        release_event.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=blocking_dispatch_fn)
+    dispatch_queue.enqueue("nosetech/project-a", 2, "別issueが実行中")
+    assert started_event.wait(timeout=2)
+
+    try:
+        handle_instruct(
+            "nosetech/project-a",
+            30,
+            "approve",
+            None,
+            get_labels=labels.get_labels,
+            add_label=labels.add_label,
+            remove_label=labels.remove_label,
+            post_comment=comments.post_comment,
+            dispatch_queue=dispatch_queue,
+            resolve_pr_number=review_merge.resolve_pr_number,
+            merge_pr=review_merge.merge_pr,
+            close_issue=review_merge.close_issue,
+            get_pr_branch=review_merge.get_pr_branch,
+            delete_branch=review_merge.delete_branch,
+            worktree_path="/path/to/worktree",
+            sync_worktree=lambda worktree_path, branch: None,
+            on_stage=stages.append,
+        )
+    finally:
+        release_event.set()
+
+    assert stages == ["merge", "close", "label", "branch_delete", "worktree_sync_skipped"]
+
+
 def test_handle_instruct_approve_on_in_review_skips_worktree_sync_without_worktree_path() -> None:
     """worktree_pathが渡されない（未配線の）呼び出し元では同期処理を行わない。"""
     labels = FakeLabels({STATUS_IN_REVIEW})

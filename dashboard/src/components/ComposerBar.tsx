@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { fetchProgress, postCreateIssue, postInstruct } from "@/lib/api";
+import { useState } from "react";
+import { postCreateIssue, postInstruct } from "@/lib/api";
 import { shortRepoName } from "@/lib/projectStatus";
+import {
+  resolveStages,
+  useStageProgress,
+  type StageDef,
+} from "@/lib/stageProgress";
 import type { Dispatch, InstructAction } from "@/lib/types";
+import { SpinnerIcon, StageList } from "./StageProgress";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -14,133 +20,23 @@ export interface IssueRef {
 
 export type ComposerMode = "reply" | "new";
 
-interface Stage {
-  // orchestrator/orchestrator/instruct.py の on_stage コールバックが通知する
-  // 実際の完了ステップ名（server.py の ProgressStore 経由で /api/progress
-  // からポーリングで取得する）と対応させるキー。
-  key: string;
-  label: string;
-  note: string;
-}
-
 // 実際の処理順（orchestrator/orchestrator/instruct.py の handle_instruct /
 // handle_create_issue）に合わせた段階。表示中の段階は擬似進行ではなく、
 // サーバがon_stageコールバックで実際に完了したタイミングをポーリングで反映する。
-const REPLY_STAGES: Stage[] = [
+const REPLY_STAGES: StageDef[] = [
   { key: "comment", label: "コメントを投稿", note: "POST comment" },
   { key: "label", label: "ラベルを更新", note: "label" },
   { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
 ];
-const CREATE_IMMEDIATE_STAGES: Stage[] = [
+const CREATE_IMMEDIATE_STAGES: StageDef[] = [
   { key: "issue", label: "issueを作成", note: "POST /issues" },
   { key: "label", label: "ラベルを付与", note: "label" },
   { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
 ];
-const CREATE_QUEUED_STAGES: Stage[] = [
+const CREATE_QUEUED_STAGES: StageDef[] = [
   { key: "issue", label: "issueを作成", note: "POST /issues" },
   { key: "label", label: "todoとして登録", note: "label" },
 ];
-
-const PROGRESS_POLL_INTERVAL_MS = 250;
-
-// `crypto.randomUUID()`はセキュアコンテキスト（HTTPS/localhost）でのみ使える。
-// このダッシュボードは同一LAN内へのプレーンHTTPでの配布を前提としており
-// （CLAUDE.md「確定済みの設計判断」）、LAN内の別端末からアクセスした場合は
-// セキュアコンテキストにならないため使用しない。
-function randomProgressId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function SpinnerIcon() {
-  return (
-    <svg
-      className={styles.spinnerSvg}
-      width="15"
-      height="15"
-      viewBox="0 0 42 42"
-    >
-      <circle
-        className={styles.spinnerTrack}
-        cx="21"
-        cy="21"
-        r="17"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="5"
-      />
-      <circle
-        className={styles.spinnerArc}
-        cx="21"
-        cy="21"
-        r="17"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="5"
-        strokeLinecap="round"
-        strokeDasharray="34 200"
-      />
-    </svg>
-  );
-}
-
-function StageList({
-  stages,
-  stageIndex,
-}: {
-  stages: Stage[];
-  stageIndex: number;
-}) {
-  return (
-    <div className={styles.stagePanel}>
-      {stages.map((s, i) => {
-        const state =
-          i < stageIndex ? "done" : i === stageIndex ? "active" : "pending";
-        return (
-          <div className={styles.stageRow} key={s.key}>
-            {state === "done" ? (
-              <svg
-                className={styles.stageDot}
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="var(--accent-green)"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-            ) : (
-              <span className={styles.stageDot}>
-                <span
-                  className={
-                    state === "active"
-                      ? styles.stageDotActive
-                      : styles.stageDotPending
-                  }
-                />
-              </span>
-            )}
-            <span
-              className={`${styles.stageLabel} ${
-                state === "active"
-                  ? styles.stageLabelActive
-                  : state === "pending"
-                    ? styles.stageLabelPending
-                    : styles.stageLabelDone
-              }`}
-            >
-              {s.label}
-            </span>
-            <span className={styles.stageLine} />
-            <span className={styles.stageNote}>{s.note}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 export default function ComposerBar({
   open,
@@ -172,46 +68,22 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeStages, setActiveStages] = useState<Stage[] | null>(null);
+  const [activeStages, setActiveStages] = useState<StageDef[] | null>(null);
   const [activeDispatch, setActiveDispatch] = useState<Dispatch | null>(null);
-  const [polledStage, setPolledStage] = useState<string | null>(null);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const {
+    polledStage,
+    start: startProgress,
+    reset: resetProgress,
+  } = useStageProgress();
 
   const newRepo = newTaskRepo || repos[0] || "";
   const isReply = mode === "reply";
 
-  function stopPolling() {
-    if (pollTimer.current !== null) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }
-
-  // 送信開始時に呼ぶ。progressIdを発行し、サーバのon_stageコールバックが実際に
-  // 完了させた段階（orchestrator/orchestrator/server.py の ProgressStore）を
-  // /api/progress からポーリングして反映する。擬似的な時間経過ではなく実処理に
-  // 連動させるための仕組み。
-  function startStages(stages: Stage[]): string {
-    stopPolling();
-    const progressId = randomProgressId();
-    setActiveStages(stages);
-    setPolledStage(null);
-    pollTimer.current = setInterval(() => {
-      fetchProgress(progressId)
-        .then((res) => setPolledStage(res.stage))
-        .catch(() => {});
-    }, PROGRESS_POLL_INTERVAL_MS);
-    return progressId;
-  }
-
   function endStages() {
-    stopPolling();
+    resetProgress();
     setActiveStages(null);
     setActiveDispatch(null);
-    setPolledStage(null);
   }
-
-  useEffect(() => stopPolling, []);
 
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
@@ -229,7 +101,8 @@ export default function ComposerBar({
     if (!message.trim()) return;
     setSubmitting(true);
     setError(null);
-    const progressId = startStages(REPLY_STAGES);
+    setActiveStages(REPLY_STAGES);
+    const progressId = startProgress();
     const action: InstructAction = "instruct";
     const target = replyTarget;
     onReplySubmittingChange(target);
@@ -254,9 +127,10 @@ export default function ComposerBar({
     setSubmitting(true);
     setError(null);
     setActiveDispatch(dispatch);
-    const progressId = startStages(
+    setActiveStages(
       dispatch === "immediate" ? CREATE_IMMEDIATE_STAGES : CREATE_QUEUED_STAGES,
     );
+    const progressId = startProgress();
     postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch, progressId)
       .then(() => {
         onClose();
@@ -271,15 +145,9 @@ export default function ComposerBar({
       });
   }
 
-  // ポーリングで得た実際の完了ステップ（polledStage）から、表示すべき段階の
-  // インデックスを導出する。まだ何も報告されていなければ先頭の段階を進行中として
-  // 表示し、報告済みの段階までは完了扱いにする。
-  const stageIndex = activeStages
-    ? Math.min(
-        activeStages.length - 1,
-        Math.max(0, activeStages.findIndex((s) => s.key === polledStage) + 1),
-      )
-    : 0;
+  const resolvedStages = activeStages
+    ? resolveStages(activeStages, polledStage, "busy")
+    : null;
 
   if (!open) {
     return (
@@ -434,8 +302,8 @@ export default function ComposerBar({
                 {submitting ? "送信中…" : "指示を送信"}
               </button>
             </div>
-            {submitting && activeStages && (
-              <StageList stages={activeStages} stageIndex={stageIndex} />
+            {submitting && resolvedStages && (
+              <StageList stages={resolvedStages} />
             )}
           </div>
         ) : (
@@ -533,8 +401,8 @@ export default function ComposerBar({
                   : "あとで着手（todo）"}
               </button>
             </div>
-            {submitting && activeStages && (
-              <StageList stages={activeStages} stageIndex={stageIndex} />
+            {submitting && resolvedStages && (
+              <StageList stages={resolvedStages} />
             )}
           </div>
         )}
