@@ -31,12 +31,15 @@
 #                          `PRAGMA user_version`を本スクリプトが期待するスキーマ
 #                          バージョン（EXPECTED_USAGE_DB_SCHEMA_VERSION、
 #                          orchestrator/orchestrator/usage_store.pyの
-#                          SCHEMA_VERSIONと同じ値を保持）と比較し、一致しない
-#                          場合は自動移行が未対応であるとしてエラーで停止する。
-#                          user_version未設定(0)の場合は、スキーマバージョン
-#                          管理導入（issue #155）より前に作成されたDBとみなし
-#                          そのままコピーしてよい（テーブル定義は変更されて
-#                          いないため）
+#                          SCHEMA_VERSIONと同じ値を保持）が対応する範囲かを
+#                          確認し、対応外の場合は自動移行が未対応であるとして
+#                          エラーで停止する。user_version未設定(0)の場合は、
+#                          スキーマバージョン管理導入（issue #155）より前に
+#                          作成されたDBとみなしそのままコピーしてよい。0より
+#                          新しく現在のSCHEMA_VERSIONより古いバージョンも、
+#                          コピー後に新バージョンのorchestratorが初回接続時に
+#                          自動で引き上げるため、それが非破壊的な変更である限り
+#                          コピー可能とする（issue #86でversion 1→2を対応）
 #   .env                    ユーザー設定（SLACK_WEBHOOK_URL等）
 #   logs/                   Agent Runner実行ログ等（--with-logs指定時のみ）
 #
@@ -52,7 +55,8 @@ NEW_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # orchestrator/orchestrator/usage_store.py の SCHEMA_VERSION と同じ値を保つこと。
 # 一致しない値のままリリースすると、実際にはコピー不可能なスキーマ変更後の
 # usage.dbを誤って「コピー可能」と判定してしまう。
-EXPECTED_USAGE_DB_SCHEMA_VERSION=1
+# issue #86でlocal_llm_usage_reportsテーブルを追加したためversion 2へ更新。
+EXPECTED_USAGE_DB_SCHEMA_VERSION=2
 
 log() {
     echo "[migrate] $*"
@@ -185,12 +189,24 @@ if [ -f "${USAGE_DB_SRC}" ]; then
         exit 1
     fi
 
+    # 0/1/2いずれも、コピー後に新バージョンのorchestrator（usage_store.py
+    # _connect()）が初回接続時に自動でEXPECTED_USAGE_DB_SCHEMA_VERSIONへ
+    # 引き上げる（version 1→2はissue #86でlocal_llm_usage_reportsテーブルを
+    # 追加しただけで、既存列の変更を伴わないデータ移行不要な変更のため）。
+    # このスクリプト自体はファイルコピーのみでスキーマ変換は行わないため、
+    # 新コードが自動移行できないバージョンのみを拒否する。将来usage_store.py
+    # の_connect()に非破壊的な自動移行を追加した場合は、ここにも同じ
+    # バージョンを追加すること。データ移行が必要な変更を加える場合は、
+    # その時点で自動アップグレード自体を見直すこと。
     SRC_SCHEMA_VERSION="$(sqlite3 "${USAGE_DB_SRC}" 'PRAGMA user_version;')"
-    if [ "${SRC_SCHEMA_VERSION}" != "0" ] && [ "${SRC_SCHEMA_VERSION}" != "${EXPECTED_USAGE_DB_SCHEMA_VERSION}" ]; then
-        err "config/usage.db のスキーマバージョン(${SRC_SCHEMA_VERSION})が、本スクリプトが対応するバージョン(${EXPECTED_USAGE_DB_SCHEMA_VERSION})と一致しません。"
-        err "このバージョン間の自動移行には対応していません。手動での移行、または対応するバージョンのmigrate.shを使ってください。"
-        exit 1
-    fi
+    case "${SRC_SCHEMA_VERSION}" in
+        0|1|2) ;;
+        *)
+            err "config/usage.db のスキーマバージョン(${SRC_SCHEMA_VERSION})が、本スクリプトが対応するバージョン(${EXPECTED_USAGE_DB_SCHEMA_VERSION})と一致しません。"
+            err "このバージョン間の自動移行には対応していません。手動での移行、または対応するバージョンのmigrate.shを使ってください。"
+            exit 1
+            ;;
+    esac
 
     if [ -f "${USAGE_DB_DST}" ]; then
         if [ "${FORCE}" -ne 1 ]; then

@@ -29,7 +29,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
-from orchestrator.usage_store import UsageRecord
+from orchestrator.usage_store import LocalLlmUsageReport, UsageRecord
 
 # UTCの01:02:03はJSTで同日10:02:03になる（ログファイル名がJST基準である
 # ことをtest_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output
@@ -109,6 +109,14 @@ class FakeRecordUsage:
 
     def __call__(self, records: list[UsageRecord], **kwargs: object) -> None:
         self.calls.append(list(records))
+
+
+class FakeRecordLocalLlmUsageReport:
+    def __init__(self) -> None:
+        self.calls: list[LocalLlmUsageReport] = []
+
+    def __call__(self, report: LocalLlmUsageReport, **kwargs: object) -> None:
+        self.calls.append(report)
 
 
 class FakeResolvePrNumber:
@@ -297,6 +305,24 @@ def test_build_claude_command_appends_local_llm_instruction() -> None:
 
     assert "deepseek-coder-v2:16b" in instruction
     assert "gemma2" in instruction
+
+
+def test_build_claude_command_instructs_local_llm_usage_reporting() -> None:
+    """issue #86: 最終応答にローカルLLM活用状況の報告(人間向け・機械可読)を
+
+    含めるよう指示していることを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "## ローカルLLM活用" in instruction
+    assert agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX in instruction
+    assert '"used": true' in instruction
+    assert '"used": false' in instruction
 
 
 def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> None:
@@ -710,6 +736,7 @@ def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_p
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
         get_session_id_fn=get_session,
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -755,6 +782,7 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
         get_session_id_fn=get_session,
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -797,6 +825,7 @@ def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_pat
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
         get_session_id_fn=get_session,
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -1326,6 +1355,223 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
     )
 
     assert record_usage_fn.calls == []
+
+
+def test_extract_local_llm_usage_report_parses_used_marker() -> None:
+    """issue #86: 最終応答中の機械可読マーカー(used: true)をパースできることを確認する。"""
+    payload = {
+        "result": (
+            "## ローカルLLM活用\n"
+            "コードレビュー支援でdeepseek-coder-v2:16bを使用しました。\n\n"
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": true, "model": "deepseek-coder-v2:16b", '
+            '"task_type": "code_review_support", "note": "PRのレビュー補助"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=True,
+        model="deepseek-coder-v2:16b",
+        task_type="code_review_support",
+        note_or_reason="PRのレビュー補助",
+    )
+
+
+def test_extract_local_llm_usage_report_parses_unused_marker_with_reason() -> None:
+    payload = {
+        "result": (
+            "## ローカルLLM活用\n"
+            "該当する補助タスクが発生しなかったため使用しませんでした。\n\n"
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": false, "reason": "該当する補助タスクが発生しなかった"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=False,
+        model=None,
+        task_type=None,
+        note_or_reason="該当する補助タスクが発生しなかった",
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_marker_missing() -> None:
+    payload = {"result": "実装しました。"}
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_payload_missing() -> None:
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            None, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_marker_body_is_invalid_json() -> None:
+    """issue #78・#82・#84と同種のAI自己申告依存リスク。
+
+    壊れたJSONでも例外にせず記録をスキップすることを確認する。
+    """
+    payload = {"result": (f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\nnot valid json\n-->")}
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_ignores_arrow_inside_note_text() -> None:
+    """note内に`-->`という部分文字列が含まれても、JSONオブジェクトの範囲だけを
+
+    正しく抽出できることを確認する（`.*?-->`の非貪欲マッチだけだと、note内の
+    `-->`で早期に閉じタグとみなしパースが壊れてしまう）。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": true, "model": "deepseek-coder-v2:16b", '
+            '"task_type": "code_review_support", '
+            '"note": "矢印記法(-->)に言及したレビュー"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=True,
+        model="deepseek-coder-v2:16b",
+        task_type="code_review_support",
+        note_or_reason="矢印記法(-->)に言及したレビュー",
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_used_is_not_a_bool() -> None:
+    """issue #78・#82・#84と同種のAI自己申告依存リスク。
+
+    `"used": "false"`のような文字列は`bool()`変換で誤って真になるため、
+    真偽値リテラルでない場合は信頼できる自己申告とみなさずスキップすることを
+    確認する。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": "false", "reason": "..."}\n'
+            "-->"
+        )
+    }
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    summary = (
+        "## ローカルLLM活用\n"
+        "コードレビュー支援でdeepseek-coder-v2:16bを使用しました。\n\n"
+        f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+        '{"used": true, "model": "deepseek-coder-v2:16b", '
+        '"task_type": "code_review_support", "note": "PRのレビュー補助"}\n'
+        "-->"
+    )
+    payload_line = result_line({"result": summary, "is_error": False})
+    popen = FakePopenFactory(lines=[payload_line], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
+        now=FIXED_NOW,
+    )
+
+    assert record_local_llm_usage_report_fn.calls == [
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=1,
+            used=True,
+            model="deepseek-coder-v2:16b",
+            task_type="code_review_support",
+            note_or_reason="PRのレビュー補助",
+        )
+    ]
+
+
+def test_run_agent_runner_does_not_record_local_llm_usage_report_when_marker_missing(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line({"result": "実装しました。", "is_error": False})
+    popen = FakePopenFactory(lines=[payload_line], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
+        now=FIXED_NOW,
+    )
+
+    assert record_local_llm_usage_report_fn.calls == []
 
 
 def test_cleanup_old_agent_logs_removes_files_older_than_retention_days(tmp_path: Path) -> None:

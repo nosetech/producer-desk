@@ -15,6 +15,12 @@ orchestrator/ollama_bench.py`（`ollama-bench` CLI、Ollama REST APIを直接呼
 出す。手動ベンチマークとAgent Runner本番経路のローカルLLM生成呼び出しの両方
 から使われる。issue #107）からのみ値が入る。Claude Code実行分の記録では常に
 `None`になる。
+
+`local_llm_usage_reports`テーブルは、上記の実測値とは別に「補助タスクで
+ローカルLLMを使ったか（使わなかったか）」というAgent Runner自身の自己申告を
+記録する（issue #86）。Agent Runnerが最終応答に埋め込む機械可読マーカーを
+`agent_runner.py`側でパースし、本モジュールの`record_local_llm_usage_report`
+経由で書き込む。
 """
 
 from __future__ import annotations
@@ -63,13 +69,31 @@ CREATE TABLE IF NOT EXISTS usage_records (
 )
 """
 
+# issue #86: Agent Runnerが補助タスクでローカルLLMを使ったかどうかの自己申告
+# （issueコメントの機械可読マーカー）を記録するテーブル。`usage_records`とは
+# 目的が異なる（トークン数の実測ではなく「使ったかどうか」の自己申告）ため、
+# 既存テーブルへの列追加ではなく別テーブルとする。
+_CREATE_LOCAL_LLM_USAGE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS local_llm_usage_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    issue_number INTEGER NOT NULL,
+    used INTEGER NOT NULL,
+    model TEXT,
+    task_type TEXT,
+    note_or_reason TEXT
+)
+"""
+
 # config/usage.dbのスキーマバージョン（SQLiteの`PRAGMA user_version`で管理）。
 # 将来テーブル定義を変更する場合はこの値をインクリメントし、_connect()に
 # 旧バージョンからの変換ロジックを追加する。配布パッケージのバージョンアップ時に
 # 状態ファイルを引き継ぐ dist/scripts/migrate.sh は、コピー可否の判定にこの値と
 # 同じ値（EXPECTED_USAGE_DB_SCHEMA_VERSION）を独立に保持しているため、この値を
 # 変更する際は同スクリプトも合わせて更新すること（issue #155）。
-SCHEMA_VERSION = 1
+# issue #86でlocal_llm_usage_reportsテーブルを追加したためversion 2へ更新。
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -109,7 +133,27 @@ class LimitStatus:
     reset_at_text: str | None
 
 
+@dataclass
+class LocalLlmUsageReport:
+    repo: str
+    issue_number: int
+    used: bool
+    model: str | None = None
+    task_type: str | None = None
+    note_or_reason: str | None = None
+    recorded_at: str | None = None  # 未指定時はrecord_local_llm_usage_report呼び出し時刻を使う
+
+
+@dataclass
+class LocalLlmUsageSummary:
+    used: bool
+    model: str | None
+    task_type: str | None
+    count: int
+
+
 RecordUsageFn = Callable[..., None]
+RecordLocalLlmUsageReportFn = Callable[..., None]
 
 
 def parse_limit_reset_text(message: str) -> str | None:
@@ -121,12 +165,19 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute(_CREATE_TABLE_SQL)
+    conn.execute(_CREATE_LOCAL_LLM_USAGE_TABLE_SQL)
 
     current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if current_version == 0:
-        # 新規作成時、またはスキーマバージョン管理導入（issue #155）より前に
-        # 作成された既存DB。後者はテーブル定義に変更が無いため、そのまま
-        # SCHEMA_VERSIONを書き込んで問題ない。
+    if current_version in (0, 1):
+        # version 0: 新規作成時、またはスキーマバージョン管理導入（issue #155）より前に
+        # 作成された既存DB。
+        # version 1: local_llm_usage_reportsテーブル追加（issue #86、SCHEMA_VERSION 2）
+        # より前に作成された既存DB。
+        # いずれもusage_recordsの既存列定義自体は変更されておらず、上のCREATE TABLE
+        # IF NOT EXISTSで新テーブルが追加されるだけのため、データ移行なしでそのまま
+        # SCHEMA_VERSIONへ引き上げてよい。列削除・列型変更等、データ移行が必要な
+        # 変更を将来加える場合はこの単純な引き上げでは済まないため、その時点で
+        # 個別の変換ロジックに置き換えること。
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif current_version != SCHEMA_VERSION:
         raise RuntimeError(
@@ -209,6 +260,55 @@ def daily_model_usage(
             output_tokens=row[3],
             total_cost_usd=row[4],
         )
+        for row in rows
+    ]
+
+
+def record_local_llm_usage_report(
+    report: LocalLlmUsageReport,
+    *,
+    db_path: Path = DEFAULT_USAGE_DB_PATH,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> None:
+    """Agent Runnerによるローカルsystem LLM活用状況の自己申告を1件追記する。"""
+    timestamp = report.recorded_at or now().isoformat()
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO local_llm_usage_reports ("
+            "recorded_at, repo, issue_number, used, model, task_type, note_or_reason"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                timestamp,
+                report.repo,
+                report.issue_number,
+                int(report.used),
+                report.model,
+                report.task_type,
+                report.note_or_reason,
+            ),
+        )
+
+
+def local_llm_usage_summary(
+    *,
+    db_path: Path = DEFAULT_USAGE_DB_PATH,
+    days: int = 7,
+    today: date | None = None,
+) -> list[LocalLlmUsageSummary]:
+    """過去`days`日分（当日含む）のローカルLLM活用状況を使用有無・モデル・タスク種別別に集計する。"""
+    today = today or datetime.now(_JST).date()
+    since = (today - timedelta(days=days - 1)).isoformat()
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT used, model, task_type, COUNT(*) "
+            "FROM local_llm_usage_reports "
+            "WHERE substr(datetime(recorded_at, '+9 hours'), 1, 10) >= ? "
+            "GROUP BY used, model, task_type "
+            "ORDER BY used DESC, model ASC, task_type ASC",
+            (since,),
+        ).fetchall()
+    return [
+        LocalLlmUsageSummary(used=bool(row[0]), model=row[1], task_type=row[2], count=row[3])
         for row in rows
     ]
 
