@@ -22,21 +22,25 @@ flowchart TB
         D1["Agent Runner: project-a<br/>claude -p（ワンショット、worktree隔離）"]
         D2["Agent Runner: project-b<br/>claude -p（ワンショット、worktree隔離）"]
         D3["Agent Runner: project-c<br/>claude -p（ワンショット、worktree隔離）"]
+        L["LiteLLM Proxy<br/>（ネイティブ構成・DBなし運用）"]
     end
 
     H["GitHub Issues（データ層・状態機械）"]
     Slack["Slack（Incoming Webhook）"]
+    Ext["他社プロバイダ / ローカルLLM<br/>（実行手段としてLiteLLM Proxy選択時のみ）"]
 
     A <--> B
     B <--> C
     C -- "ポーリング" --> H
     C -- "検知した指示をディスパッチ" --> D1 & D2 & D3
     D1 & D2 & D3 -- "ラベル更新・コメント投稿" --> H
+    D1 & D2 & D3 -. "ANTHROPIC_BASE_URL設定時のみ" .-> L
+    L -. "変換中継" .-> Ext
     C -- "判断待ち・レビュー待ち発生を通知（Webhook POST）" --> Slack
     Slack --> N
 ```
 
-- モデルルーター（LiteLLM Proxy）はMVPでは導入しない（[5章](#5-モデルルーティング)参照）。
+- 自走タスク本体の実行手段（Claude Code CLI直利用＋サブスクリプション／LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金）はプロジェクトごとにユーザーが選択できる（[5章](#5-モデルルーティング)参照）。LiteLLM Proxyはネイティブ構成（Docker不使用）で自宅ネットワーク内に導入し、実行手段としてLiteLLM Proxy経由が選択された場合のみAgent Runnerからの経由先となる（未選択時は素通しでClaude Code CLIが直接Anthropic APIへ接続する）。
 - ダッシュボードへのアクセスは**MVPでは同一LAN内アクセスのみ**で保護する（[8章](#8-ネットワーク構成)参照）。外出先からのTailscale経由アクセスは将来拡張とする。Slack通知はオーケストレータからのWebhook送信のみで、ローカルネットワークの外（Slack社インフラ）を経由する点に留意する。
 
 ### コンポーネント一覧と責務
@@ -46,6 +50,7 @@ flowchart TB
 | ダッシュボード（Web UI） | 判断待ち一覧／活動ログ／利用量・リミットモニターの表示、ワンタップ承認の入力 | Next.js（React） |
 | オーケストレータ | GitHub Issuesのポーリング、状態集約、指示コメントの検知・ディスパッチ、Slackへの通知送信 | Pythonポーリングスクリプト（PoC-Aの`instruction_watcher.py`を発展） |
 | Agent Runner | 実際にコードを書く実行単位。プロジェクトごとにgit worktreeで隔離し、ディスパッチ時にワンショットで起動 | Claude Code CLI（`claude -p`） |
+| LiteLLM Proxy | Agent Runnerの実行手段としてLiteLLM Proxy経由が選択された場合のみ、Claude Code CLIの接続先を他社プロバイダ・ローカルLLMへ変換中継する（選択されない限り経路に入らない） | Python（`litellm[proxy]`、ネイティブ構成） |
 | データ層 | タスク状態・指示履歴の正 | GitHub Issues/Projects |
 | 通知 | 判断待ち・レビュー待ち発生時にモバイルへ知らせる（ダッシュボードでの定期確認運用が基本、Slackは補完） | Slack（Incoming Webhook） |
 
@@ -92,8 +97,16 @@ flowchart TB
 
 ## 5. モデルルーティング
 
-- コード変更を伴う自走タスク本体は**LiteLLM Proxyを導入しない**。Agent RunnerはClaude Code CLIを直接利用し、Anthropic API従量課金ではなくClaude Code Pro/Maxプラン等のサブスクリプションを利用する（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)）。
-- **ローカルLLMの補助的併用**（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は、LiteLLM Proxy等のモデルルーティング層を追加せず、Agent Runner（Claude Code CLI）が直接呼び出す構成とする。モデルの利用可否確認（利用量メトリクス不要）はMCP `ollama-client`（ホスト単位で構成済み、`~/.claude.json`。DesignSync同様に追加のインフラ・認証フローなしで`claude -p`実行時から利用できる）でよいが、実際の生成呼び出しは後述の`ollama-bench`コマンド経由でOllama REST APIを直接叩く。
+issue #148での検討・設計判断フェーズ（issue #174はその結果のdocs反映）を経て、コード変更を伴う自走タスク本体を含め、実行手段をプロジェクトごとにユーザーが選択できる方針へ転換した。従来の「自走タスク本体はClaude Codeのみ」という制限は撤廃する（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)）。
+
+- **実行手段の選択肢**:
+  - **(A) Claude Code CLI直利用**: 従来通りAnthropic API従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプションを利用する。
+  - **(B) LiteLLM Proxy経由**: Claude Code CLIの接続先をLiteLLM Proxyへ切り替え、他社プロバイダのモデル・ローカルLLMを自走タスク本体の実行に利用する。この経路は（Claudeモデルを指定した場合を含め）Anthropic API従量課金相当の課金方式に切り替わる。
+  - デフォルトはプロジェクトごとの設定に従い、issueコメントでの都度指示により一時的にデフォルトから変更できる（設定方式は[基本設計書 4章](./basic-design.md#4-モデルルーター設定設計)参照。設定画面自体は別issueで扱う）。
+- **導入方式**: LiteLLM Proxyは[9章](#9-実行環境)のDocker不使用というMVP方針を踏襲し、ネイティブ構成（`pip install 'litellm[proxy]'`）でローカルPC上に導入する。
+- **Claude Code CLIとの統合方式**: Claude Code CLIは環境変数`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`で任意のAnthropic Messages API互換エンドポイント（`/v1/messages`）に接続先を切り替えられる。LiteLLM ProxyはこのAPIを実装し、OpenAI/Gemini/DeepSeek/Ollama等への変換中継を行えるため、既存のAgent Runner起動方式（[2章](#2-エージェント実行基盤)の`claude -p ... --resume`ワンショット実行・worktree隔離）を作り替える必要はない。オーケストレータはサブプロセス起動時にこれらの環境変数を切り替えるだけで実行手段を変更できる（詳細は[基本設計書 3-1](./basic-design.md#3-1-起動パラメータ)参照）。`ANTHROPIC_BASE_URL`設定時はサブスクリプションOAuthではなく静的トークン認証になる点に注意する。
+- **利用量計測・DBなし運用**: LiteLLM Proxyの利用量計測・仮想キー管理機能はPostgreSQLが前提だが、本システムは独自DBを増やさずSQLite（`config/usage.db`）に一本化する既存方針（[要件定義書](./requirements.md)、[3章](#3-タスク状態管理)参照）を維持するため、PostgreSQLは導入せずDBなし運用とする。カスタムコールバック（`litellm.integrations.custom_logger`）でリクエストごとの計測結果を既存の`orchestrator/orchestrator/usage_store.py`（SQLite `config/usage.db`）に統合記録する（詳細は[基本設計書 4章](./basic-design.md#4-モデルルーター設定設計)参照）。予算上限到達時の自動ブロック（DBが無いと機能しない機能）は不採用とし、可視化のみを目的とする。
+- **ローカルLLMの補助的併用**（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は、上記のLiteLLM Proxy導入後も変更しない。引き続きLiteLLM Proxyを経由せず、Agent Runner（Claude Code CLI）が直接呼び出す構成とする。モデルの利用可否確認（利用量メトリクス不要）はMCP `ollama-client`（ホスト単位で構成済み、`~/.claude.json`。DesignSync同様に追加のインフラ・認証フローなしで`claude -p`実行時から利用できる）でよいが、実際の生成呼び出しは後述の`ollama-bench`コマンド経由でOllama REST APIを直接叩く。自走タスク本体の実行手段選択（LiteLLM Proxy経由）とは目的・計測経路が異なるため統合しない。
   - 当初はAgent Runnerの本番経路もMCP `ollama-client`経由の生成呼び出し（`mcp__ollama-client__ollama_chat`）に統一し、メトリクス取得を目的としない構成としていた。しかしMCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`ollama_chat`ツールはOllama REST APIレスポンスから`message.content`のみを抽出して返し、`prompt_eval_count`/`eval_count`/`total_duration`等のメトリクスを破棄する実装であることが判明し、本番経路のローカルLLM利用量が利用量表示UI・`config/usage.db`に一切反映されない問題が起きた（issue #104で発覚、issue #107で対応）。人間によるモデル選定・性能検証のための手動ベンチマークで同じ制約に対応するために追加していた`orchestrator/orchestrator/ollama_bench.py`（`ollama-bench`コマンド、Ollama REST API `POST /api/chat`、`stream: false`を直接呼び出す）を、Agent Runner本番経路のローカルLLM生成呼び出しにも一本化して使うことで、`--record`オプションにより計測結果を`usage_store.py`（[基本設計書 2-2](./basic-design.md#2-2-データ取得仕様ポーリング)）の`config/usage.db`に統合して記録できるようにした。
 - Claude/ローカルLLMの使い分けポリシーの実装方針は**Agent Runner側**に持たせる。オーケストレータはモデル選択ロジックを持たず、`--append-system-prompt`でタスク種別ごとの推奨ローカルLLMをAgent Runnerに指示し、実際にMCPツールを呼ぶかどうか・どのモデルを使うかはAgent Runner自身（Claude Code）が判断する（実装は[基本設計書 4章](./basic-design.md#4-モデルルーター設定設計)、タスク種別ごとの推奨モデルは[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)参照）。
 
