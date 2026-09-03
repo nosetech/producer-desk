@@ -932,7 +932,7 @@ def run_agent_runner(
         # 後続処理の自動再開はorchestrator.ci_watcherのポーリングに委ねる。
         current_labels = get_labels(project.repo, issue_number)
         if STATUS_IN_PROGRESS in current_labels:
-            if extract_ci_wait_marker(_extract_summary(payload)) is None:
+            if extract_ci_wait_marker(summary) is None:
                 transition_label(
                     project.repo,
                     issue_number,

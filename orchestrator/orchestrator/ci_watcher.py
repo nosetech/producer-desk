@@ -21,6 +21,8 @@ Agent Runnerは、CI完了待ちのためにセッションを意図的に終了
 
 from __future__ import annotations
 
+import logging
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -38,14 +40,23 @@ from orchestrator.labels import (
     transition_label,
 )
 
+logger = logging.getLogger(__name__)
+
 NowFn = Callable[[], datetime]
 
 # 無限待機の防止（修正方針5）。オーケストレータ自身のポーリングにも上限を設け、
 # それでも完了しなければ初めてneeds-human-decisionへ遷移させるフェイルセーフとする。
 CI_WAIT_TIMEOUT = timedelta(hours=6)
 
+# issue #173のコードレビューで指摘: `gh pr create`直後〜GitHub Actionsが
+# check-suiteを登録するまでの短いタイムラグでは`statusCheckRollup`が一時的に
+# 空リストになり得る（CIが1件も設定されていないPRと区別がつかない）。この場合に
+# 「CI完了」と断定する文面で再開させると、Agent Runnerが実際にはCIが走ってすら
+# いない状態を完了と誤認しかねない。再開後にAgent Runner自身が実際の状態を
+# 再確認できるよう、断定形ではなく確認を促す文面にしておく。
 CI_COMPLETED_RESUME_MESSAGE = (
-    "CIが完了しました。statusCheckRollupの結果を確認し、後続の対応"
+    "CIの完了、またはCIが設定されていない状態を検知しました。念のため"
+    "statusCheckRollupの最新状態を確認したうえで、後続の対応"
     "（レビュー結果の確認・必要な修正・レビュー結果のPRへのコメント投稿・"
     "状態ラベルの遷移判断）を継続してください。"
 )
@@ -54,14 +65,21 @@ CI_COMPLETED_RESUME_MESSAGE = (
 def _is_check_pending(check: dict) -> bool:
     """GitHub Checks API（`status`）・レガシーCommit Status API（`state`）双方に対応する。
 
-    `status`（CheckRun）が存在すれば`COMPLETED`以外を待機中とみなし、無ければ
-    `state`（StatusContext）が`PENDING`かどうかで判定する（`github_client.
-    get_pr_status_check_rollup`のdocstring参照）。
+    `status`（CheckRun）が存在すれば`COMPLETED`以外を待機中とみなし、`state`
+    （StatusContext）が存在すれば`PENDING`かどうかで判定する（`github_client.
+    get_pr_status_check_rollup`のdocstring参照）。どちらのキーも持たない想定外の
+    形状の場合はfail-closed（待機中とみなす）とする。CI未完了を見落として早期に
+    Agent Runnerを再開してしまう方が、本修正が最も避けたい失敗モード（issue #173）
+    に対して危険側であるため、不明な形状では待機継続を選び、最終的には
+    `CI_WAIT_TIMEOUT`のフェイルセーフに委ねる（issue #173コードレビュー）。
     """
     status = check.get("status")
     if status is not None:
         return status != "COMPLETED"
-    return check.get("state") == "PENDING"
+    state = check.get("state")
+    if state is not None:
+        return state == "PENDING"
+    return True
 
 
 @dataclass
@@ -140,8 +158,28 @@ def process_ci_waiting_issues(
             current_time = now()
             state = tracker.observe(repo, issue.number, pr_number, now=current_time)
 
-            checks = get_pr_status_check_rollup(repo, pr_number)
-            if any(_is_check_pending(check) for check in checks):
+            # issue #173コードレビュー: `pr_number`はAgent Runnerの最終応答から
+            # 抽出したAI自己申告値であり、既に存在しない・誤ったPR番号を指している
+            # 可能性を排除できない（issue #78・#82・#84と同種のリスク）。
+            # `gh pr view`の失敗（`CalledProcessError`）を捕捉せず伝播させると、
+            # `run_polling_loop`のバックグラウンドスレッド自体が停止し、全プロジェクト
+            # のポーリングが黙って止まってしまう。ここでは失敗を「CI未完了」と同様に
+            # 扱って次回ポーリングでの再試行に委ね、それでも解消しなければ最終的に
+            # `CI_WAIT_TIMEOUT`のフェイルセーフでneeds-human-decisionへ落とす。
+            try:
+                checks: list[dict] | None = get_pr_status_check_rollup(repo, pr_number)
+            except subprocess.CalledProcessError:
+                logger.warning(
+                    "%s#%s (PR #%s) のCIステータス取得に失敗しました。次回ポーリングで"
+                    "再試行します。",
+                    repo,
+                    issue.number,
+                    pr_number,
+                    exc_info=True,
+                )
+                checks = None
+
+            if checks is None or any(_is_check_pending(check) for check in checks):
                 if current_time - state.first_seen >= CI_WAIT_TIMEOUT:
                     timeout_hours = int(CI_WAIT_TIMEOUT.total_seconds() // 3600)
                     post_comment(

@@ -7,6 +7,7 @@ CI完了を検知したAgent Runnerの自動再開・タイムアウト時のnee
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -130,6 +131,79 @@ def test_does_not_dispatch_when_ci_still_pending() -> None:
     comments = FakeComments()
     dispatch_queue, calls = _synchronous_dispatch_queue()
     get_rollup = FakeStatusCheckRollup({172: [{"status": "IN_PROGRESS"}]})
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 173, [STATUS_IN_PROGRESS], [_ci_wait_comment(172)])
+        ],
+    }
+
+    process_ci_waiting_issues(
+        issues_by_repo,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        get_pr_status_check_rollup=get_rollup,
+        dispatch_queue=dispatch_queue,
+        post_comment=comments.post_comment,
+    )
+
+    time.sleep(0.05)
+    assert calls == []
+    assert labels.labels == {STATUS_IN_PROGRESS}
+
+
+def test_does_not_crash_and_retries_when_status_check_rollup_fetch_fails() -> None:
+    """issue #173コードレビュー再発防止テスト。
+
+    `pr_number`はAgent Runnerの自己申告値であり、既に存在しない・誤ったPR番号を
+    指す可能性がある。`gh pr view`の失敗（`CalledProcessError`）が捕捉されず伝播
+    すると、ポーリングのバックグラウンドスレッド自体が停止してしまう。例外を
+    投げても`process_ci_waiting_issues`自体はクラッシュせず、CI未完了と同様に
+    扱われ（ディスパッチされず、ラベルも維持される）、次回ポーリングでの再試行に
+    委ねられることを確認する。
+    """
+    tracker = CiWaitTracker()
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+
+    def failing_get_rollup(repo: str, pr_number: int) -> list[dict]:
+        raise subprocess.CalledProcessError(1, ["gh", "pr", "view"])
+
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 173, [STATUS_IN_PROGRESS], [_ci_wait_comment(172)])
+        ],
+    }
+
+    process_ci_waiting_issues(
+        issues_by_repo,
+        tracker,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        get_pr_status_check_rollup=failing_get_rollup,
+        dispatch_queue=dispatch_queue,
+        post_comment=comments.post_comment,
+    )
+
+    time.sleep(0.05)
+    assert calls == []
+    assert labels.labels == {STATUS_IN_PROGRESS}
+
+
+def test_treats_unknown_check_shape_as_pending() -> None:
+    """issue #173コードレビュー再発防止テスト。
+
+    `status`・`state`のいずれのキーも持たない想定外の形状の要素は、CI完了と
+    誤認しない（fail-closed = 待機継続）ことを確認する。
+    """
+    tracker = CiWaitTracker()
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    dispatch_queue, calls = _synchronous_dispatch_queue()
+    get_rollup = FakeStatusCheckRollup({172: [{"name": "format-lint-test"}]})
     issues_by_repo = {
         "nosetech/project-a": [
             _issue("nosetech/project-a", 173, [STATUS_IN_PROGRESS], [_ci_wait_comment(172)])
