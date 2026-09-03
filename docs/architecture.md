@@ -23,11 +23,12 @@ flowchart TB
         D2["Agent Runner: project-b<br/>claude -p（ワンショット、worktree隔離）"]
         D3["Agent Runner: project-c<br/>claude -p（ワンショット、worktree隔離）"]
         L["LiteLLM Proxy<br/>（ネイティブ構成・DBなし運用）"]
+        Ollama["ローカルLLM（Ollama）<br/>同一PC上で稼働"]
     end
 
     H["GitHub Issues（データ層・状態機械）"]
     Slack["Slack（Incoming Webhook）"]
-    Ext["他社プロバイダ / ローカルLLM<br/>（実行手段としてLiteLLM Proxy選択時のみ）"]
+    Ext["他社プロバイダAPI<br/>（実行手段としてLiteLLM Proxy選択時のみ）"]
 
     A <--> B
     B <--> C
@@ -36,6 +37,7 @@ flowchart TB
     D1 & D2 & D3 -- "ラベル更新・コメント投稿" --> H
     D1 & D2 & D3 -. "ANTHROPIC_BASE_URL設定時のみ" .-> L
     L -. "変換中継" .-> Ext
+    L -. "変換中継" .-> Ollama
     C -- "判断待ち・レビュー待ち発生を通知（Webhook POST）" --> Slack
     Slack --> N
 ```
