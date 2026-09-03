@@ -14,10 +14,13 @@ import threading
 
 from orchestrator.agent_runner import run_agent_runner
 from orchestrator.aggregation import AggregatedState
+from orchestrator.ci_watcher import CiWaitTracker, process_ci_waiting_issues
 from orchestrator.close_watcher import close_finished_issues
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.config import Project, load_log_retention_days, load_projects
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
+from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
+from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.logging_config import configure_logging
 from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
@@ -64,6 +67,7 @@ def main() -> None:
     stop_event = threading.Event()
     dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects, log_retention_days))
     comment_tracker = CommentTracker()
+    ci_wait_tracker = CiWaitTracker()
     decision_notifier = DecisionNotifier()
     review_notifier = ReviewNotifier()
 
@@ -81,6 +85,19 @@ def main() -> None:
             add_label=gh_add_label,
             remove_label=gh_remove_label,
             dispatch_queue=dispatch_queue,
+        )
+        # issue #173: CI完了待機のため意図的にstatus:in-progressのまま終了した
+        # issueについて、対象PRのCI完了を検知したらAgent Runnerを自動再開する
+        # （検知できずタイムアウトした場合はneeds-human-decisionへフェイルセーフ）。
+        process_ci_waiting_issues(
+            issues_by_repo,
+            ci_wait_tracker,
+            get_labels=gh_get_labels,
+            add_label=gh_add_label,
+            remove_label=gh_remove_label,
+            get_pr_status_check_rollup=gh_get_pr_status_check_rollup,
+            dispatch_queue=dispatch_queue,
+            post_comment=gh_post_comment,
         )
 
     def on_update(state: AggregatedState) -> None:

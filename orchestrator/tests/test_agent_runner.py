@@ -220,6 +220,25 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     assert "gh issue edit 12 --repo nosetech/project-a" in instruction
 
 
+def test_build_claude_command_instructs_ci_wait_marker_instead_of_sleep_polling() -> None:
+    """issue #173の再発防止テスト。
+
+    issue #152/#153が指示していた「sleepを挟んだポーリング」は、Bashツールの長時間
+    sleepチェーン検知でブロックされ実行不能だった。system promptがsleepポーリングを
+    指示せず、代わりにCI待機マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX`）の埋め込み
+    を指示していることを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert agent_runner.CI_WAIT_MARKER_PREFIX in instruction
+    assert "sleepを挟んだポーリングでの待機は行わないで" in instruction
+
+
 def test_build_claude_command_appends_comment_marker_instruction() -> None:
     """issue #43の再発防止テスト。
 
@@ -875,6 +894,47 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
     assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
 
 
+def test_run_agent_runner_success_with_ci_wait_marker_skips_forced_fallback(
+    tmp_path: Path,
+) -> None:
+    """issue #173の再発防止テスト。
+
+    CI完了待ちのため意図的にstatus:in-progressのまま正常終了した場合
+    （最終応答にCI_WAIT_MARKER_PREFIXマーカーが含まれる場合）は、issue #78由来の
+    強制needs-human-decisionフォールバックをスキップし、status:in-progressを
+    維持することを確認する。CI完了の検知・自動再開はorchestrator.ci_watcherに
+    委ねる設計のため、ここではラベルが変化しないことのみを検証する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    result_text = (
+        "CIの完了を待っています。\n\n"
+        f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 172}}\n-->'
+    )
+    popen = FakePopenFactory(lines=[result_line({"result": result_text})], returncode=0)
+    get_session = FakeGetSessionId({("nosetech/project-a", 173): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        173,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_PROGRESS}
+
+
 def test_run_agent_runner_success_with_self_transition_does_not_double_transition(
     tmp_path: Path,
 ) -> None:
@@ -1495,6 +1555,40 @@ def test_extract_local_llm_usage_report_returns_none_when_used_is_not_a_bool() -
         )
         is None
     )
+
+
+def test_extract_ci_wait_marker_parses_pr_number() -> None:
+    """issue #173: 最終応答（またはissueコメント本文）中のCI待機マーカーから
+
+    対象PR番号を抽出できることを確認する。
+    """
+    text = (
+        "CIの完了を待っています。\n\n"
+        f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 172}}\n-->'
+    )
+
+    assert agent_runner.extract_ci_wait_marker(text) == 172
+
+
+def test_extract_ci_wait_marker_returns_none_when_marker_missing() -> None:
+    assert agent_runner.extract_ci_wait_marker("PRを作成しました。") is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_text_is_none_or_empty() -> None:
+    assert agent_runner.extract_ci_wait_marker(None) is None
+    assert agent_runner.extract_ci_wait_marker("") is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_marker_body_is_invalid_json() -> None:
+    text = f"{agent_runner.CI_WAIT_MARKER_PREFIX}\nnot valid json\n-->"
+
+    assert agent_runner.extract_ci_wait_marker(text) is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_pr_number_is_not_an_int() -> None:
+    text = f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": "172"}}\n-->'
+
+    assert agent_runner.extract_ci_wait_marker(text) is None
 
 
 def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: Path) -> None:

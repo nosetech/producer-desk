@@ -37,6 +37,7 @@ DeleteBranchFn = Callable[[str, str], None]
 GetCurrentBranchFn = Callable[[str], str]
 FindOpenPrByBranchFn = Callable[[str, str], dict | None]
 AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
+GetPrStatusCheckRollupFn = Callable[[str, int], list[dict]]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -250,6 +251,30 @@ def append_pr_issue_reference(
         text=True,
         check=True,
     )
+
+
+def get_pr_status_check_rollup(
+    repo: str, pr_number: int, *, run: RunFn = subprocess.run
+) -> list[dict]:
+    """PRのCIチェック結果一覧を取得する（`gh pr view --json statusCheckRollup`）。
+
+    issue #173: `orchestrator.ci_watcher`がCI完了待機中のissueについて、対象PRの
+    CIが完了したかどうかをポーリングで確認するために使う。返り値の各要素は
+    GitHub Checks API由来（`status`: `QUEUED`/`IN_PROGRESS`/`COMPLETED`等）と、
+    レガシーなCommit Status API由来（`state`: `PENDING`/`SUCCESS`/`FAILURE`等）の
+    いずれかの形を取り得る（`gh`のGraphQLクエリがcheck run/status contextを
+    区別せず同一フィールドに混在させて返すため）。`statusCheckRollup`が存在しない
+    （CIが1件も設定されていない）場合は空リストを返す。
+    """
+    result = run(
+        ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+    rollup = data.get("statusCheckRollup")
+    return rollup if isinstance(rollup, list) else []
 
 
 def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:
