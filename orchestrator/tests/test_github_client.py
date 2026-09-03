@@ -11,6 +11,7 @@ from orchestrator.github_client import (
     close_issue,
     delete_branch,
     get_pr_branch,
+    get_pr_status_check_rollup,
     list_issues,
     merge_pr,
     post_comment,
@@ -310,6 +311,36 @@ def test_get_pr_branch_returns_head_ref() -> None:
     assert result == "feature/issue-72-delete-branch"
     [cmd] = fake_run.calls  # type: ignore[attr-defined]
     assert cmd == ["gh", "api", "repos/nosetech/project-a/pulls/33"]
+
+
+def test_get_pr_status_check_rollup_returns_rollup_list() -> None:
+    """issue #173: orchestrator.ci_watcherがCI完了判定に使う取得関数。"""
+    fake_run = _fake_run_raw(
+        {"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]}
+    )
+
+    result = get_pr_status_check_rollup("nosetech/project-a", 172, run=fake_run)
+
+    assert result == [{"status": "COMPLETED", "conclusion": "SUCCESS"}]
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == [
+        "gh",
+        "pr",
+        "view",
+        "172",
+        "--repo",
+        "nosetech/project-a",
+        "--json",
+        "statusCheckRollup",
+    ]
+
+
+def test_get_pr_status_check_rollup_returns_empty_list_when_no_checks_configured() -> None:
+    fake_run = _fake_run_raw({"statusCheckRollup": None})
+
+    result = get_pr_status_check_rollup("nosetech/project-a", 172, run=fake_run)
+
+    assert result == []
 
 
 def test_delete_branch_calls_gh_api_delete_ref() -> None:

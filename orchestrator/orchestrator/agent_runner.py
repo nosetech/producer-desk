@@ -81,6 +81,61 @@ class AgentRunResult:
     success: bool
 
 
+# issue #173: issue #152/#153は「CI待ちをneeds-human-decisionと能動的に誤判断する」
+# 経路のみを塞いだが、以下3点の構造的要因により同症状が別経路で再発した
+# （issue #86実行ログでの実地確認）。
+# 1. #153が指示した「sleepを挟んだポーリング」はBashツールの長時間sleepチェーン
+#    検知でブロックされ、そもそも実行できない。
+# 2. 案内される代替手段のMonitorツールにも20分のハードタイムアウトがあり、CIが
+#    それより長くかかると実際の完了を待たずに強制終了させられる。
+# 3. Monitorの強制終了を受けてAgent Runnerが（能動的にneeds-human-decisionを選ぶ
+#    のではなく）ただターンを終了すると、`run_agent_runner`のissue #78由来の
+#    強制フォールバック安全網（status:in-progressのまま正常終了＝ラベル遷移漏れと
+#    みなす設計）が、CI待ちでの意図的な終了もラベル遷移漏れと区別できず無条件に
+#    needs-human-decisionへ遷移させてしまう。
+#
+# そのため「sleepポーリングで待つ」指示そのものを撤回し、CI待ちのために意図的に
+# ターンを終了する場合はCI_WAIT_MARKER_PREFIXの機械可読マーカーを最終応答に
+# 埋め込むよう指示する方式に変更した。`run_agent_runner`はこのマーカーを検出した
+# 場合に限り強制フォールバックをスキップしstatus:in-progressを維持し
+# （`extract_ci_wait_marker`参照）、CI完了の検知・自動再開はオーケストレータの
+# ポーリング（`orchestrator.ci_watcher`）が担う。
+CI_WAIT_MARKER_PREFIX = "<!-- producer-desk:ci-wait"
+
+_CI_WAIT_MARKER_PATTERN = re.compile(
+    re.escape(CI_WAIT_MARKER_PREFIX) + r"\s*(\{.*?\})\s*-->", re.DOTALL
+)
+
+
+def extract_ci_wait_marker(text: str | None) -> int | None:
+    """本文（最終応答テキスト、またはissueコメント本文）からCI完了待機マーカーの
+
+    対象PR番号を抽出する（issue #173）。マーカーが存在しない・JSONとしてパース
+    できない・`pr_number`が整数でない場合は`None`を返す（AI自己申告への依存という
+    点でissue #78・#82・#84と同種のリスクがあるため、信頼できない入力は静かに
+    無視し、呼び出し元の正常系処理自体は壊さない）。`orchestrator.ci_watcher`が
+    後続ポーリングでissueコメント本文を対象に呼び出す際にも共用する。
+    """
+    if not text:
+        return None
+
+    match = _CI_WAIT_MARKER_PATTERN.search(text)
+    if match is None:
+        return None
+
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        logger.warning("CI完了待機マーカーをJSONとしてパースできませんでした。")
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    pr_number = data.get("pr_number")
+    return pr_number if isinstance(pr_number, int) else None
+
+
 # 状態遷移のうち、正常終了時のstatus:in-review・needs-human-decisionへの遷移は
 # Agent Runner自身が`gh`コマンドで自己付与する設計（docs/basic-design.md 1章）。
 # しかし実際にはこの指示がプロンプトに含まれていないと実行されないことがあり
@@ -114,10 +169,16 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "レビュー待ち一覧に表示されてしまいます（ラベルの有無だけで判定するため）。\n"
     "  なお、CI完了待ちのように単に時間経過を要するだけの状況は、それ自体が"
     "needs-human-decisionへ遷移すべき理由にはなりません。CIが実行中"
-    "（PENDING/IN_PROGRESS）の間はneeds-human-decisionを使わず、"
-    f"`gh pr view <PR番号> --repo {{repo}} --json statusCheckRollup` をBashツールで"
-    "sleepを挟みながら繰り返し確認するポーリングにより、このセッション内で"
-    "status:in-progressのまま待機を継続し、CI完了後に後続作業へ進んでください。\n"
+    "（PENDING/IN_PROGRESS）の間、sleepを挟んだポーリングでの待機は行わないで"
+    "ください（Bashツールの長時間sleepチェーン検知や、代替手段であるMonitorツール"
+    "の20分タイムアウトにより、実行環境上ブロックされるか実際のCI完了を待たずに"
+    "強制終了させられてしまいます）。代わりに、status:in-progressのままこのターンを"
+    "終了し、最終応答に以下の機械可読マーカーを埋め込んでください（本文とマーカーの"
+    "間は空行で区切る）。CI完了の検知と後続処理の再開はオーケストレータのポーリングが"
+    "自動的に行うため、あなた自身がCI結果が出るまで待ち続ける必要はありません。\n"
+    f"  {CI_WAIT_MARKER_PREFIX}\n"
+    '  {{"pr_number": <PR番号（整数）>}}\n'
+    "  -->\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
@@ -863,16 +924,23 @@ def run_agent_runner(
         # （needs-human-decision）」のいずれかに到達している設計のため、
         # status:in-progressのまま変化がなければ常に異常とみなし、
         # needs-human-decisionへ強制的にフォールバックさせる。
+        #
+        # issue #173: ただし、CI完了待ちのためAGENT_RUNNER_LABEL_INSTRUCTIONの
+        # 指示通り意図的にstatus:in-progressのまま終了したケース（最終応答に
+        # CI_WAIT_MARKER_PREFIXマーカーが含まれる）は、上記の「ラベル遷移漏れ」
+        # とは区別し、この強制フォールバックをスキップする。CI完了の検知と
+        # 後続処理の自動再開はorchestrator.ci_watcherのポーリングに委ねる。
         current_labels = get_labels(project.repo, issue_number)
         if STATUS_IN_PROGRESS in current_labels:
-            transition_label(
-                project.repo,
-                issue_number,
-                STATUS_NEEDS_HUMAN_DECISION,
-                get_labels=get_labels,
-                add_label=add_label,
-                remove_label=remove_label,
-            )
+            if extract_ci_wait_marker(_extract_summary(payload)) is None:
+                transition_label(
+                    project.repo,
+                    issue_number,
+                    STATUS_NEEDS_HUMAN_DECISION,
+                    get_labels=get_labels,
+                    add_label=add_label,
+                    remove_label=remove_label,
+                )
         elif STATUS_IN_REVIEW in current_labels:
             _ensure_pr_issue_reference(
                 project.repo,

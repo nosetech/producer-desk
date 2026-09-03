@@ -60,9 +60,15 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
 7. **CI 完了待機と確認**
 
 - GitHub Actions による CI が実行される
-- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）。**CI実行中であること自体は人間の判断が必要な状況ではない。** `PENDING`/`IN_PROGRESS`の間はneeds-human-decisionへ遷移させず、Bashツールで`sleep`を挟んで再度`statusCheckRollup`を確認するポーリングループ等により、同一セッション内で待機を継続しながら`status:in-progress`のまま処理を続ける
-- **CI が SUCCESS で完了したことを確認してから次へ進む**
-- エラーがあれば、原因を調査して修正する
+- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）。**CI実行中であること自体は人間の判断が必要な状況ではない。**
+- **`PENDING`/`IN_PROGRESS`の間、Bashツールでの`sleep`ポーリングやMonitorツールでの監視は使わないこと**（issue #173）。`sleep`を挟んだ長時間ポーリングはBashツールの長時間sleepチェーン検知でブロックされ実行できず、代替のMonitorツールにも20分のハードタイムアウトがあるため、CIがそれより長くかかると実際の完了を待たずに強制終了させられる。これを受けてAgent Runnerがただターンを終了すると、正常終了時の決定的フォールバック（issue #78由来）がCI待ちでの意図的な終了とラベル遷移漏れを区別できず、`needs-human-decision`へ誤って強制遷移してしまう（issue #86で実際に再発）。
+- 代わりに、`status:in-progress`のままこのターンを終了し、最終応答に以下の機械可読マーカーを埋め込む（本文とマーカーの間は空行で区切る）。CI完了の検知と後続処理（レビュー実施・レビュー結果のPRコメント投稿・ラベル遷移判断）の自動再開はオーケストレータのポーリングが担うため、自分自身でCI結果が出るまで待ち続ける必要はない。
+  ```
+  <!-- producer-desk:ci-wait
+  {"pr_number": <PR番号>}
+  -->
+  ```
+- オーケストレータからCI完了検知に伴い再開された場合は、`statusCheckRollup`の結果を確認し、SUCCESSであれば次のステップへ進む。エラーがあれば、原因を調査して修正する
 
 8. **コードレビュー実施**
    - サブエージェント `code-reviewer` を使用して、実装コードの詳細レビューを実施する
