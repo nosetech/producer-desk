@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState
 from orchestrator.config import Project
+from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
@@ -62,9 +63,11 @@ INSTRUCT_PATH = re.compile(
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
+PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
+UpdateExecutionSettingsFn = Callable[..., Project]
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,7 @@ def _make_handler(
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
     sync_worktree: SyncWorktreeFn,
+    update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -261,6 +265,52 @@ def _make_handler(
                 return
 
             self._send_json(404, {"error": "not found"})
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            settings_match = PROJECT_SETTINGS_PATH.match(self.path)
+            if settings_match:
+                self._handle_update_project_settings(settings_match.group("repo"))
+                return
+
+            self._send_json(404, {"error": "not found"})
+
+        def _handle_update_project_settings(self, repo: str) -> None:
+            """issue #176: プロジェクトごとの実行手段デフォルト設定を更新する。
+
+            issue #175（ダッシュボードのプロジェクト設定UI）はこのAPIを呼び出す
+            想定。`config/projects.yaml`への永続化に加え、再起動を待たず次回
+            ディスパッチから反映されるよう、サーバー起動時に読み込み済みの
+            `Project`インスタンスをその場で書き換える（`projects`/
+            `projects_by_repo`、および`main.py`の`_make_dispatch_fn`が参照する
+            インスタンスは同一オブジェクトのため、この変更は両方に反映される）。
+            """
+            project = projects_by_repo.get(repo)
+            if project is None:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+
+            try:
+                payload = self._read_json_body()
+                execution_mode = payload["execution_mode"]
+                litellm_model = payload.get("litellm_model")
+                updated = update_execution_settings(repo, execution_mode, litellm_model)
+            except (KeyError, ValueError) as e:
+                self._send_json(400, {"error": str(e)})
+                return
+
+            # 2フィールドを別々の代入で書き換えると、ディスパッチ中の別スレッドから
+            # 一時的に不整合な組み合わせ（新execution_mode・旧litellm_model等）が
+            # 観測されうるため、`Project.execution_lock`で保護された
+            # `replace_execution_settings`でまとめて更新する。
+            project.replace_execution_settings(updated.execution_mode, updated.litellm_model)
+            self._send_json(
+                200,
+                {
+                    "repo": repo,
+                    "execution_mode": updated.execution_mode,
+                    "litellm_model": updated.litellm_model,
+                },
+            )
 
         def _handle_instruct(self, repo: str, issue_number: int) -> None:
             if repo not in known_repos:
@@ -395,6 +445,7 @@ def make_server(
     delete_branch: DeleteBranchFn = gh_delete_branch,
     list_issues: ListIssuesFn = gh_list_issues,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
+    update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -416,5 +467,6 @@ def make_server(
         delete_branch=delete_branch,
         list_issues=list_issues,
         sync_worktree=sync_worktree,
+        update_execution_settings=update_execution_settings,
     )
     return ThreadingHTTPServer((host, port), handler)

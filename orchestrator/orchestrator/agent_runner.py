@@ -18,7 +18,25 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import DEFAULT_LOG_RETENTION_DAYS, REPO_ROOT, Project
+from orchestrator.config import (
+    DEFAULT_LOG_RETENTION_DAYS,
+    EXECUTION_MODE_CLAUDE_CODE,
+    EXECUTION_MODE_LITELLM_PROXY,
+    REPO_ROOT,
+    Project,
+)
+from orchestrator.execution_mode import (
+    ExecutionSettings,
+    GetExecutionOverrideFn,
+    PersistExecutionOverrideFn,
+    resolve_execution_settings,
+)
+from orchestrator.execution_override_store import (
+    get_execution_override as store_get_execution_override,
+)
+from orchestrator.execution_override_store import (
+    persist_execution_override as store_persist_execution_override,
+)
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     AppendPrIssueReferenceFn,
@@ -44,6 +62,10 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
+from orchestrator.litellm_proxy import build_env_overrides as litellm_build_env_overrides
+from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
+from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
+from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
 from orchestrator.session_store import get_session_id, persist_session_id
 from orchestrator.timezone import JST
 from orchestrator.usage_store import (
@@ -376,7 +398,13 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
 
 
 def build_claude_command(
-    message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
+    message: str,
+    *,
+    session_id: str,
+    resume: bool,
+    repo: str,
+    issue_number: int,
+    model: str | None = None,
 ) -> list[str]:
     """docs/basic-design.md 3-1の起動パラメータに従いコマンドを組み立てる。
 
@@ -413,6 +441,11 @@ def build_claude_command(
         "--append-system-prompt",
         system_prompt,
     ]
+    if model is not None:
+        # issue #176: (B) LiteLLM Proxy経由選択時、LiteLLM Proxy側のconfig.yaml
+        # （model_list）で定義したモデルエイリアス名を明示的に指定する。LiteLLM
+        # Proxyはこのエイリアス名でどのプロバイダ・モデルへ中継するかを解決する。
+        command += ["--model", model]
     if resume:
         command += ["--resume", session_id]
     else:
@@ -825,6 +858,12 @@ def run_agent_runner(
     get_current_branch_fn: GetCurrentBranchFn = gh_get_current_branch,
     find_open_pr_by_branch_fn: FindOpenPrByBranchFn = gh_find_open_pr_by_branch,
     append_pr_issue_reference_fn: AppendPrIssueReferenceFn = gh_append_pr_issue_reference,
+    get_execution_override_fn: GetExecutionOverrideFn = store_get_execution_override,
+    persist_execution_override_fn: PersistExecutionOverrideFn = store_persist_execution_override,
+    check_litellm_health_fn: Callable[[str], bool] = litellm_is_healthy,
+    build_litellm_env_fn: Callable[..., dict[str, str]] = litellm_build_env_overrides,
+    litellm_base_url: str | None = None,
+    litellm_api_key: str | None = None,
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
@@ -869,19 +908,84 @@ def run_agent_runner(
 
     resume = existing_session_id is not None
     session_id = existing_session_id or new_uuid()
+
+    # issue #176: 実行手段（(A) Claude Code CLI直利用／(B) LiteLLM Proxy経由）を
+    # 都度上書き指令→issue単位の保存済み上書き→プロジェクトのデフォルト設定の
+    # 優先順位で解決する（docs/basic-design.md 4章）。`message`から都度上書き
+    # ディレクティブ（`/model ...`）を取り除いたものを実際のプロンプトとして使う。
+    execution_settings, message = resolve_execution_settings(
+        project,
+        project.repo,
+        issue_number,
+        message,
+        get_execution_override_fn=get_execution_override_fn,
+        persist_execution_override_fn=persist_execution_override_fn,
+    )
+
+    resolved_base_url = (
+        litellm_base_url if litellm_base_url is not None else litellm_resolve_base_url()
+    )
+    resolved_api_key = litellm_api_key if litellm_api_key is not None else litellm_resolve_api_key()
+
+    if (
+        execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        and not check_litellm_health_fn(resolved_base_url)
+    ):
+        # LiteLLM Proxyプロセスが落ちている・応答しない場合は(A) Claude Code CLI
+        # 直利用へ自動フォールバックする（needs-human-decisionへは倒さない。
+        # LiteLLM Proxyは実行手段の選択肢の一つに過ぎず、プロセスの一時的な不調で
+        # 自走タスクの進行自体を止める必要はないため。永続化済みの都度上書き・
+        # プロジェクト設定自体は変更せず、次回ディスパッチでは改めてLiteLLM Proxy
+        # への接続を試みる）。
+        logger.warning(
+            "%s#%d: LiteLLM Proxy(%s)が応答しないため、Claude Code CLI直利用に"
+            "フォールバックします。",
+            project.repo,
+            issue_number,
+            resolved_base_url,
+        )
+        post_comment(
+            project.repo,
+            issue_number,
+            ":warning: LiteLLM Proxyに接続できなかったため、今回はClaude Code CLI"
+            "直利用にフォールバックして実行します。",
+        )
+        execution_settings = ExecutionSettings(
+            execution_mode=EXECUTION_MODE_CLAUDE_CODE, litellm_model=None
+        )
+
+    env_overrides = build_litellm_env_fn(
+        execution_settings, base_url=resolved_base_url, api_key=resolved_api_key
+    )
+
     command = build_claude_command(
         message,
         session_id=session_id,
         resume=resume,
         repo=project.repo,
         issue_number=issue_number,
+        model=execution_settings.litellm_model
+        if execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        else None,
     )
 
     log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
     # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
     # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
     # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
-    env = {**os.environ, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path()}
+    #
+    # issue #176: (A) Claude Code CLI直利用時（LiteLLM Proxy疎通不能時のフォール
+    # バックを含む）は、オーケストレータ自身のプロセス環境に`ANTHROPIC_BASE_URL`/
+    # `ANTHROPIC_AUTH_TOKEN`が（手動検証の残骸等で）たまたま設定されていても、
+    # それらを子プロセスへ素通しせず必ず除去する。これらのキーは`os.environ`から
+    # 継承させず、`env_overrides`（(B)選択時のみ設定される）経由でのみ与えられる
+    # ようにすることで、フォールバック処理が意図せず無効化される事態を防ぐ。
+    base_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env = {**base_env, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(), **env_overrides}
     process = popen(
         command,
         cwd=str(worktree_path),
