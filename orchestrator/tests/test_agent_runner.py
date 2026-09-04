@@ -21,7 +21,7 @@ import pytest
 
 from orchestrator import agent_runner
 from orchestrator.agent_runner import build_claude_command, cleanup_old_agent_logs, run_agent_runner
-from orchestrator.config import Project
+from orchestrator.config import EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
@@ -1769,3 +1769,163 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
 
     assert not old_log.exists()
     assert other_old_log.exists()
+
+
+# issue #176: 実行手段（(A) Claude Code CLI直利用／(B) LiteLLM Proxy経由）の
+# 切り替え。docs/basic-design.md 3-1「実行手段の切り替え」・4章参照。
+
+
+def test_build_claude_command_adds_model_flag_when_specified() -> None:
+    command = build_claude_command(
+        "hello",
+        session_id="new-id",
+        resume=False,
+        repo="nosetech/project-a",
+        issue_number=12,
+        model="ollama/qwen2.5-coder:7b",
+    )
+
+    model_index = command.index("--model")
+    assert command[model_index + 1] == "ollama/qwen2.5-coder:7b"
+
+
+def test_build_claude_command_omits_model_flag_by_default() -> None:
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    assert "--model" not in command
+
+
+def test_run_agent_runner_uses_litellm_env_vars_and_model_flag_when_proxy_is_healthy(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionId()
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    assert result.success is True
+    call = popen.calls[0]
+    assert "--model" in call["cmd"]
+    assert call["cmd"][call["cmd"].index("--model") + 1] == "ollama/qwen2.5-coder:7b"
+    assert call["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
+    assert call["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-test"
+    # フォールバック時の警告コメントは投稿されない。
+    assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
+
+
+def test_run_agent_runner_falls_back_to_claude_code_when_litellm_proxy_unhealthy(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionId()
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: False,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    assert result.success is True
+    call = popen.calls[0]
+    assert "--model" not in call["cmd"]
+    assert "ANTHROPIC_BASE_URL" not in call["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in call["env"]
+    # フォールバックした旨の警告コメントが最終結果コメントより先に投稿されること。
+    assert comments.posted[0][2].startswith(":warning: LiteLLM Proxyに接続できなかった")
+    assert comments.posted[1] == ("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")
+
+
+def test_run_agent_runner_message_directive_overrides_project_default_and_strips_directive(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionId()
+    persisted: list[tuple] = []
+
+    run_agent_runner(
+        project,
+        1,
+        "対応してください\n/model litellm:ollama/qwen2.5-coder:7b",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: persisted.append(args),
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    call = popen.calls[0]
+    prompt = call["cmd"][2]
+    assert "/model" not in prompt
+    assert "対応してください" in prompt
+    assert call["cmd"][call["cmd"].index("--model") + 1] == "ollama/qwen2.5-coder:7b"
+    assert persisted == [
+        ("nosetech/project-a", 1, EXECUTION_MODE_LITELLM_PROXY, "ollama/qwen2.5-coder:7b")
+    ]

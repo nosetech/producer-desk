@@ -13,6 +13,12 @@ projects:
     worktree_path: /Users/producer/worktrees/project-a
   - repo: nosetech/project-b
     worktree_path: /Users/producer/worktrees/project-b
+    # 自走タスク本体の実行手段（issue #148・#174・#176、docs/basic-design.md 4章）。
+    # 省略時は claude_code（Claude Code CLI直利用＋サブスクリプション）。
+    # litellm_proxy を選ぶ場合は litellm_model（config/litellm_config.yamlの
+    # model_listで定義したモデルエイリアス名）の指定が必須。
+    # execution_mode: litellm_proxy
+    # litellm_model: project-b-ollama-qwen
 
 # logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
 # 保持日数（未設定時は7）。orchestrator.logはこの日数分をTimedRotatingFileHandler

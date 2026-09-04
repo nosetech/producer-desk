@@ -45,11 +45,41 @@ CONFIG_PATH_ENV = "PROJECTS_CONFIG_PATH"
 # （issue #114）。
 DEFAULT_LOG_RETENTION_DAYS = 7
 
+# 自走タスク本体の実行手段（issue #148・#174・#176、docs/basic-design.md 4章）。
+# (A) Claude Code CLI直利用＋サブスクリプション（既定）と、
+# (B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金のいずれか。
+EXECUTION_MODE_CLAUDE_CODE = "claude_code"
+EXECUTION_MODE_LITELLM_PROXY = "litellm_proxy"
+VALID_EXECUTION_MODES = frozenset({EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY})
+
 
 @dataclass
 class Project:
     repo: str
     worktree_path: str
+    # (B) LiteLLM Proxy経由選択時は、LiteLLM Proxy側のconfig.yaml（model_list）で
+    # 定義したモデルエイリアス名を保持する（`claude -p --model <litellm_model>`として
+    # 渡す。orchestrator/orchestrator/agent_runner.py参照）。
+    execution_mode: str = EXECUTION_MODE_CLAUDE_CODE
+    litellm_model: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_execution_settings(self.execution_mode, self.litellm_model, context=self.repo)
+
+
+def validate_execution_settings(
+    execution_mode: str, litellm_model: str | None, *, context: str
+) -> None:
+    if execution_mode not in VALID_EXECUTION_MODES:
+        raise ValueError(
+            f"{context}: execution_modeは{sorted(VALID_EXECUTION_MODES)}のいずれかである"
+            f"必要があります（実際の値: {execution_mode!r}）。"
+        )
+    if execution_mode == EXECUTION_MODE_LITELLM_PROXY and not litellm_model:
+        raise ValueError(
+            f"{context}: execution_modeが{EXECUTION_MODE_LITELLM_PROXY!r}の場合、"
+            "litellm_modelの指定が必須です。"
+        )
 
 
 def _load_yaml_data(config_path: Path | None) -> dict:
@@ -78,3 +108,63 @@ def load_log_retention_days(config_path: Path | None = None) -> int:
     # backupCount管理・cleanup_old_agent_logs（agent_runner.py）のmtime判定で
     # 即座に削除されうるため、最低1日は保持する（issue #114）。
     return max(1, value)
+
+
+def _resolve_config_path(config_path: Path | None) -> Path:
+    if config_path is not None:
+        return config_path
+    return Path(os.environ.get(CONFIG_PATH_ENV, str(DEFAULT_CONFIG_PATH)))
+
+
+# issue #176: ダッシュボードのプロジェクト設定UI（issue #175、本関数に依存）から
+# 実行手段のデフォルト設定を更新するための永続化API。「GitHub Issues/Projectsが
+# 正のデータストア」という確定済み設計判断（CLAUDE.md）はissueそのものの状態に
+# 関するものであり、プロジェクト単位の運用設定は元々config/projects.yaml
+# （オーケストレータのみが読む設定ファイル）で管理している（2-1章）ため、実行手段の
+# デフォルト設定もこのファイルに追加する形で一貫させる。
+def update_project_execution_settings(
+    repo: str,
+    execution_mode: str,
+    litellm_model: str | None,
+    *,
+    config_path: Path | None = None,
+) -> Project:
+    """`config/projects.yaml`の対象プロジェクトエントリの実行手段設定を更新する。
+
+    既存のYAML全体（他プロジェクトのエントリ・`log_retention_days`等）は
+    `yaml.safe_load`で読み込んだdictをそのまま使い、対象エントリのみ書き換えて
+    `yaml.safe_dump`で書き戻す（コメントは保持されないが、実データである
+    `config/projects.yaml`自体は.gitignore対象でコメント運用を前提としていない。
+    コメント付きの`.yaml.example`は本関数の対象外）。
+    """
+    validate_execution_settings(execution_mode, litellm_model, context=repo)
+    if execution_mode != EXECUTION_MODE_LITELLM_PROXY:
+        # claude_code時にlitellm_modelが誤って（クライアントの実装ミス等で）
+        # 送られてきても無視し、YAMLに不要なフィールドを残さない。
+        litellm_model = None
+
+    resolved_path = _resolve_config_path(config_path)
+    data = _load_yaml_data(resolved_path)
+    entries = data.get("projects", [])
+
+    for entry in entries:
+        if entry.get("repo") == repo:
+            entry["execution_mode"] = execution_mode
+            if litellm_model is not None:
+                entry["litellm_model"] = litellm_model
+            else:
+                entry.pop("litellm_model", None)
+            break
+    else:
+        raise ValueError(f"config/projects.yamlに未登録のリポジトリです: {repo}")
+
+    resolved_path.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return Project(
+        repo=repo,
+        worktree_path=entry["worktree_path"],
+        execution_mode=execution_mode,
+        litellm_model=litellm_model,
+    )
