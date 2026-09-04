@@ -180,6 +180,7 @@ claude -p "<指示内容>" \
   (--session-id <new-uuid> | --resume <session-id>)
 ```
 
+- **実行手段の切り替え（issue #174、[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)・[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)参照）**: 対象プロジェクトの実行手段設定が(B) LiteLLM Proxy経由の場合、`subprocess.Popen`に渡す環境変数へ`ANTHROPIC_BASE_URL`（LiteLLM Proxyのエンドポイント、例: `http://127.0.0.1:4000`）・`ANTHROPIC_AUTH_TOKEN`（LiteLLM Proxy側で発行した仮想キー）を追加する。(A) Claude Code CLI直利用の場合はこれらの環境変数を設定せず、サブスクリプションOAuth認証のまま起動する（既存の起動方式のまま変更なし）。いずれの場合も子プロセスの他の環境変数（`PATH`等）は書き換えない。実行手段の解決方法（プロジェクト設定のデフォルト値・issueコメントでの都度上書き）は[4章](#4-モデルルーター設定設計)参照。
 - worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.Popen(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
 - `<session-id>` は `config/sessions.json`（`.gitignore`対象、コミットしない）に**issueごと**に保存する（`"{repo}#{issue_number}": "<session-id>"`、`orchestrator/orchestrator/session_store.py`）。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/sessions.json` に書き込み、同一issueへの以降の指示では `--resume <session-id>` で再開する。
   - **プロジェクト単位ではなくissue単位である理由**: 当初はプロジェクト（リポジトリ）単位で1つのセッションIDのみを`config/projects.yaml`に保存していたが、この場合同一プロジェクト内の全issueが1本のClaude Code会話を共有してしまう。あるissueが`needs-human-decision`で停止している間に別issueが同じセッションで進行・完了すると、後から前者issueを`--resume`で再開した際、セッションの直近の会話文脈（別issueの完了報告）を引きずってしまい、再開したissue本来の内容に取り組まれない不具合が発生した（issue #32）。issueごとに独立したセッションを持つことで、他issueの進行状況に文脈が左右されないようにする。
@@ -237,7 +238,20 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ## 4. モデルルーター設定設計
 
-[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、自走タスク本体はLiteLLM Proxy等のモデルルーティング層を導入せず、Claude Code CLIを直接利用する。ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）についても、モデルルーティング層は追加せず、Agent Runner（Claude Code CLI）が起動時に受け取る指示に従って自身で呼び出す構成とする。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは後述の「手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）」節で説明する`ollama-bench`コマンド経由でOllama REST APIを直接呼び出す（issue #107、詳細は後述）。
+[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、自走タスク本体の実行手段（(A) Claude Code CLI直利用＋サブスクリプション／(B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金）はプロジェクトごとにユーザーが選択できる（issue #148・#174）。一方、ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は本節の実行手段選択とは独立しており、引き続きLiteLLM Proxyを経由せずAgent Runner（Claude Code CLI）が起動時に受け取る指示に従って自身で直接呼び出す構成のままとする。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは後述の「手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）」節で説明する`ollama-bench`コマンド経由でOllama REST APIを直接呼び出す（issue #107、詳細は後述）。
+
+### 実行手段の選択（自走タスク本体、issue #174）
+
+- **プロジェクトごとのデフォルト設定**: [2-1](#2-1-対象リポジトリ一覧の管理)の`config/projects.yaml`に、プロジェクトエントリごとの実行手段設定（既定は(A) Claude Code CLI直利用、(B) LiteLLM Proxy経由選択時はあわせてLiteLLM Proxy側のモデルエイリアス指定）を追加する。設定はダッシュボードのプロジェクト設定UIから更新できるようにする。永続化API・設定UIそれぞれの実装詳細は別issue（バックエンド: #176、フロントエンド: #175。#175は#176に依存）で扱う。
+- **issueコメントでの都度指示**: ダッシュボードの自由記述指示（[2-3](#2-3-指示出しapi内部api)の`instruct`）またはGitHub issueへの直接コメントで、当該issueへの以降のディスパッチに限り実行手段をプロジェクトのデフォルトから一時的に変更できる。オーケストレータが指示コメントから実行手段の指定を解釈し（構文の詳細は#176で確定）、`run_agent_runner`呼び出し時の環境変数決定にプロジェクト設定のデフォルトより優先して反映する。
+- **環境変数への反映**: 上記いずれの経路で決定された実行手段も、最終的に[3-1](#3-1-起動パラメータ)の`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`設定有無に変換され、`run_agent_runner`のサブプロセス起動時に適用される。
+
+### LiteLLM Proxyの利用量計測（`usage_store.py`統合、issue #174）
+
+- LiteLLM Proxyは[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通りネイティブ構成・DBなし運用とし、PostgreSQLは導入しない。
+- カスタムコールバック（`litellm.integrations.custom_logger`のクラスを継承した独自実装、LiteLLM Proxyの設定ファイルの`litellm_settings.callbacks`に登録）がリクエスト完了イベントごとに呼び出され、モデル名・input/outputトークン数・コストを取得し、既存の`orchestrator/orchestrator/usage_store.py`のAPIを直接呼び出して[2-2](#2-2-データ取得仕様ポーリング)の`usage_records`テーブル（`config/usage.db`）に記録する。これにより、実行手段(A)(B)いずれで実行されたAgent Runnerの利用量も同一テーブル・同一のダッシュボード表示（[要件定義書 2-1](./requirements.md#2-1-ダッシュボード表示項目)）に統合される。
+- 予算上限のハード制限（到達時の自動ブロック）はDBなし運用のLiteLLM Proxyでは機能しない（起動時警告のみで素通りする）ため導入しない。[要件定義書 3-4](./requirements.md#3-4-コスト制約)の通り可視化のみを目的とする。
+- カスタムコールバックの実装・LiteLLM Proxy自体の常駐化・設定ファイルの詳細仕様は別issue（#176）で扱う。
 
 ### タスク種別ごとの推奨モデル
 
