@@ -1929,3 +1929,44 @@ def test_run_agent_runner_message_directive_overrides_project_default_and_strips
     assert persisted == [
         ("nosetech/project-a", 1, EXECUTION_MODE_LITELLM_PROXY, "ollama/qwen2.5-coder:7b")
     ]
+
+
+def test_run_agent_runner_strips_stray_anthropic_env_vars_in_claude_code_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LiteLLM Proxy検証作業の残骸等でオーケストレータ自身のプロセス環境に
+
+    ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKENが設定されていても、(A) Claude Code
+    CLI直利用時はそれらを子プロセスへ素通しさせないことを確認する（issue #176
+    コードレビューでの指摘。素通しさせると、LiteLLM Proxy疎通不能時のフォール
+    バック処理が意図せず無効化されうる）。
+    """
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://stray-leftover:9999")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-stray-leftover")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionId()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_id_fn=get_session,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+    )
+
+    call = popen.calls[0]
+    assert "ANTHROPIC_BASE_URL" not in call["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in call["env"]

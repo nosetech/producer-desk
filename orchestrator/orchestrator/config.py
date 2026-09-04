@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -62,9 +63,32 @@ class Project:
     # 渡す。orchestrator/orchestrator/agent_runner.py参照）。
     execution_mode: str = EXECUTION_MODE_CLAUDE_CODE
     litellm_model: str | None = None
+    # `server.py`の`PATCH /api/projects/{repo}/settings`はディスパッチ実行中の別
+    # スレッド（`DispatchQueue`のワーカーが`run_agent_runner`経由でこのインスタンスの
+    # execution_mode/litellm_modelを読む）と並行して呼ばれうる。2フィールドを個別に
+    # 代入すると、その間に「新しいexecution_modeだが古いlitellm_model」のような
+    # 不整合な組み合わせが他スレッドから一時的に観測されうる（例:
+    # litellm_proxyへ切り替え中にlitellm_modelがまだ更新されておらず、
+    # `--model`フラグ無しでLiteLLM Proxyへディスパッチしてしまう）。このロックで
+    # `replace_execution_settings`（書き込み）と`snapshot_execution_settings`
+    # （読み込み）を同じ排他区間に入れ、両フィールドを常に一貫した組として
+    # 読み書きする（dataclassの比較・repr出力には含めない）。
+    execution_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         validate_execution_settings(self.execution_mode, self.litellm_model, context=self.repo)
+
+    def replace_execution_settings(self, execution_mode: str, litellm_model: str | None) -> None:
+        validate_execution_settings(execution_mode, litellm_model, context=self.repo)
+        with self.execution_lock:
+            self.execution_mode = execution_mode
+            self.litellm_model = litellm_model
+
+    def snapshot_execution_settings(self) -> tuple[str, str | None]:
+        with self.execution_lock:
+            return self.execution_mode, self.litellm_model
 
 
 def validate_execution_settings(
@@ -116,6 +140,15 @@ def _resolve_config_path(config_path: Path | None) -> Path:
     return Path(os.environ.get(CONFIG_PATH_ENV, str(DEFAULT_CONFIG_PATH)))
 
 
+# `update_project_execution_settings`はconfig/projects.yaml全体を読み込んでから
+# 対象エントリのみ書き換えて丸ごと書き戻す（read-modify-write）ため、
+# `ThreadingHTTPServer`配下の別スレッドから同時に呼ばれると、両方が更新前の
+# 内容を読み込んでから別々に書き戻し、後勝ちで片方の更新が失われうる
+# （lost update）。プロセス内の同時呼び出しに限りこのロックで直列化する
+# （複数オーケストレータプロセスが同一ファイルへ書き込む運用は想定していない）。
+_PROJECTS_YAML_WRITE_LOCK = threading.Lock()
+
+
 # issue #176: ダッシュボードのプロジェクト設定UI（issue #175、本関数に依存）から
 # 実行手段のデフォルト設定を更新するための永続化API。「GitHub Issues/Projectsが
 # 正のデータストア」という確定済み設計判断（CLAUDE.md）はissueそのものの状態に
@@ -144,27 +177,31 @@ def update_project_execution_settings(
         litellm_model = None
 
     resolved_path = _resolve_config_path(config_path)
-    data = _load_yaml_data(resolved_path)
-    entries = data.get("projects", [])
 
-    for entry in entries:
-        if entry.get("repo") == repo:
-            entry["execution_mode"] = execution_mode
-            if litellm_model is not None:
-                entry["litellm_model"] = litellm_model
-            else:
-                entry.pop("litellm_model", None)
-            break
-    else:
-        raise ValueError(f"config/projects.yamlに未登録のリポジトリです: {repo}")
+    with _PROJECTS_YAML_WRITE_LOCK:
+        data = _load_yaml_data(resolved_path)
+        entries = data.get("projects", [])
 
-    resolved_path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+        for entry in entries:
+            if entry.get("repo") == repo:
+                entry["execution_mode"] = execution_mode
+                if litellm_model is not None:
+                    entry["litellm_model"] = litellm_model
+                else:
+                    entry.pop("litellm_model", None)
+                break
+        else:
+            raise ValueError(f"config/projects.yamlに未登録のリポジトリです: {repo}")
+
+        resolved_path.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        worktree_path = entry["worktree_path"]
+
     return Project(
         repo=repo,
-        worktree_path=entry["worktree_path"],
+        worktree_path=worktree_path,
         execution_mode=execution_mode,
         litellm_model=litellm_model,
     )

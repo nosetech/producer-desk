@@ -118,9 +118,12 @@ def resolve_execution_settings(
             message,
         )
 
+    # `project.execution_mode`/`project.litellm_model`は`server.py`の
+    # `PATCH /api/projects/{repo}/settings`から別スレッドで書き換えられうるため、
+    # 個別に読まず`snapshot_execution_settings`で一貫した組として取得する
+    # （`Project.execution_lock`参照）。
+    default_mode, default_model = project.snapshot_execution_settings()
     return (
-        ExecutionSettings(
-            execution_mode=project.execution_mode, litellm_model=project.litellm_model
-        ),
+        ExecutionSettings(execution_mode=default_mode, litellm_model=default_model),
         message,
     )

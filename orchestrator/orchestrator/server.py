@@ -298,8 +298,11 @@ def _make_handler(
                 self._send_json(400, {"error": str(e)})
                 return
 
-            project.execution_mode = updated.execution_mode
-            project.litellm_model = updated.litellm_model
+            # 2フィールドを別々の代入で書き換えると、ディスパッチ中の別スレッドから
+            # 一時的に不整合な組み合わせ（新execution_mode・旧litellm_model等）が
+            # 観測されうるため、`Project.execution_lock`で保護された
+            # `replace_execution_settings`でまとめて更新する。
+            project.replace_execution_settings(updated.execution_mode, updated.litellm_model)
             self._send_json(
                 200,
                 {

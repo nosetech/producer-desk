@@ -973,7 +973,19 @@ def run_agent_runner(
     # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
     # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
     # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
-    env = {**os.environ, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(), **env_overrides}
+    #
+    # issue #176: (A) Claude Code CLI直利用時（LiteLLM Proxy疎通不能時のフォール
+    # バックを含む）は、オーケストレータ自身のプロセス環境に`ANTHROPIC_BASE_URL`/
+    # `ANTHROPIC_AUTH_TOKEN`が（手動検証の残骸等で）たまたま設定されていても、
+    # それらを子プロセスへ素通しせず必ず除去する。これらのキーは`os.environ`から
+    # 継承させず、`env_overrides`（(B)選択時のみ設定される）経由でのみ与えられる
+    # ようにすることで、フォールバック処理が意図せず無効化される事態を防ぐ。
+    base_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env = {**base_env, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(), **env_overrides}
     process = popen(
         command,
         cwd=str(worktree_path),

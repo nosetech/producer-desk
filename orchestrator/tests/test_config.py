@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -233,3 +234,113 @@ def test_update_project_execution_settings_rejects_litellm_proxy_without_model(
         update_project_execution_settings(
             "nosetech/project-a", EXECUTION_MODE_LITELLM_PROXY, None, config_path=config_path
         )
+
+
+def test_update_project_execution_settings_ignores_stray_litellm_model_for_claude_code(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text(
+        "projects:\n  - repo: nosetech/project-a\n    worktree_path: /tmp/project-a\n",
+        encoding="utf-8",
+    )
+
+    updated = update_project_execution_settings(
+        "nosetech/project-a", EXECUTION_MODE_CLAUDE_CODE, "stray-model", config_path=config_path
+    )
+
+    assert updated.litellm_model is None
+    reloaded = load_projects(config_path=config_path)
+    assert reloaded[0].litellm_model is None
+
+
+def test_update_project_execution_settings_is_thread_safe_under_concurrent_writes(
+    tmp_path: Path,
+) -> None:
+    """issue #176コードレビューでの指摘: read-modify-writeのlost updateを防ぐ。
+
+    別プロジェクト宛の更新が同時に来ても、両方の変更が失われず反映されること
+    を確認する（`_PROJECTS_YAML_WRITE_LOCK`で直列化しているため）。
+    """
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text(
+        "projects:\n"
+        "  - repo: nosetech/project-a\n"
+        "    worktree_path: /tmp/project-a\n"
+        "  - repo: nosetech/project-b\n"
+        "    worktree_path: /tmp/project-b\n",
+        encoding="utf-8",
+    )
+
+    errors: list[Exception] = []
+
+    def _update(repo: str, model: str) -> None:
+        try:
+            update_project_execution_settings(
+                repo, EXECUTION_MODE_LITELLM_PROXY, model, config_path=config_path
+            )
+        except Exception as e:  # pragma: no cover - 失敗時のみ使う
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=_update, args=("nosetech/project-a", "model-a")) for _ in range(10)
+    ] + [
+        threading.Thread(target=_update, args=("nosetech/project-b", "model-b")) for _ in range(10)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    reloaded = load_projects(config_path=config_path)
+    project_a = next(p for p in reloaded if p.repo == "nosetech/project-a")
+    project_b = next(p for p in reloaded if p.repo == "nosetech/project-b")
+    assert project_a.litellm_model == "model-a"
+    assert project_b.litellm_model == "model-b"
+
+
+def test_project_replace_execution_settings_updates_atomically() -> None:
+    project = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
+
+    project.replace_execution_settings(EXECUTION_MODE_LITELLM_PROXY, "model-a")
+
+    assert project.snapshot_execution_settings() == (EXECUTION_MODE_LITELLM_PROXY, "model-a")
+
+
+def test_project_replace_execution_settings_validates_before_mutating() -> None:
+    project = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
+
+    with pytest.raises(ValueError, match="litellm_model"):
+        project.replace_execution_settings(EXECUTION_MODE_LITELLM_PROXY, None)
+
+    # バリデーション失敗時は既存の設定が変更されないこと。
+    assert project.snapshot_execution_settings() == (EXECUTION_MODE_CLAUDE_CODE, None)
+
+
+def test_project_snapshot_execution_settings_never_observes_torn_write() -> None:
+    """`replace_execution_settings`実行中の別スレッドから見て、
+
+    execution_mode/litellm_modelの片方だけが更新された不整合な組み合わせが
+    観測されないことを確認する（issue #176コードレビューでの指摘）。
+    """
+    project = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
+    observed: list[tuple[str, str | None]] = []
+    stop = threading.Event()
+
+    def _reader() -> None:
+        while not stop.is_set():
+            observed.append(project.snapshot_execution_settings())
+
+    reader = threading.Thread(target=_reader)
+    reader.start()
+    for i in range(200):
+        project.replace_execution_settings(EXECUTION_MODE_LITELLM_PROXY, f"model-{i}")
+        project.replace_execution_settings(EXECUTION_MODE_CLAUDE_CODE, None)
+    stop.set()
+    reader.join()
+
+    valid = {(EXECUTION_MODE_CLAUDE_CODE, None)} | {
+        (EXECUTION_MODE_LITELLM_PROXY, f"model-{i}") for i in range(200)
+    }
+    assert all(snapshot in valid for snapshot in observed)
