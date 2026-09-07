@@ -94,7 +94,25 @@ cp config/projects.yaml.example config/projects.yaml
   --projects-config-path="$(pwd)/config/projects.yaml"
 ```
 
-### 4. Slack Webhook URL等のsecrets
+### 4. LiteLLM Proxyのセットアップ（任意、issue #176）
+
+`config/projects.yaml`のいずれかのプロジェクトで`execution_mode: litellm_proxy`（[`docs/basic-design.md` 4章](./docs/basic-design.md#4-モデルルーター設定設計)）を使う場合のみ必要。既定の`claude_code`のみを使う運用では不要。
+
+[`config/litellm_config.yaml.example`](./config/litellm_config.yaml.example) をコピーして `config/litellm_config.yaml` を作成し、`model_list`にプロジェクトごとのモデルエイリアスを定義する。
+
+```bash
+cp config/litellm_config.yaml.example config/litellm_config.yaml
+```
+
+```bash
+./bin/litellm_proxy_start.sh
+```
+
+初回起動時、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）を自動作成し、`litellm[proxy]`と`orchestrator`パッケージ（カスタムコールバックが`usage_store.py`をインポートするため）をインストールしてから起動する（ネットワークアクセスが発生する）。既定では`http://127.0.0.1:4000`で待ち受ける（環境変数`LITELLM_PROXY_PORT`で上書き可）。停止する場合は`./bin/litellm_proxy_stop.sh`を実行する。
+
+常時起動しておきたい場合は、[`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`](./dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example)を参考にlaunchdのLaunchAgentとして常駐化できる。
+
+### 5. Slack Webhook URL等のsecrets
 
 Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（[`orchestrator/.env.example`](./orchestrator/.env.example) をコピーして作成する `orchestrator/.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。未設定の場合、オーケストレータは判断待ち発生時のSlack通知処理を単にスキップする（起動エラーにはならない）。`python -m orchestrator.main` を直接起動する開発時のフローでは`.env`は自動で読み込まれないため、`set -a; source orchestrator/.env; set +a` 等で自分でexportすること（`bin/start.sh` を使う場合は起動時に自動で読み込まれる。後述）。
 

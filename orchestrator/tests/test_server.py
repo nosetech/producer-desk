@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 
 from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
-from orchestrator.config import Project
+from orchestrator.config import EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
     STATUS_CLOSED,
@@ -125,6 +125,22 @@ def _post(server, path: str, payload: dict) -> tuple[int, dict]:
         f"http://{host}:{port}{path}",
         data=data,
         method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _patch(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=data,
+        method="PATCH",
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -1134,6 +1150,108 @@ def test_create_issue_invalid_dispatch_value_returns_400() -> None:
             "/api/projects/nosetech/project-a/issues",
             {"title": "t", "prompt": "p", "dispatch": "later"},
         )
+        assert status == 400
+    finally:
+        server.shutdown()
+
+
+# issue #176: プロジェクトごとの実行手段デフォルト設定の永続化API
+# （PATCH /api/projects/{repo}/settings）。docs/basic-design.md 4章参照。
+
+
+def test_patch_project_settings_updates_execution_mode() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    project_a = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
+    updated_calls = []
+
+    def fake_update(repo, execution_mode, litellm_model):
+        updated_calls.append((repo, execution_mode, litellm_model))
+        return Project(
+            repo=repo,
+            worktree_path="/tmp/project-a",
+            execution_mode=execution_mode,
+            litellm_model=litellm_model,
+        )
+
+    server, _ = _run_server(
+        store,
+        projects=[project_a],
+        dispatch_queue=dispatch_queue,
+        update_execution_settings=fake_update,
+    )
+    try:
+        status, body = _patch(
+            server,
+            "/api/projects/nosetech/project-a/settings",
+            {
+                "execution_mode": EXECUTION_MODE_LITELLM_PROXY,
+                "litellm_model": "ollama/qwen2.5-coder:7b",
+            },
+        )
+        assert status == 200
+        assert body == {
+            "repo": "nosetech/project-a",
+            "execution_mode": EXECUTION_MODE_LITELLM_PROXY,
+            "litellm_model": "ollama/qwen2.5-coder:7b",
+        }
+        assert updated_calls == [
+            ("nosetech/project-a", EXECUTION_MODE_LITELLM_PROXY, "ollama/qwen2.5-coder:7b")
+        ]
+        # サーバー起動時に読み込み済みのProjectインスタンスがその場で書き換わり、
+        # 再起動を待たず次回ディスパッチから反映されること。
+        assert project_a.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        assert project_a.litellm_model == "ollama/qwen2.5-coder:7b"
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _patch(
+            server,
+            "/api/projects/nosetech/unknown/settings",
+            {"execution_mode": EXECUTION_MODE_CLAUDE_CODE},
+        )
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_invalid_execution_mode_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def fake_update(repo, execution_mode, litellm_model):
+        raise ValueError(f"execution_modeが不正です: {execution_mode}")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        update_execution_settings=fake_update,
+    )
+    try:
+        status, body = _patch(
+            server,
+            "/api/projects/nosetech/project-a/settings",
+            {"execution_mode": "bogus"},
+        )
+        assert status == 400
+        assert "execution_mode" in body["error"]
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_missing_execution_mode_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _patch(server, "/api/projects/nosetech/project-a/settings", {})
         assert status == 400
     finally:
         server.shutdown()

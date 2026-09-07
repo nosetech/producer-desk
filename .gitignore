@@ -2,11 +2,16 @@
 config/projects.yaml
 config/sessions.json
 config/usage.db
+config/execution_overrides.json
+config/litellm_config.yaml
 .env
 .env.*
 !.env.example
 !.env.*.example
 *.local
+
+# --- litellm_proxy（issue #176、ネイティブ構成のLiteLLM Proxy専用venv） ---
+litellm_proxy/.venv/
 
 # ログ（logs/<repo>/ の運用は README 参照）
 logs/*

@@ -1,0 +1,49 @@
+# config/litellm_config.yaml のサンプル。
+# 実データは config/litellm_config.yaml にコピーして作成する（.gitignore対象、コミットしない）。
+# 仕様: docs/basic-design.md 4章「LiteLLM Proxyの利用量計測」、issue #176
+#
+# LiteLLM ProxyはPostgreSQLを導入しないDBなし運用とする（アーキテクチャ設計書
+# 5章）。そのためプロジェクトごとの仮想キー発行機能（/key/generate）は使わず、
+# 同一LAN内アクセスのみを前提とするネットワーク境界での保護に委ねる
+# （CLAUDE.md「確定済みの設計判断」）。この構成では「どのプロジェクトからの
+# リクエストか」をAPIキー単位で区別できないため、代わりにmodel_listのエントリを
+# プロジェクトごとに分け、model_info.repoにリポジトリ名を埋め込む。
+# `config/projects.yaml`のプロジェクトエントリでexecution_mode: litellm_proxyを
+# 選んだ場合、litellm_modelにここで定義したmodel_nameを指定する
+# （agent_runner.pyが`claude -p --model <litellm_model>`として渡す）。
+
+model_list:
+  # 例1: OpenAIのモデルをproject-aの実行手段として使う場合
+  - model_name: project-a-openai-gpt4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      repo: nosetech/project-a
+
+  # 例2: ローカルLLM（Ollama）をproject-bの実行手段として使う場合
+  - model_name: project-b-ollama-qwen
+    litellm_params:
+      model: ollama/qwen2.5-coder:7b
+      api_base: http://127.0.0.1:11434
+    model_info:
+      repo: nosetech/project-b
+
+litellm_settings:
+  # リクエスト完了イベントごとに orchestrator/orchestrator/litellm_callback.py の
+  # UsageStoreLogger を呼び出し、config/usage.db（usage_records）へ統合記録する。
+  # LiteLLM Proxyプロセス自身のPYTHONPATHにorchestratorパッケージが解決できる
+  # 必要がある（bin/litellm_proxy_start.sh が起動時にorchestratorパッケージを
+  # 同一venvへeditable installしてから起動する）。
+  callbacks: ["orchestrator.litellm_callback.usage_store_logger"]
+
+general_settings:
+  # 予算上限のハード制限（budget/max_budget等）はDBなし運用では機能しない
+  # （起動時警告のみで素通りする）ため設定しない。可視化のみを目的とする
+  # （docs/basic-design.md 4章、要件定義書 3-4）。
+  #
+  # master_keyも設定しない。認証はネットワーク境界（同一LAN内アクセスのみ）に
+  # 委ね、アプリレベルの追加認証は設けないという確定済み設計判断
+  # （CLAUDE.md 6-2、basic-design.md 6-2）に、オーケストレータ本体の内部API
+  # （8787番ポート）と同様に揃える。
+  port: 4000
