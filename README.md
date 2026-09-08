@@ -11,8 +11,10 @@ producer-deskは、プロデューサー1名が複数プロジェクト（3〜5�
 - Node.js 20以降
 - Python 3.11以降
 - [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること）
-- [Claude Code CLI](https://claude.com/product/claude-code)（Pro/Maxプラン等のサブスクリプション認証済みであること。Anthropic APIの従量課金は使わない）
+- [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
+
+自走タスク本体の実行手段は、上記のClaude Code CLI直利用（サブスクリプション内、追加コストなし）に固定されているわけではなく、プロジェクトごとに任意で[LiteLLM Proxy](https://docs.litellm.ai/)経由に切り替え、他プロバイダ（OpenAI等）やローカルLLM（Ollama等）を従量課金で利用することもできます。使わない場合は以下の追加設定は不要です（詳細は後述の「LiteLLM Proxyのセットアップ（任意）」参照）。
 
 Dockerは使いません（ネイティブ構成での動作を前提としています）。
 
@@ -74,6 +76,50 @@ export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 `.env` に記載した値とシェルでexportした値の両方が存在する場合、`.env` 側の値で上書きされます。恒常的な設定は方法A、その場限りの一時的な上書きには方法Bを使う、という使い分けを推奨します。
 
+### LiteLLM Proxyのセットアップ（任意）
+
+自走タスク本体をプロジェクトごとにClaude Code CLI直利用以外の実行手段に切り替えたい場合（他プロバイダのAPI・ローカルLLMを従量課金で使いたい場合）は、LiteLLM Proxyを導入します。使わない場合、以下の設定は不要です。
+
+`config/litellm_config.yaml.example` をコピーして `config/litellm_config.yaml` を作成し、`model_list`にプロジェクトごとの実行手段として使いたいモデルを定義します。
+
+```bash
+cp config/litellm_config.yaml.example config/litellm_config.yaml
+```
+
+```yaml
+model_list:
+  # 例1: OpenAIのモデルをproject-aの実行手段として使う場合
+  - model_name: project-a-openai-gpt4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      repo: nosetech/project-a
+
+  # 例2: ローカルLLM（Ollama）をproject-bの実行手段として使う場合
+  - model_name: project-b-ollama-qwen
+    litellm_params:
+      model: ollama/qwen2.5-coder:7b
+      api_base: http://127.0.0.1:11434
+    model_info:
+      repo: nosetech/project-b
+```
+
+`litellm_params.model`にはプロバイダAPI側のモデル指定を、プロバイダAPIキーが必要な場合は`api_key`に`os.environ/<環境変数名>`の形式で参照する環境変数名を指定します（APIキー自体をこのファイルに直接書かないでください）。ローカルLLMの場合は`api_base`に接続先URLを指定します。`model_info.repo`には、この`model_name`を実行手段として使うプロジェクトのリポジトリ名を記載します（LiteLLM ProxyはPostgreSQL等のDBを使わない運用のため、プロジェクトごとの仮想キー発行は行わず、モデルエイリアス単位で利用量の帰属先リポジトリを区別する仕組みになっています）。
+
+設定後、以下で起動・停止します。
+
+```bash
+./bin/litellm_proxy_start.sh
+./bin/litellm_proxy_stop.sh
+```
+
+初回起動時、LiteLLM Proxy専用の`litellm_proxy/.venv`を自動作成し`litellm[proxy]`をインストールします（オーケストレータ本体のvenvとは分離されています）。bindポートは環境変数`LITELLM_PROXY_PORT`（既定4000）、オーケストレータ・Agent Runnerが接続する先は`LITELLM_PROXY_URL`（既定`http://127.0.0.1:<LITELLM_PROXY_PORT>`）で上書きできます（他のポート系環境変数と同様、`.env`に記載しておくと起動のたびに自動で読み込まれます）。
+
+起動後、ダッシュボードの「使い方」節で説明する設定ダイアログから、プロジェクトごとに実行手段をLiteLLM Proxy経由へ切り替えます。issueコメントで都度切り替えることもできます（後述）。
+
+**注意**: LiteLLM Proxy経由を選んだ場合、指定したモデルがClaudeモデルであっても、Claude Code CLI直利用時のサブスクリプション枠内（追加コストなし）ではなく、プロバイダAPIの従量課金に切り替わります。
+
 ## 起動・停止
 
 ```bash
@@ -107,9 +153,12 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 - **レビュー待ち一覧**: `status:in-review`ラベルが付いたissue（Agent RunnerがPRを作成し終えたもの）が並びます。紐づくPRへのリンクが表示されるので内容を確認し、「承認」でそのPRをsquash mergeしてissueをクローズします。差し戻したい場合は自由記述で修正指示を送ると、Agent Runnerが同じPRブランチで対応を続けます。
 - **新規タスクの作成**: プロジェクトを選び、タイトルと自由記述のプロンプト（指示内容）を入力してissueを新規作成できます。「即時着手」を選ぶとすぐにAgent Runnerがディスパッチされ、「todo登録」を選ぶと`status:todo`のまま登録だけ行われ、後で着手を指示できます。
 - **プロジェクトの並行状況**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態と状態別のissue件数が表示されます。ラベルは付いているのに対応するAgent Runnerのプロセスが実際には動いていない異常（`status:in-progress`のまま停止している等）は警告アイコンで示されます。
+- **プロジェクトの実行設定**: 各プロジェクトチップの歯車アイコンから設定ダイアログを開き、そのプロジェクトの自走タスク本体の実行手段（既定の「Claude Code」、または前述の「LiteLLM Proxy経由」）を選択・保存できます。「LiteLLM Proxy経由」を選ぶ場合は、`config/litellm_config.yaml`の`model_list`で定義したモデルエイリアスを併せて選びます（未定義の場合はその旨が表示され、先に設定ファイルを編集する必要があります）。ここでの設定はプロジェクトの既定値で、後述のissueコメントによる都度上書きが優先されます。
 - **Slack通知**: 判断待ち・レビュー待ちが新規に発生すると、設定したSlackチャンネルに通知が届きます（起動時点で既に判断待ち・レビュー待ちだったissueは再通知しません）。
 
 GitHub issueに直接コメントを書いても（ダッシュボードを介さなくても）、次回ポーリング（最大5分後）でAgent Runnerへの指示として検知されます。ただし`status:todo`等の状態ラベル（上記5種）が一つも付いていないissueは、producer-deskの管理対象外として扱われるため、コメントしても処理は開始されません（設計ドキュメントの議論用issue等、producer-deskが起票・着手していないissueへの誤起動を防ぐため）。着手させたい場合は、ダッシュボードの「新規タスクの作成」から登録するか、対象issueに`status:todo`ラベルを付与してください。
+
+個別issueに限定してその場限りで実行手段を切り替えたい場合は、issueコメント本文の独立した行に`/model claude_code`（Claude Code CLI直利用に戻す）または`/model litellm:<モデルエイリアス>`（`config/litellm_config.yaml`の`model_name`を指定、例: `/model litellm:project-a-openai-gpt4o`）と書きます。この指定はそのissueに保存され、プロジェクトの既定設定より優先して以降のディスパッチ（`--resume`による再開時も含む）に使われ続けます。ディレクティブ行だけを送った場合（作業指示を伴わない場合）は、実行手段の切り替えのみとして扱われ、Agent Runnerは直前までの作業を継続します。
 
 ## ログ
 
@@ -173,5 +222,6 @@ cp ~/Backups/producer-desk/usage-<timestamp>.db config/usage.db
 
 - **`config/projects.yaml が見つかりません`**: 「初期設定」を実施していません。`config/projects.yaml.example` からコピーして作成してください。
 - **`orchestrator/dist/*.whl が見つかりません`**: 配布パッケージ（tarball）が壊れている可能性があります。ダウンロードし直してください。
-- **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` で別ポートを指定してください。
+- **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` （LiteLLM Proxyを使っている場合は `LITELLM_PROXY_PORT` も）で別ポートを指定してください。
 - **`orchestrator/.venv/bin/orchestrator` コマンドを直接実行しても `config/projects.yaml` が見つからないと言われる**: このコマンドは実行時のカレントディレクトリを展開先ルート（このファイルがある場所）とみなして`config/`・`logs/`を探します。必ず展開先ルートで `./bin/start.sh` 経由で起動し、`orchestrator`コマンドを別ディレクトリから直接実行しないでください。
+- **LiteLLM Proxy経由を選んでいるのに、実行結果がClaude Code CLI直利用にフォールバックされたと通知される**: LiteLLM Proxyプロセスが起動していない、または応答しない場合、Agent Runnerはその旨をissueコメントで通知した上で自動的にClaude Code CLI直利用にフォールバックします（自走タスクの進行自体を止めないための挙動で、`needs-human-decision`には遷移しません）。プロジェクト・issueに保存済みの実行手段の設定自体は変更されないため、`./bin/litellm_proxy_start.sh`でLiteLLM Proxyを起動し直せば、次回以降のディスパッチから再びLiteLLM Proxy経由が使われます。
