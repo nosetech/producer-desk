@@ -39,6 +39,24 @@ function WarningIcon({ size }: { size: number }) {
   );
 }
 
+function GearIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 4.7a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.03a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1.03Z" />
+    </svg>
+  );
+}
+
 function PlusIcon() {
   // Claude Designの実値(14px)より意図的に拡大（プラスの視認性向上のため、プロデューサーの明示的な指示）。
   return (
@@ -60,9 +78,11 @@ function PlusIcon() {
 export default function ProjectStatusRow({
   projects,
   onQuickCreate,
+  onOpenSettings,
 }: {
   projects: ProjectStatus[];
   onQuickCreate: (repo: string) => void;
+  onOpenSettings: (repo: string) => void;
 }) {
   return (
     <section className={styles.section}>
@@ -110,6 +130,24 @@ export default function ProjectStatusRow({
                 >
                   <PlusIcon />
                 </button>
+                <button
+                  type="button"
+                  className={styles.addButton}
+                  onClick={() => onOpenSettings(project.repo)}
+                  aria-label={`${project.repo}の実行手段・モデルを設定`}
+                  title={`${project.repo}の実行手段・モデルを設定`}
+                >
+                  <GearIcon />
+                </button>
+                {project.executionSettings.execution_mode ===
+                  "litellm_proxy" && (
+                  <span
+                    className={styles.runnerTag}
+                    title={`LiteLLM Proxy経由（${project.executionSettings.litellm_model ?? ""}）`}
+                  >
+                    PROXY
+                  </span>
+                )}
               </div>
               <div className={styles.counts}>
                 {countKeys.map((key) => {

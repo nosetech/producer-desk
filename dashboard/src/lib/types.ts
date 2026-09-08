@@ -75,6 +75,27 @@ export const EMPTY_STATUS_COUNTS: StatusCounts = {
 
 export interface ProjectsResponse {
   repos: string[];
+  settings: Record<string, ProjectExecutionSettings>;
+}
+
+// 自走タスク本体の実行手段（issue #148・#174・#176、basic-design.md 4章）。
+export type ExecutionMode = "claude_code" | "litellm_proxy";
+
+export interface ProjectExecutionSettings {
+  execution_mode: ExecutionMode;
+  litellm_model: string | null;
+}
+
+/** GET /api/projects/{owner}/{name}/settings のレスポンス。 */
+export interface ProjectSettingsResponse extends ProjectExecutionSettings {
+  repo: string;
+  /** `config/litellm_config.yaml`の`model_list`のうち当該repo向けに定義済みのモデルエイリアス。 */
+  available_models: string[];
+}
+
+/** PATCH /api/projects/{owner}/{name}/settings（オーケストレータへプロキシ）のレスポンス。 */
+export interface UpdateProjectSettingsResult extends ProjectExecutionSettings {
+  repo: string;
 }
 
 export type InstructAction = "approve" | "instruct";

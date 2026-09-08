@@ -1,12 +1,18 @@
 import { EMPTY_STATUS_COUNTS } from "./types";
 import { STATUS_TODO, type StatusLabel } from "./status";
-import type { IssueSummary, ProjectStatusSummary, StatusCounts } from "./types";
+import type {
+  IssueSummary,
+  ProjectExecutionSettings,
+  ProjectStatusSummary,
+  StatusCounts,
+} from "./types";
 
 export interface ProjectStatus {
   repo: string;
   label: StatusLabel;
   isOrphaned: boolean;
   counts: StatusCounts;
+  executionSettings: ProjectExecutionSettings;
 }
 
 function shortRepoName(repo: string): string {
@@ -27,6 +33,7 @@ export function deriveProjectStatus(
   repo: string,
   decisions: IssueSummary[],
   projectStatus: ProjectStatusSummary[],
+  executionSettings?: ProjectExecutionSettings,
 ): ProjectStatus {
   const status = projectStatus.find((p) => p.repo === repo);
   const counts = status?.counts ?? EMPTY_STATUS_COUNTS;
@@ -37,7 +44,16 @@ export function deriveProjectStatus(
     ? "needs-human-decision"
     : (status?.label ?? STATUS_TODO);
 
-  return { repo, label, isOrphaned, counts };
+  return {
+    repo,
+    label,
+    isOrphaned,
+    counts,
+    executionSettings: executionSettings ?? {
+      execution_mode: "claude_code",
+      litellm_model: null,
+    },
+  };
 }
 
 export { shortRepoName };
