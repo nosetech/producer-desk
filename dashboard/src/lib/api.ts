@@ -3,10 +3,13 @@ import {
   type AggregatedState,
   type CreateIssueResult,
   type Dispatch,
+  type ExecutionMode,
   type InstructAction,
   type InstructResult,
   type ProgressResponse,
+  type ProjectSettingsResponse,
   type ProjectsResponse,
+  type UpdateProjectSettingsResult,
   type UsageResponse,
 } from "./types";
 
@@ -37,9 +40,12 @@ export function fetchState(): Promise<AggregatedState> {
 }
 
 export function fetchProjects(): Promise<ProjectsResponse> {
-  return fetch("/api/projects", { cache: "no-store" }).then((res) =>
-    parseJsonOrThrow<ProjectsResponse>(res),
-  );
+  return fetch("/api/projects", { cache: "no-store" })
+    .then((res) => parseJsonOrThrow<ProjectsResponse>(res))
+    .then((data) => ({
+      repos: data.repos ?? [],
+      settings: data.settings ?? {},
+    }));
 }
 
 export function fetchUsage(): Promise<UsageResponse> {
@@ -79,6 +85,29 @@ export function postCreateIssue(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, prompt, dispatch, progressId }),
   }).then((res) => parseJsonOrThrow<CreateIssueResult>(res));
+}
+
+export function fetchProjectSettings(
+  repo: string,
+): Promise<ProjectSettingsResponse> {
+  return fetch(`${repoPath(repo)}/settings`, { cache: "no-store" }).then(
+    (res) => parseJsonOrThrow<ProjectSettingsResponse>(res),
+  );
+}
+
+export function patchProjectSettings(
+  repo: string,
+  executionMode: ExecutionMode,
+  litellmModel: string | null,
+): Promise<UpdateProjectSettingsResult> {
+  return fetch(`${repoPath(repo)}/settings`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      execution_mode: executionMode,
+      litellm_model: litellmModel,
+    }),
+  }).then((res) => parseJsonOrThrow<UpdateProjectSettingsResult>(res));
 }
 
 // 指示送信中の実際の進捗（orchestrator/orchestrator/server.py の ProgressStore）を

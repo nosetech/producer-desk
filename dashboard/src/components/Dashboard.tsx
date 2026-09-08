@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchProjects, fetchState } from "@/lib/api";
 import { deriveProjectStatus } from "@/lib/projectStatus";
-import { EMPTY_STATUS_COUNTS, type AggregatedState } from "@/lib/types";
+import {
+  EMPTY_STATUS_COUNTS,
+  type AggregatedState,
+  type ProjectExecutionSettings,
+} from "@/lib/types";
 import Header from "./Header";
 import ProjectStatusRow from "./ProjectStatusRow";
+import ProjectSettingsDialog from "./ProjectSettingsDialog";
 import DecisionsList from "./DecisionsList";
 import ReviewsList from "./ReviewsList";
 import UsageMonitor from "./UsageMonitor";
@@ -25,6 +30,10 @@ const EMPTY_STATE: AggregatedState = {
 export default function Dashboard() {
   const [state, setState] = useState<AggregatedState>(EMPTY_STATE);
   const [repos, setRepos] = useState<string[]>([]);
+  const [projectSettings, setProjectSettings] = useState<
+    Record<string, ProjectExecutionSettings>
+  >({});
+  const [settingsRepo, setSettingsRepo] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,14 +76,27 @@ export default function Dashboard() {
       });
   }, []);
 
+  const refreshProjects = useCallback((): Promise<void> => {
+    // refresh()と同様、取得失敗時は前回の一覧を残す（別タブでのプロジェクト設定変更や
+    // config/projects.yaml直接編集を定期反映するためのポーリング対象でもあるため、
+    // 一時的な取得失敗でプロジェクト一覧・PROXY表示を消さない）。
+    return fetchProjects()
+      .then((data) => {
+        setRepos(data.repos);
+        setProjectSettings(data.settings);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     refresh();
-    fetchProjects()
-      .then((data) => setRepos(data.repos))
-      .catch(() => setRepos([]));
-    const interval = setInterval(refresh, POLL_INTERVAL_MS);
+    refreshProjects();
+    const interval = setInterval(() => {
+      refresh();
+      refreshProjects();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, refreshProjects]);
 
   function handleReply(repo: string, issueNumber: number, title: string) {
     setComposerMode("reply");
@@ -94,7 +116,12 @@ export default function Dashboard() {
   }
 
   const projectStatuses = repos.map((repo) =>
-    deriveProjectStatus(repo, state.decisions, state.project_status),
+    deriveProjectStatus(
+      repo,
+      state.decisions,
+      state.project_status,
+      projectSettings[repo],
+    ),
   );
 
   return (
@@ -108,6 +135,7 @@ export default function Dashboard() {
       <ProjectStatusRow
         projects={projectStatuses}
         onQuickCreate={handleQuickCreate}
+        onOpenSettings={setSettingsRepo}
       />
       <main className={styles.main}>
         <div className={styles.left}>
@@ -144,6 +172,14 @@ export default function Dashboard() {
         onReplySubmittingChange={setLockedIssue}
       />
       <Toast show={toast.show} text={toast.text} />
+      {settingsRepo && (
+        <ProjectSettingsDialog
+          repo={settingsRepo}
+          onClose={() => setSettingsRepo(null)}
+          onSaved={refreshProjects}
+          onToast={showToast}
+        />
+      )}
     </div>
   );
 }
