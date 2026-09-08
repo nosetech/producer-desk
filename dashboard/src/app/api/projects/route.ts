@@ -1,12 +1,6 @@
-import {
-  loadAllProjectExecutionSettings,
-  loadProjectRepos,
-} from "@/lib/projectsConfig";
+import { loadProjectsWithExecutionSettings } from "@/lib/projectsConfig";
 
 export async function GET() {
-  const [repos, settings] = await Promise.all([
-    loadProjectRepos(),
-    loadAllProjectExecutionSettings(),
-  ]);
+  const { repos, settings } = await loadProjectsWithExecutionSettings();
   return Response.json({ repos, settings });
 }

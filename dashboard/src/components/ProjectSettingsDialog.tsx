@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchProjectSettings, patchProjectSettings } from "@/lib/api";
 import type { ExecutionMode } from "@/lib/types";
 import { SpinnerIcon } from "./StageProgress";
@@ -78,9 +78,17 @@ export default function ProjectSettingsDialog({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const busy = loading || saving;
   const repoName = repo.split("/")[1] ?? repo;
+  // 取得済みの値がavailable_modelsに含まれない場合（config/litellm_config.yaml側の
+  // 設定が変わった等）でも<select>の表示値と内部stateがずれないよう、現在値を
+  // 選択肢へ必ず含める。
+  const selectOptions =
+    model && !availableModels.includes(model)
+      ? [model, ...availableModels]
+      : availableModels;
 
   useEffect(() => {
     setLoading(true);
@@ -101,8 +109,15 @@ export default function ProjectSettingsDialog({
       .finally(() => setLoading(false));
   }, [repo]);
 
+  useEffect(() => {
+    return () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
+  }, []);
+
   function close() {
     if (saving) return;
+    if (closeTimer.current) clearTimeout(closeTimer.current);
     onClose();
   }
 
@@ -125,7 +140,8 @@ export default function ProjectSettingsDialog({
           }に設定しました。`,
         );
         onSaved();
-        setTimeout(onClose, 1200);
+        if (closeTimer.current) clearTimeout(closeTimer.current);
+        closeTimer.current = setTimeout(onClose, 1200);
       })
       .catch((e) => {
         setSaveError(e instanceof Error ? e.message : "保存に失敗しました");
@@ -204,14 +220,14 @@ export default function ProjectSettingsDialog({
         {runner === "litellm_proxy" && (
           <div className={styles.field}>
             <div className={styles.fieldLabel}>使用するモデル</div>
-            {availableModels.length > 0 ? (
+            {selectOptions.length > 0 ? (
               <select
                 className={styles.select}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 disabled={busy}
               >
-                {availableModels.map((m) => (
+                {selectOptions.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>

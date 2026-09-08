@@ -48,16 +48,21 @@ function toExecutionSettings(
   };
 }
 
-/** 全プロジェクトの実行手段設定（basic-design.md 4章）をrepoごとにまとめて読む。 */
-export async function loadAllProjectExecutionSettings(): Promise<
-  Record<string, ProjectExecutionSettings>
-> {
+/**
+ * `GET /api/projects`向け: 対象リポジトリ一覧と実行手段設定を`config/projects.yaml`の
+ * 1回の読み込み・パースでまとめて返す（それぞれ個別に読むと同一リクエスト内でファイルI/O・
+ * YAMLパースが重複するため）。
+ */
+export async function loadProjectsWithExecutionSettings(): Promise<{
+  repos: string[];
+  settings: Record<string, ProjectExecutionSettings>;
+}> {
   const entries = await loadProjectEntries();
-  const result: Record<string, ProjectExecutionSettings> = {};
+  const settings: Record<string, ProjectExecutionSettings> = {};
   for (const entry of entries) {
-    result[entry.repo] = toExecutionSettings(entry);
+    settings[entry.repo] = toExecutionSettings(entry);
   }
-  return result;
+  return { repos: entries.map((p) => p.repo), settings };
 }
 
 /** 単一プロジェクトの実行手段設定を読む。未登録リポジトリは既定値（claude_code）を返す。 */

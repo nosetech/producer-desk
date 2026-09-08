@@ -77,21 +77,24 @@ export default function Dashboard() {
   }, []);
 
   const refreshProjects = useCallback((): Promise<void> => {
+    // refresh()と同様、取得失敗時は前回の一覧を残す（別タブでのプロジェクト設定変更や
+    // config/projects.yaml直接編集を定期反映するためのポーリング対象でもあるため、
+    // 一時的な取得失敗でプロジェクト一覧・PROXY表示を消さない）。
     return fetchProjects()
       .then((data) => {
         setRepos(data.repos);
         setProjectSettings(data.settings);
       })
-      .catch(() => {
-        setRepos([]);
-        setProjectSettings({});
-      });
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     refresh();
     refreshProjects();
-    const interval = setInterval(refresh, POLL_INTERVAL_MS);
+    const interval = setInterval(() => {
+      refresh();
+      refreshProjects();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [refresh, refreshProjects]);
 
