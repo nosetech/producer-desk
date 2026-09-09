@@ -116,7 +116,34 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
 - **Agent Runner実行時はユーザー個別のClaude Code設定が適用されない場合がある**: Agent Runnerは`claude -p`によるheadless（非対話）実行のため、対話セッションでは有効な利用者個人の`~/.claude/settings.json`のフック（特に`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示が、Agent Runner実行時には適用されない場合がある。確実に反映させたい指示（回答言語等）は、対象プロジェクトリポジトリ自身の`CLAUDE.md`に明記する（Agent Runnerは対象プロジェクトのworktreeをカレントディレクトリとして起動されるため、そのプロジェクトのCLAUDE.mdは確実に読み込まれる）。
 
-## 8. DBバックアップ（macOS launchd、任意）
+## 8. producer-desk本体の常時起動（macOS launchd、任意）
+
+「4. 起動・停止」の`./bin/start.sh` / `./bin/stop.sh`はPIDファイル方式での手動起動・停止のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。常時起動しておきたい場合は、launchdのper-user LaunchAgentとして常駐化する。本体はorchestrator・dashboardの2プロセス構成のため、以下2つのplistサンプルの両方を登録する必要がある。
+
+**`./bin/start.sh` / `./bin/stop.sh`とこのlaunchd常駐化は併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。
+
+```bash
+cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+コピー後、両ファイル内の`/path/to/producer-desk`を展開先の実際の絶対パスに書き換える。`com.nosetech.producer-desk.dashboard.plist`は`ProgramArguments`先頭の`/path/to/node`も、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える必要がある（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できない）。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+読み込み後は自動的に起動し、`launchctl start com.nosetech.producer-desk.orchestrator` / `launchctl start com.nosetech.producer-desk.dashboard`で即時起動して動作確認できる。停止・恒久的な解除は以下で行う。
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+## 9. DBバックアップ（macOS launchd、任意）
 
 `config/usage.db`（利用量・コスト記録用SQLite）はローカルファイルで自動的にはバックアップされない。`scripts/backup_usage_db.sh` と launchd の per-user LaunchAgent を使って日次バックアップする場合は、以下の手順を行う。
 
@@ -133,7 +160,7 @@ launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.backup-usage
 
 読み込み後は毎日3:00（システムのタイムゾーン設定に従う）に自動実行される。バックアップ先はデフォルト`~/Backups/producer-desk/`で、環境変数`BACKUP_DEST_DIR`で上書きできる（`launchd`から実行する場合はplistの`EnvironmentVariables`キーで設定する）。保持世代数はデフォルト30日分で、環境変数`BACKUP_RETENTION_DAYS`で上書きできる。
 
-## 9. アップグレード手順
+## 10. アップグレード手順
 
 新バージョンのtarballへ移行する際、`scripts/migrate.sh`を使うと、旧バージョンの展開先ディレクトリに蓄積したユーザー固有の状態ファイル（`config/projects.yaml`・`config/usage.db`・`config/sessions.json`・`.env`・任意で`logs/`）を手動コピー無しで引き継げる。
 

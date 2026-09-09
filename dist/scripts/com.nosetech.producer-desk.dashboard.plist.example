@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- producer-desk本体のdashboard（Next.js standalone出力のserver.js）を launchd の
+     per-user LaunchAgent として常駐化するための設定サンプル。macOS再起動・
+     ログアウト・プロセスクラッシュ時にも RunAtLoad + KeepAlive で自動的に
+     起動・再起動される（com.nosetech.producer-desk.orchestrator.plist.exampleと
+     セットで使う。本体はorchestrator・dashboardの2プロセス構成のため、常駐化には
+     両方のplistをlaunchd登録する必要がある）。
+
+     bin/start.sh（PIDファイル方式での手動起動・停止）とこのlaunchd常駐化は
+     併用できない（ポートの二重bind・PIDファイルの不整合が起きるため、
+     どちらか一方のみを使うこと）。
+
+     以下のProgramArgumentsは配布パッケージ（tarball、dist/bin/start.sh参照）
+     向けの既定値で、ビルド済みのNext.js standalone出力（dashboard/server.js、
+     .next/static・publicを含めて展開済み）をそのまま起動する。
+
+     git clone開発環境（CONTRIBUTING.md参照）では dashboard/server.js が存在しない
+     （standalone出力の組み立てはリリースCIのみが行う。issue #183参照）ため、
+     代わりに以下2点を読み替えること:
+       - ProgramArguments を
+         ["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start",
+          "-p", "3000"] に変更する（事前に npm ci && npm run build を手動で
+         一度実行し、dashboard/.next をビルド済みにしておく）
+       - EnvironmentVariables から PORT キーを削除する（next start は -p の
+         CLI引数でポートを指定するため、PORT環境変数は使わない）
+
+     node実行ファイルのフルパスは環境によって異なる（Homebrew/nvm等）ため、
+     事前に `which node` で確認し、以下の /path/to/node を書き換えること
+     （launchdは対話シェルのPATHを引き継がないため、bareの"node"コマンド名では
+     解決できない）。
+
+     使い方（配布パッケージ利用者はdist/SETUP.md、git clone開発環境利用者は
+     CONTRIBUTING.mdの「本体（オーケストレータ・ダッシュボード）の常時起動」参照）:
+       1. 配布パッケージ利用者は追加の準備は不要（server.jsはビルド済み）。
+          git clone開発環境利用者は先に npm ci && npm run build を一度手動実行する
+       2. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+          にコピーする
+       3. コピー後のファイル内の /path/to/producer-desk・/path/to/node を実パスに
+          書き換える
+       4. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+          で読み込む -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nosetech.producer-desk.dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/node</string>
+        <string>/path/to/producer-desk/dashboard/server.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/producer-desk/dashboard</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NODE_ENV</key>
+        <string>production</string>
+        <key>PORT</key>
+        <string>3000</string>
+        <!-- orchestratorのポートを既定の8787から変更した場合や、別ホストの
+             orchestratorに接続する場合のみ指定する（既定: http://127.0.0.1:8787） -->
+        <key>ORCHESTRATOR_URL</key>
+        <string>http://127.0.0.1:8787</string>
+        <!-- 同一LAN内の別端末に公開する場合のみ、自機のLAN IPを指定する
+        <key>HOSTNAME</key>
+        <string>192.168.1.xx</string>
+        -->
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/producer-desk/logs/dashboard.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/producer-desk/logs/dashboard.log</string>
+</dict>
+</plist>

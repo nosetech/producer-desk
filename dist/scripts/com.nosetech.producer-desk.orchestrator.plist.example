@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- producer-desk本体のオーケストレータ（orchestrator/.venv/bin/orchestrator、
+     bin/start.sh参照）を launchd の per-user LaunchAgent として常駐化するための
+     設定サンプル。macOS再起動・ログアウト・プロセスクラッシュ時にも
+     RunAtLoad + KeepAlive で自動的に起動・再起動される
+     （com.nosetech.producer-desk.litellm-proxy.plist.exampleと同じ考え方）。
+
+     本体はorchestrator・dashboardの2プロセス構成のため、常駐化には
+     このファイルと com.nosetech.producer-desk.dashboard.plist.example の
+     両方をlaunchd登録する必要がある（LiteLLM Proxyが単一プロセスのため
+     plistが1つで済むのとは異なる）。
+
+     bin/start.sh（PIDファイル方式での手動起動・停止）とこのlaunchd常駐化は
+     併用できない（ポートの二重bind・PIDファイルの不整合が起きるため、
+     どちらか一方のみを使うこと）。
+
+     `orchestrator/.venv/bin/orchestrator` は project.scripts のコンソール
+     スクリプトで、git clone環境（`pip install -e .`によるeditable install）・
+     配布パッケージ（wheelインストール）のどちらでも同じパスで動作する
+     （configの探索方法の違いはorchestrator/orchestrator/config.py内の
+     _detect_repo_root()が吸収する）。WorkingDirectoryは配布パッケージ
+     （wheelインストール）側がカレントディレクトリを展開先ルートとみなして
+     config/・logs/を探すため、リポジトリルート（このplistのパス例と同じ
+     /path/to/producer-desk）を指定すること（orchestrator/サブディレクトリ
+     ではない）。
+
+     使い方（配布パッケージ利用者はdist/SETUP.md、git clone開発環境利用者は
+     CONTRIBUTING.mdの「本体（オーケストレータ・ダッシュボード）の常時起動」参照）:
+       1. orchestrator/.venv が未作成の場合は先に ./bin/start.sh を一度手動
+          実行し、venvの作成・依存関係のインストールを済ませておく（launchd
+          起動時のビルド・ネットワークアクセスを避けるため）。その後、手動
+          起動したプロセスは ./bin/stop.sh で止めてからlaunchd登録に進むこと
+       2. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+          にコピーする
+       3. コピー後のファイル内の /path/to/producer-desk を実パス（配布パッケージの
+          展開先ルート、またはgit clone先）に書き換える
+       4. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+          で読み込む -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nosetech.producer-desk.orchestrator</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/producer-desk/orchestrator/.venv/bin/orchestrator</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/producer-desk</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- ORCHESTRATOR_PORT（既定8787）等を上書きしたい場合はEnvironmentVariables
+         キーを追加する。launchdは.envファイルを読まないため、bin/start.shとは
+         異なりここに直接記載する必要がある。例:
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ORCHESTRATOR_PORT</key>
+        <string>8787</string>
+    </dict>
+    -->
+    <!-- logs/orchestrator.log は logging モジュールの TimedRotatingFileHandler が
+         直接管理する（日付境界でrenameしながらローテーションする）ため、
+         StandardOutPath/StandardErrorPathを同じパスに向けると、ローテーション後も
+         launchdが保持し続ける旧fdが新しいorchestrator.logに書き込めず、削除された
+         はずの世代がディスク上に残り続ける（bin/start.shのORCHESTRATOR_FALLBACK_LOGと
+         同じ理由、issue #114参照）。そのためlogging経由に乗らない出力
+         （configure_logging()呼び出し前のクラッシュ等）専用の別ファイルに分離する。 -->
+    <key>StandardOutPath</key>
+    <string>/path/to/producer-desk/logs/orchestrator.launchd.stderr.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/producer-desk/logs/orchestrator.launchd.stderr.log</string>
+</dict>
+</plist>
