@@ -22,7 +22,27 @@
      （wheelインストール）側がカレントディレクトリを展開先ルートとみなして
      config/・logs/を探すため、リポジトリルート（このplistのパス例と同じ
      /path/to/producer-desk）を指定すること（orchestrator/サブディレクトリ
-     ではない）。
+     ではない）。bin/start.shが持つ`orchestrator/venv`（旧`.venv`以前の命名）
+     へのフォールバックはこのplistには無いため、`orchestrator/.venv`が存在
+     しない場合は起動に失敗する。
+
+     【重要】launchdのper-user LaunchAgentは対話シェルのPATH・環境変数を一切
+     引き継がない。以下2点を必ずEnvironmentVariablesキーで補うこと（下記
+     ProgramArgumentsの直後を参照）。
+       - PATH: オーケストレータは内部でgh・claudeコマンドをbareコマンド名の
+         subprocessとして呼び出す（issueのラベル操作・コメント投稿・Agent
+         Runnerディスパッチ等）。launchdの既定PATH（/usr/bin:/bin:/usr/sbin:
+         /sbin）にはHomebrew等でインストールしたgh・claudeが含まれないため、
+         PATHを明示的に設定しないとオーケストレータ自体は起動に成功したまま
+         これらの操作だけが全てFileNotFoundErrorで失敗し続ける（プロセスは
+         生きているのに何も動かない状態になり気づきにくい）。`which gh`・
+         `which claude`で実際のインストール先を確認し、下記の値を環境に合わせて
+         調整すること
+       - SLACK_WEBHOOK_URL等: オーケストレータ自体は`orchestrator/.env`を
+         自動読み込みしない（.envのsourceはbin/start.sh側の責務）。`.env`で
+         SLACK_WEBHOOK_URL等を設定していた場合、launchd常駐化に切り替えると
+         この値が引き継がれず、Slack通知が「起動エラーにはならないまま」無言
+         で無効化される。必要な値はEnvironmentVariablesへ個別に転記すること
 
      使い方（配布パッケージ利用者はdist/SETUP.md、git clone開発環境利用者は
      CONTRIBUTING.mdの「本体（オーケストレータ・ダッシュボード）の常時起動」参照）:
@@ -30,11 +50,15 @@
           実行し、venvの作成・依存関係のインストールを済ませておく（launchd
           起動時のビルド・ネットワークアクセスを避けるため）。その後、手動
           起動したプロセスは ./bin/stop.sh で止めてからlaunchd登録に進むこと
-       2. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+       2. config/projects.yaml が未作成の場合は先に作成しておく（無い状態で
+          読み込むと起動のたびにクラッシュし、KeepAliveにより無限に再起動を
+          繰り返す）
+       3. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
           にコピーする
-       3. コピー後のファイル内の /path/to/producer-desk を実パス（配布パッケージの
-          展開先ルート、またはgit clone先）に書き換える
-       4. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+       4. コピー後のファイル内の /path/to/producer-desk を実パス（配布パッケージの
+          展開先ルート、またはgit clone先）に、PATHを`which gh`・`which claude`の
+          実パスに書き換える
+       5. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
           で読み込む -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,15 +75,20 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
-    <!-- ORCHESTRATOR_PORT（既定8787）等を上書きしたい場合はEnvironmentVariables
-         キーを追加する。launchdは.envファイルを読まないため、bin/start.shとは
-         異なりここに直接記載する必要がある。例:
+    <!-- PATHは上のコメントの通り必須（gh・claudeコマンドの解決に使われる）。
+         `which gh`・`which claude`で確認した実際のディレクトリを含めること
+         （以下はHomebrew（Apple Silicon/Intel）・システム標準パスの例）。
+         SLACK_WEBHOOK_URL等、orchestrator/.envで設定していた値をlaunchd経由
+         でも使いたい場合はこの辞書に追記する（ORCHESTRATOR_PORT等も同様）。 -->
     <key>EnvironmentVariables</key>
     <dict>
-        <key>ORCHESTRATOR_PORT</key>
-        <string>8787</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- <key>SLACK_WEBHOOK_URL</key>
+        <string>https://hooks.slack.com/services/xxx/yyy/zzz</string> -->
+        <!-- <key>ORCHESTRATOR_PORT</key>
+        <string>8787</string> -->
     </dict>
-    -->
     <!-- logs/orchestrator.log は logging モジュールの TimedRotatingFileHandler が
          直接管理する（日付境界でrenameしながらローテーションする）ため、
          StandardOutPath/StandardErrorPathを同じパスに向けると、ローテーション後も

@@ -20,9 +20,16 @@
        - ProgramArguments を
          ["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start",
           "-p", "3000"] に変更する（事前に npm ci && npm run build を手動で
-         一度実行し、dashboard/.next をビルド済みにしておく）
+         一度実行し、dashboard/.next をビルド済みにしておく）。同一LAN内の
+         別端末に公開したい場合は"-H", "192.168.1.xx"を引数に追加する
+         （next startはHOSTNAME環境変数を読まず、-H/--hostnameのCLI引数
+         でのみホストを指定できるため、下記EnvironmentVariablesのHOSTNAME
+         キーはこの構成では効果がない）
        - EnvironmentVariables から PORT キーを削除する（next start は -p の
          CLI引数でポートを指定するため、PORT環境変数は使わない）
+     この読み替えを忘れてデフォルトのまま（server.js未ビルド）でロードすると、
+     node起動が即座に失敗し、KeepAliveによりlaunchdが再起動を繰り返す
+     （クラッシュループ）。事前ビルドの完了を確認してから読み込むこと。
 
      node実行ファイルのフルパスは環境によって異なる（Homebrew/nvm等）ため、
      事前に `which node` で確認し、以下の /path/to/node を書き換えること
@@ -65,7 +72,11 @@
              orchestratorに接続する場合のみ指定する（既定: http://127.0.0.1:8787） -->
         <key>ORCHESTRATOR_URL</key>
         <string>http://127.0.0.1:8787</string>
-        <!-- 同一LAN内の別端末に公開する場合のみ、自機のLAN IPを指定する
+        <!-- HOSTNAMEは未設定時点で既に0.0.0.0（全インターフェース）で待ち受ける
+             のが既定動作（dist/bin/start.shの同種コメント参照）。特定の
+             インターフェースやIPに限定したい場合のみ明示的に指定する
+             （このEnvironmentVariablesはserver.js起動時のみ有効。git clone環境
+             でnext startに読み替えた場合は上記ProgramArgumentsの-Hを使うこと）。
         <key>HOSTNAME</key>
         <string>192.168.1.xx</string>
         -->

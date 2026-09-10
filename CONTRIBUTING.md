@@ -201,11 +201,14 @@ cp dist/scripts/com.nosetech.producer-desk.dashboard.plist.example \
   ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
 ```
 
+**準備（両plist共通）**: `orchestrator/.venv`・dashboardのビルド成果物（`.next`）がまだ無い場合は、先に`./bin/start.sh`を一度手動実行してから`./bin/stop.sh`で停止しておく（`bin/start.sh`は`npm ci && npm run build`とorchestrator用venvの作成を両方行うため、これとは別に`npm run build`等を個別実行する必要はない）。`config/projects.yaml`も未作成の場合は事前に作成しておくこと（無い状態でlaunchd経由で読み込むと起動のたびにクラッシュし、`KeepAlive`により無限に再起動を繰り返す）。
+
 コピー後、両ファイル内の `/path/to/producer-desk` をこのリポジトリのgit clone先の絶対パスに書き換える。あわせて以下のgit clone環境固有の差分を読み替えること（配布パッケージ向けの既定値のままでは動作しない）。
 
-- `com.nosetech.producer-desk.dashboard.plist` の `ProgramArguments` は、配布パッケージ同梱のビルド済み`dashboard/server.js`（Next.js standalone出力）を前提にしている。git clone環境にはこのファイルが存在しない（standalone出力の組み立てはリリースCIのみが行う）ため、`["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start", "-p", "3000"]` に変更し、`EnvironmentVariables`から`PORT`キーを削除する（`next start`は`-p`のCLI引数でポートを指定するため）。事前に`cd dashboard && npm ci && npm run build`を一度手動実行し、ビルド済みにしておく必要がある
+- `com.nosetech.producer-desk.dashboard.plist` の `ProgramArguments` は、配布パッケージ同梱のビルド済み`dashboard/server.js`（Next.js standalone出力）を前提にしている。git clone環境にはこのファイルが存在しない（standalone出力の組み立てはリリースCIのみが行う）ため、`["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start", "-p", "3000"]` に変更し、`EnvironmentVariables`から`PORT`キーを削除する（`next start`は`-p`のCLI引数でポートを指定するため）。同一LAN内の別端末に公開したい場合は`"-H", "192.168.1.xx"`を引数に追加する（`next start`は`HOSTNAME`環境変数を読まず、`-H`/`--hostname`のCLI引数でのみホストを指定できるため、plist内の`HOSTNAME`キーはこの構成では効果がない）
 - `com.nosetech.producer-desk.dashboard.plist`の`ProgramArguments`先頭の`/path/to/node`は、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できない）
-- `com.nosetech.producer-desk.orchestrator.plist`の`ProgramArguments`（`orchestrator/.venv/bin/orchestrator`）はgit clone環境（`pip install -e .`によるeditable install）でも配布パッケージと同じパスで動作するため、読み替え不要。ただし`orchestrator/.venv`が未作成の場合は先に`./bin/start.sh`を一度手動実行してから`./bin/stop.sh`で停止し、venvを作成済みにしておくこと
+- `com.nosetech.producer-desk.orchestrator.plist`の`ProgramArguments`（`orchestrator/.venv/bin/orchestrator`）はgit clone環境（`pip install -e .`によるeditable install）でも配布パッケージと同じパスで動作するため、読み替え不要。ただし`bin/start.sh`が持つ`orchestrator/venv`（旧命名）へのフォールバックはこのplistには無いため、`orchestrator/.venv`が存在することを確認しておくこと
+- `com.nosetech.producer-desk.orchestrator.plist`の`EnvironmentVariables`の`PATH`は、オーケストレータが内部で`gh`・`claude`コマンドをbareコマンド名のsubprocessとして呼び出す（ラベル操作・コメント投稿・Agent Runnerディスパッチ等）ため必須。launchdの既定PATHにはHomebrew等でインストールしたこれらのコマンドが含まれず、設定を怠るとオーケストレータ自体は起動に成功したままこれらの操作だけが無言で失敗し続ける。`which gh`・`which claude`で確認した実際のパスに書き換えること。`orchestrator/.env`で`SLACK_WEBHOOK_URL`等を設定していた場合も、launchd経由ではこのファイルが自動読み込みされないため、同じく`EnvironmentVariables`へ転記する必要がある
 
 読み込みは以下のコマンドで行う。
 

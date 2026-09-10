@@ -149,6 +149,8 @@ cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
 
 コピー後、両ファイル内の`/path/to/producer-desk`を展開先の実際の絶対パスに書き換えます。`com.nosetech.producer-desk.dashboard.plist`は`ProgramArguments`先頭の`/path/to/node`も、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える必要があります（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できません）。
 
+同様の理由で、`com.nosetech.producer-desk.orchestrator.plist`の`EnvironmentVariables`の`PATH`も、`which gh`・`which claude`で確認した実際のパスに書き換えてください。オーケストレータは内部で`gh`・`claude`コマンドをbareコマンド名のsubprocessとして呼び出す（ラベル操作・コメント投稿・Agent Runnerディスパッチ等）ため、PATHが誤っているとオーケストレータ自体は起動に成功したままこれらの操作だけが無言で失敗し続けます。`.env`で`SLACK_WEBHOOK_URL`等を設定している場合も、launchd経由では`.env`が自動読み込みされないため、同じく`EnvironmentVariables`へ転記してください。
+
 ```bash
 launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
 launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
