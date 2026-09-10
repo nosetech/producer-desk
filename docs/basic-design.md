@@ -257,6 +257,23 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 - **repo単位の利用量帰属方法（issue #176で確定）**: LiteLLM ProxyはDBなし運用のため、プロジェクトごとの仮想キー発行機能（`/key/generate`、LiteLLM側のDB依存機能）は使わない。単一の共有トークン（同一LAN内アクセスのみという既存のネットワーク境界に認証を委ね、`config/litellm_config.yaml`に`master_key`を設定しない運用。[6-2](#6-2-ネットワークアクセスの認証設計)と同じ考え方）ではAPIキー単位での「どのプロジェクトからのリクエストか」の区別ができないため、代わりに`config/litellm_config.yaml`の`model_list`エントリをプロジェクトごとに分け、各エントリの`model_info.repo`にリポジトリ名を埋め込む。`Project.litellm_model`にはこの`model_name`（プロジェクト固有のエイリアス）を設定し、`claude -p --model <litellm_model>`として渡すことで、コールバック側は`kwargs["litellm_params"]["model_info"]["repo"]`からrepoを解決できる。issue番号単位の帰属はこの仕組みでは得られない（1プロジェクトにつき1エイリアスのため、Claude Code CLIが`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`経由の接続でissue番号等の追加メタデータをリクエストに含める手段を持たない）。そのため`usage_records.issue_number`には実在しないissue番号`0`をセンチネル値として記録する（「プロジェクト単位で集計されたLiteLLM Proxy経由の利用量」であることを示す。列のNOT NULL制約は変更しないため、スキーマ移行は不要）。ダッシュボードの日次・モデル別集計（`usage_store.daily_model_usage`）はissue_numberを見ないため表示に影響しない。`model_info.repo`が解決できない場合（設定漏れ等）は`"unknown"`として記録する。
 - **LiteLLM Proxy自体のネイティブ導入・常駐化（issue #176）**: `bin/litellm_proxy_start.sh`/`bin/litellm_proxy_stop.sh`で、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）に`pip install 'litellm[proxy]'`する（`litellm[proxy]`は依存が重く、オーケストレータ本体の`pyproject.toml`には追加しない。両者は別プロセス・別venvで動くネイティブ構成として分離する）。カスタムコールバックが`usage_store.py`をインポートできるよう、この専用venvへ`orchestrator`パッケージも`pip install -e`する。設定ファイルは`config/litellm_config.yaml`（`config/litellm_config.yaml.example`参照、`.gitignore`対象）。常時起動が必要なプロセスのため、オーケストレータ本体（`bin/start.sh`）と同様に`launchd`のper-user LaunchAgentとして常駐化できる（`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`、`RunAtLoad`+`KeepAlive`。日次バックアップ等の定期実行タスク向け`StartCalendarInterval`とは異なる用途のため別ファイルとする）。配布パッケージ（[7章](#7-配布パッケージ化設計)、issue #110）へのtarball同梱・`dist/bin/`向けの起動スクリプト整備は本issueのスコープ外とし、将来必要になった時点で改めて対応する。
 
+### compaction時のthinkingパラメータ非互換対策（issue #185）
+
+execution_mode: litellm_proxyでOllamaのローカルモデルを実行手段として使っている場合、Agent Runnerのセッションが長くなりClaude Code CLIが自動コンテキスト圧縮（compaction）を行おうとすると、以下のエラーで即座に異常終了する不具合があった。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"\"<model>\" does not support thinking"}.
+```
+
+**原因**: Claude Code CLIは`ANTHROPIC_BASE_URL`経由でLiteLLM Proxyの`/v1/messages`（Anthropic Messages API互換）エンドポイントを叩く。compaction実行時、CLIはこのリクエストに必ず拡張思考（`thinking`）パラメータを付与する。ところが`think`機能を持たないOllamaモデル（現状productor-deskで利用している`deepseek-coder-v2:16b`等はすべて該当）へこれをそのまま中継すると、Ollama自体（LiteLLMではなく）が上記400エラーを返す。compaction自体が失敗するとセッション全体が続行不能になり、実作業を行わないまま異常終了する。
+
+**`litellm_settings.drop_params: true`では解決しない（実機検証済み）**: 対応方針の検討当初は`drop_params: true`が最有力候補だったが、実際にLiteLLM Proxyを起動し`/v1/messages`へ`thinking`付きリクエストを送って検証したところ、`drop_params: true`を設定しても同じ400エラーが再現した。理由は、`drop_params`が効くのは通常のchat/completions系リクエストが通る`litellm.utils.get_optional_params`のOpenAI形式パラメータ検証・ドロップ経路のみであり、`/v1/messages`エンドポイントの実装（LiteLLM側の`llms/anthropic/experimental_pass_through/messages/`、Anthropic Messages APIをそのまま他プロバイダへ中継する実験的機能）はこの経路を通らず、`thinking`パラメータを検証なしにOllamaへそのまま転送するため。
+
+**実装した対策**: `orchestrator/orchestrator/litellm_callback.py`の`UsageStoreLogger`（既存の利用量記録コールバックと同一クラス。`config/litellm_config.yaml`の`litellm_settings.callbacks`への登録も既存のまま変更不要）に`async_pre_call_hook`（LiteLLM ProxyのCustomLoggerが提供する、モデル呼び出し前にリクエストデータを書き換えられるフック）を追加した。`call_type == "anthropic_messages"`（`/v1/messages`宛リクエスト）かつ、宛先モデルがOllama系プロバイダ（LiteLLM Proxyの`llm_router.get_model_list()`で解決した`litellm_params.model`が`ollama/`または`ollama_chat/`で始まる）の場合に限り、リクエストボディから`thinking`パラメータ自体を送信前に除去する（`_is_ollama_backed_model`）。OpenAI等、拡張思考に対応しうる他プロバイダ宛のリクエストは対象外とし、既存の拡張思考機能を損なわない。
+
+**受け入れ条件の検証結果**: `litellm_proxy/.venv`の実LiteLLM Proxyを一時的な別ポート（4099）で起動し、本番と同じOllamaホスト（`http://192.168.10.121:11434`）・`deepseek-coder-v2:16b`に対して`thinking`付きの`/v1/messages`リクエストを送信する実機検証を行った。対策前は上記400エラーが再現し、`async_pre_call_hook`導入後は200 OKで応答することを確認した（Claude Code CLI自体を使ったcompaction再現ではなく、CLIがcompaction時に送るリクエストと同じ形のリクエストを直接送る形での検証）。
+
 ### タスク種別ごとの推奨モデル
 
 [要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。

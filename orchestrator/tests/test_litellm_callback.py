@@ -10,10 +10,13 @@ LiteLLM本体（`litellm[proxy]`）はオーケストレータ自身の依存で
 
 from __future__ import annotations
 
+import asyncio
+
 from orchestrator.litellm_callback import (
     PROXY_AGGREGATED_ISSUE_NUMBER,
     UNKNOWN_REPO,
     UsageStoreLogger,
+    _is_ollama_backed_model,
     build_usage_record,
 )
 
@@ -94,3 +97,92 @@ def test_usage_store_logger_swallows_recording_failures(monkeypatch) -> None:
 
     # 例外を送出せず握りつぶすこと（LiteLLM Proxy本体のリクエスト処理を止めないため）。
     logger._record({"model": "m"}, {}, is_error=False)
+
+
+def test_is_ollama_backed_model_true_for_ollama_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._get_router_deployments",
+        lambda model_alias: [{"litellm_params": {"model": "ollama/deepseek-coder-v2:16b"}}],
+    )
+
+    assert _is_ollama_backed_model("project-a-ollama-deepseek") is True
+
+
+def test_is_ollama_backed_model_true_for_ollama_chat_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._get_router_deployments",
+        lambda model_alias: [{"litellm_params": {"model": "ollama_chat/qwen2.5-coder:7b"}}],
+    )
+
+    assert _is_ollama_backed_model("project-a-ollama-qwen") is True
+
+
+def test_is_ollama_backed_model_false_for_non_ollama_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._get_router_deployments",
+        lambda model_alias: [{"litellm_params": {"model": "openai/gpt-4o"}}],
+    )
+
+    assert _is_ollama_backed_model("project-a-openai-gpt4o") is False
+
+
+def test_is_ollama_backed_model_false_when_no_deployment_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._get_router_deployments", lambda model_alias: []
+    )
+
+    assert _is_ollama_backed_model("unknown-alias") is False
+
+
+def test_pre_call_hook_drops_thinking_for_ollama_backed_anthropic_messages_request(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._is_ollama_backed_model", lambda model_alias: True
+    )
+    logger = UsageStoreLogger()
+    data = {
+        "model": "project-a-ollama-deepseek",
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    result = asyncio.run(logger.async_pre_call_hook(None, None, data, "anthropic_messages"))
+
+    assert "thinking" not in result
+
+
+def test_pre_call_hook_keeps_thinking_for_non_ollama_backed_anthropic_messages_request(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "orchestrator.litellm_callback._is_ollama_backed_model", lambda model_alias: False
+    )
+    logger = UsageStoreLogger()
+    data = {
+        "model": "project-a-openai-gpt4o",
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+
+    result = asyncio.run(logger.async_pre_call_hook(None, None, data, "anthropic_messages"))
+
+    assert result["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+
+def test_pre_call_hook_ignores_non_anthropic_messages_call_types(monkeypatch) -> None:
+    # issue #185で問題になるのは`/v1/messages`（call_type="anthropic_messages"）
+    # 宛リクエストのみ。他のcall_type（例: "completion"）では`_is_ollama_backed_model`
+    # を呼び出す必要すらないことを確認する。
+    def _fail(model_alias: str) -> bool:
+        raise AssertionError("call_type=anthropic_messages以外では呼ばれないはず")
+
+    monkeypatch.setattr("orchestrator.litellm_callback._is_ollama_backed_model", _fail)
+    logger = UsageStoreLogger()
+    data = {
+        "model": "project-a-ollama-deepseek",
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+
+    result = asyncio.run(logger.async_pre_call_hook(None, None, data, "completion"))
+
+    assert result["thinking"] == {"type": "enabled", "budget_tokens": 1024}
