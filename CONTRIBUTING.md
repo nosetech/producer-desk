@@ -110,7 +110,7 @@ cp config/litellm_config.yaml.example config/litellm_config.yaml
 
 初回起動時、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）を自動作成し、`litellm[proxy]`と`orchestrator`パッケージ（カスタムコールバックが`usage_store.py`をインポートするため）をインストールしてから起動する（ネットワークアクセスが発生する）。既定では`http://127.0.0.1:4000`で待ち受ける（環境変数`LITELLM_PROXY_PORT`で上書き可）。停止する場合は`./bin/litellm_proxy_stop.sh`を実行する。
 
-常時起動しておきたい場合は、[`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`](./dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example)を参考にlaunchdのLaunchAgentとして常駐化できる。
+常時起動しておきたい場合は、[`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`](./dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example)を参考にlaunchdのLaunchAgentとして常駐化できる。producer-desk本体（オーケストレータ・ダッシュボード）についても同様にlaunchd常駐化できる（後述「本体（オーケストレータ・ダッシュボード）の常時起動（macOS launchd）」参照）。
 
 ### 5. Slack Webhook URL等のsecrets
 
@@ -184,6 +184,45 @@ ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
 ### 補足: `NODE_ENV`について
 
 `next build`は、呼び出し元のシェルで環境変数`NODE_ENV`に`production`/`development`/`test`以外の値が設定されていると、内部エラー（`<Html> should not be imported outside of pages/_document.`等）で失敗することがある（[vercel/next.js#77262](https://github.com/vercel/next.js/discussions/77262)参照）。`bin/start.sh`は起動前に常に`NODE_ENV=production`を設定するため通常は意識不要だが、`dashboard`ディレクトリで直接`npm run build`を実行する場合にビルドが失敗する場合は、シェルの`NODE_ENV`環境変数の値を確認すること。
+
+## 本体（オーケストレータ・ダッシュボード）の常時起動（macOS launchd）
+
+`bin/start.sh` / `bin/stop.sh` はPIDファイル方式での手動起動・停止のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。常時起動しておきたい場合は、LiteLLM Proxy（上記「LiteLLM Proxyのセットアップ」）と同様にlaunchdのLaunchAgentとして常駐化できる。本体はorchestrator・dashboardの2プロセス構成のため、常駐化には以下2つのplistサンプルの両方を登録する必要がある。
+
+- [`dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example`](./dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example)
+- [`dist/scripts/com.nosetech.producer-desk.dashboard.plist.example`](./dist/scripts/com.nosetech.producer-desk.dashboard.plist.example)
+
+**`bin/start.sh`/`bin/stop.sh`とこのlaunchd常駐化は併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。
+
+```bash
+cp dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+cp dist/scripts/com.nosetech.producer-desk.dashboard.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+**準備（両plist共通）**: `orchestrator/.venv`・dashboardのビルド成果物（`.next`）がまだ無い場合は、先に`./bin/start.sh`を一度手動実行してから`./bin/stop.sh`で停止しておく（`bin/start.sh`は`npm ci && npm run build`とorchestrator用venvの作成を両方行うため、これとは別に`npm run build`等を個別実行する必要はない）。`config/projects.yaml`も未作成の場合は事前に作成しておくこと（無い状態でlaunchd経由で読み込むと起動のたびにクラッシュし、`KeepAlive`により無限に再起動を繰り返す）。
+
+コピー後、両ファイル内の `/path/to/producer-desk` をこのリポジトリのgit clone先の絶対パスに書き換える。あわせて以下のgit clone環境固有の差分を読み替えること（配布パッケージ向けの既定値のままでは動作しない）。
+
+- `com.nosetech.producer-desk.dashboard.plist` の `ProgramArguments` は、配布パッケージ同梱のビルド済み`dashboard/server.js`（Next.js standalone出力）を前提にしている。git clone環境にはこのファイルが存在しない（standalone出力の組み立てはリリースCIのみが行う）ため、`["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start", "-p", "3000"]` に変更し、`EnvironmentVariables`から`PORT`キーを削除する（`next start`は`-p`のCLI引数でポートを指定するため）。同一LAN内の別端末に公開したい場合は`"-H", "192.168.1.xx"`を引数に追加する（`next start`は`HOSTNAME`環境変数を読まず、`-H`/`--hostname`のCLI引数でのみホストを指定できるため、plist内の`HOSTNAME`キーはこの構成では効果がない）
+- `com.nosetech.producer-desk.dashboard.plist`の`ProgramArguments`先頭の`/path/to/node`は、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できない）
+- `com.nosetech.producer-desk.orchestrator.plist`の`ProgramArguments`（`orchestrator/.venv/bin/orchestrator`）はgit clone環境（`pip install -e .`によるeditable install）でも配布パッケージと同じパスで動作するため、読み替え不要。ただし`bin/start.sh`が持つ`orchestrator/venv`（旧命名）へのフォールバックはこのplistには無いため、`orchestrator/.venv`が存在することを確認しておくこと
+- `com.nosetech.producer-desk.orchestrator.plist`の`EnvironmentVariables`の`PATH`は、オーケストレータが内部で`gh`・`claude`コマンドをbareコマンド名のsubprocessとして呼び出す（ラベル操作・コメント投稿・Agent Runnerディスパッチ等）ため必須。launchdの既定PATHにはHomebrew等でインストールしたこれらのコマンドが含まれず、設定を怠るとオーケストレータ自体は起動に成功したままこれらの操作だけが無言で失敗し続ける。`which gh`・`which claude`で確認した実際のパスに書き換えること。`orchestrator/.env`で`SLACK_WEBHOOK_URL`等を設定していた場合も、launchd経由ではこのファイルが自動読み込みされないため、同じく`EnvironmentVariables`へ転記する必要がある
+
+読み込みは以下のコマンドで行う。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+`launchctl start com.nosetech.producer-desk.orchestrator` / `launchctl start com.nosetech.producer-desk.dashboard` で即時起動して動作確認できる。停止・恒久的な解除は`launchctl unload`で行う。
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
 
 ## DBバックアップ（macOS launchd）
 

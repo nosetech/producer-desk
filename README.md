@@ -99,6 +99,8 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 ./bin/stop.sh
 ```
 
+macOSの再起動・ログアウト・プロセスクラッシュ時にも自動復旧するよう常時起動しておきたい場合は、`./bin/start.sh` / `./bin/stop.sh`によるPIDファイル方式の手動起動ではなく、launchdのLaunchAgentとして常駐化することもできます（下記「本体の常時起動（macOS launchd）」参照）。
+
 ## 使い方
 
 起動後、ブラウザで`http://127.0.0.1:3000`（またはLAN IP経由）を開くとダッシュボードが表示されます。
@@ -131,6 +133,35 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **Agent Runner実行時はユーザー個別のClaude Code設定が適用されない場合があります**: Agent Runnerは`claude -p`によるheadless（非対話）実行のため、対話セッションでは有効な利用者個人の`~/.claude/settings.json`のフック（特に`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示が、Agent Runner実行時には適用されない場合があります。確実に反映させたい指示（回答言語等）は、対象プロジェクトリポジトリ自身の`CLAUDE.md`に明記してください（Agent Runnerは対象プロジェクトのworktreeをカレントディレクトリとして起動されるため、そのプロジェクトのCLAUDE.mdは確実に読み込まれます）。
 
 ## バックアップ・トラブルシューティング
+
+### 本体の常時起動（macOS launchd）
+
+「起動・停止」の`./bin/start.sh` / `./bin/stop.sh`はPIDファイル方式での手動起動・停止のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しません。常時起動しておきたい場合は、launchdのper-user LaunchAgentとして常駐化します。本体はorchestrator・dashboardの2プロセス構成のため、以下2つのplistサンプルの両方を登録する必要があります。
+
+**`./bin/start.sh` / `./bin/stop.sh`とこのlaunchd常駐化は併用できません**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使ってください）。
+
+```bash
+cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+コピー後、両ファイル内の`/path/to/producer-desk`を展開先の実際の絶対パスに書き換えます。`com.nosetech.producer-desk.dashboard.plist`は`ProgramArguments`先頭の`/path/to/node`も、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える必要があります（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できません）。
+
+同様の理由で、`com.nosetech.producer-desk.orchestrator.plist`の`EnvironmentVariables`の`PATH`も、`which gh`・`which claude`で確認した実際のパスに書き換えてください。オーケストレータは内部で`gh`・`claude`コマンドをbareコマンド名のsubprocessとして呼び出す（ラベル操作・コメント投稿・Agent Runnerディスパッチ等）ため、PATHが誤っているとオーケストレータ自体は起動に成功したままこれらの操作だけが無言で失敗し続けます。`.env`で`SLACK_WEBHOOK_URL`等を設定している場合も、launchd経由では`.env`が自動読み込みされないため、同じく`EnvironmentVariables`へ転記してください。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+読み込み後は自動的に起動し、`launchctl start com.nosetech.producer-desk.orchestrator` / `launchctl start com.nosetech.producer-desk.dashboard`で即時起動して動作確認できます。停止・恒久的な解除は以下で行います。
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
 
 ### DBバックアップ（macOS launchd）
 
