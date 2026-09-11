@@ -35,6 +35,16 @@ litellm_settings:
   # LiteLLM Proxyプロセス自身のPYTHONPATHにorchestratorパッケージが解決できる
   # 必要がある（bin/litellm_proxy_start.sh が起動時にorchestratorパッケージを
   # 同一venvへeditable installしてから起動する）。
+  #
+  # 同じUsageStoreLoggerがasync_pre_call_hookも実装しており、Ollama系プロバイダ
+  # （model: ollama/*・ollama_chat/*）宛の/v1/messagesリクエストから、非対応の
+  # thinkingパラメータを事前に除去する（issue #185）。会話が長くなりClaude Code
+  # CLIが自動コンテキスト圧縮（compaction）を行う際は必ずthinkingパラメータが
+  # 付与されるが、Ollamaのモデルの多くはこれを解釈できず400エラーを返し、
+  # compactionが失敗してセッション全体が異常終了する不具合があった。
+  # litellm_settings.drop_params: trueではこの問題は解決しない（/v1/messages
+  # エンドポイントはdrop_paramsが効くOpenAI形式パラメータ検証経路を通らないため。
+  # docs/basic-design.md 4章で実機検証済み）ため、設定しない。
   callbacks: ["orchestrator.litellm_callback.usage_store_logger"]
 
 general_settings:
