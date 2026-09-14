@@ -28,6 +28,16 @@ projects:
     # 4章参照）。いずれも省略時は無制限。
     # max_session_tokensはconfig/litellm_config.yamlで設定したnum_ctxより余裕を
     # 持って小さい値にする（目安: num_ctxの7〜8割）。
+    # max_session_turnsはtranscriptの読み取り失敗時（Claude Code CLI側の内部形式
+    # 変更等）にトークン測定が効かなくなった場合のフォールバック上限であり、
+    # 単独でも「max_session_tokensに到達する前に必ず先に効く」ことを保証する
+    # 安全弁として機能させる。目安は
+    # 「max_session_tokens ÷ その自走タスクで1ターンあたりに消費する
+    # トークン数（usage_store.pyの利用量記録や実機での観測値を元に、平均では
+    # なく最大級のターンを想定する）」より小さい値にする。1ターンあたりの
+    # 消費量の見積りが難しい・保守的にしたい場合は、まずは20〜30程度から始めて
+    # 実際のturn_count・コンテキスト量の推移（docs/basic-design.md 4章参照）を
+    # 見ながら調整する。
     # max_session_tokens: 24000
     # max_session_turns: 20
 
