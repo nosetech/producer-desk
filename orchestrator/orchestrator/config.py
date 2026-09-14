@@ -63,13 +63,6 @@ class Project:
     # 渡す。orchestrator/orchestrator/agent_runner.py参照）。
     execution_mode: str = EXECUTION_MODE_CLAUDE_CODE
     litellm_model: str | None = None
-    # issue #189: `execution_mode: litellm_proxy`で小コンテキストのローカルLLMを
-    # 使う場合、Claude Code CLI自身のauto-compactionに頼らずオーケストレータ側で
-    # 会話量・ターン数の上限を設け、超過時に次回ディスパッチからセッションを
-    # リセットする（agent_runner.py参照）。いずれも省略時は無制限。
-    # `execution_mode: claude_code`では意味を持たないため、設定するとエラーにする。
-    max_session_tokens: int | None = None
-    max_session_turns: int | None = None
     # `server.py`の`PATCH /api/projects/{repo}/settings`はディスパッチ実行中の別
     # スレッド（`DispatchQueue`のワーカーが`run_agent_runner`経由でこのインスタンスの
     # execution_mode/litellm_modelを読む）と並行して呼ばれうる。2フィールドを個別に
@@ -86,12 +79,6 @@ class Project:
 
     def __post_init__(self) -> None:
         validate_execution_settings(self.execution_mode, self.litellm_model, context=self.repo)
-        validate_session_guard_settings(
-            self.execution_mode,
-            self.max_session_tokens,
-            self.max_session_turns,
-            context=self.repo,
-        )
 
     def replace_execution_settings(self, execution_mode: str, litellm_model: str | None) -> None:
         validate_execution_settings(execution_mode, litellm_model, context=self.repo)
@@ -116,25 +103,6 @@ def validate_execution_settings(
         raise ValueError(
             f"{context}: execution_modeが{EXECUTION_MODE_LITELLM_PROXY!r}の場合、"
             "litellm_modelの指定が必須です。"
-        )
-
-
-# issue #189: max_session_tokens/max_session_turnsは、Claude Code CLIの
-# auto-compactionに頼れない(B) LiteLLM Proxy経由のローカルLLM運用でのみ意味を
-# 持つ。(A) Claude Code CLI直利用では設定ミスとして早期に検出する。
-def validate_session_guard_settings(
-    execution_mode: str,
-    max_session_tokens: int | None,
-    max_session_turns: int | None,
-    *,
-    context: str,
-) -> None:
-    if execution_mode != EXECUTION_MODE_CLAUDE_CODE:
-        return
-    if max_session_tokens is not None or max_session_turns is not None:
-        raise ValueError(
-            f"{context}: max_session_tokens/max_session_turnsは"
-            f"execution_modeが{EXECUTION_MODE_LITELLM_PROXY!r}の場合にのみ設定できます。"
         )
 
 

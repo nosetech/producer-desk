@@ -29,6 +29,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.litellm_model_config import SessionGuardSettings
 from orchestrator.session_store import SessionState
 from orchestrator.usage_store import LocalLlmUsageReport, UsageRecord
 
@@ -1951,8 +1952,6 @@ def _run_litellm_proxy_session_guard_case(
         worktree_path=str(worktree),
         execution_mode=EXECUTION_MODE_LITELLM_PROXY,
         litellm_model="ollama/qwen2.5-coder:7b",
-        max_session_tokens=max_session_tokens,
-        max_session_turns=max_session_turns,
     )
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
@@ -1962,6 +1961,9 @@ def _run_litellm_proxy_session_guard_case(
     persist = FakePersistSessionState()
     clear = FakeClearSessionState()
     monkeypatch.setattr(agent_runner, "read_latest_context_tokens", lambda path: context_tokens)
+    guard_settings = SessionGuardSettings(
+        max_session_tokens=max_session_tokens, max_session_turns=max_session_turns
+    )
 
     run_agent_runner(
         project,
@@ -1976,6 +1978,7 @@ def _run_litellm_proxy_session_guard_case(
         get_session_state_fn=get_session,
         persist_session_state_fn=persist,
         clear_session_state_fn=clear,
+        resolve_session_guard_settings_fn=lambda litellm_model: guard_settings,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
         get_execution_override_fn=lambda repo, issue_number: None,

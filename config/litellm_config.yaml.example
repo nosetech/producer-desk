@@ -22,12 +22,45 @@ model_list:
       repo: nosetech/project-a
 
   # 例2: ローカルLLM（Ollama）をproject-bの実行手段として使う場合
+  #
+  # num_ctxは必ず明示指定すること。未指定時はOllama自体のデフォルト値が使われる
+  # が、Claude Code CLIの自動コンテキスト圧縮（compaction）時のプロンプトは
+  # 会話履歴全体を含むためこれを容易に超過し、「the prompt is longer than the
+  # context length currently available to the model」という400エラーでセッション
+  # が異常終了する（docs/basic-design.md 4章「compaction時のコンテキスト長超過
+  # エラーへの注意」参照）。値はOllamaホストのVRAM/RAM容量に収まる範囲で実機
+  # 検証して決めること（大きすぎるとOOMの恐れがある）。
   - model_name: project-b-ollama-qwen
     litellm_params:
       model: ollama/qwen2.5-coder:7b
       api_base: http://127.0.0.1:11434
+      num_ctx: 32768
     model_info:
       repo: nosetech/project-b
+      #
+      # 会話量・ターン数の上限（issue #189、いずれも省略時は無制限）。
+      # Claude Code CLI自身のauto-compactionは、`--autocompact`が100k〜1M
+      # トークン範囲でしか設定できずnum_ctx程度の小さなモデル容量には間に
+      # 合わないため、オーケストレータ側で上限を検知し、超過時は次回ディス
+      # パッチからセッションをリセットする（その回の完了処理自体は通常通り
+      # 行った上で、リセットする旨のコメントを追加投稿する。docs/basic-design.md
+      # 4章参照）。litellm_params.num_ctxと同じ「このモデルがどれだけの会話量を
+      # 扱えるか」という関心事のため、プロジェクト単位のconfig/projects.yaml
+      # ではなくここ（モデル単位）に定義する。
+      #
+      # max_session_tokensはnum_ctxより余裕を持って小さい値にする
+      # （目安: num_ctxの7〜8割）。
+      max_session_tokens: 24000
+      # max_session_turnsは、transcriptの読み取り失敗時（Claude Code CLI側の
+      # 内部形式変更等）にトークン測定が効かなくなった場合のフォールバック
+      # 上限であり、単独でも「max_session_tokensに到達する前に必ず先に効く」
+      # ことを保証する安全弁として機能させる。目安は「max_session_tokens ÷
+      # その自走タスクで1ターンあたりに消費するトークン数（usage_store.pyの
+      # 利用量記録や実機での観測値を元に、平均ではなく最大級のターンを想定
+      # する）」より小さい値にする。1ターンあたりの消費量の見積りが難しい・
+      # 保守的にしたい場合は、まずは20〜30程度から始めて実際のturn_count・
+      # コンテキスト量の推移を見ながら調整する。
+      max_session_turns: 20
 
 litellm_settings:
   # リクエスト完了イベントごとに orchestrator/orchestrator/litellm_callback.py の

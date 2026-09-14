@@ -137,50 +137,6 @@ def test_project_rejects_litellm_proxy_without_model() -> None:
         )
 
 
-# issue #189: 会話量・ターン数上限（max_session_tokens/max_session_turns）は
-# Claude Code CLI自身のauto-compactionに頼れない(B) LiteLLM Proxy経由でのみ
-# 意味を持つため、(A) Claude Code CLI直利用での設定は早期にエラーとする。
-
-
-def test_project_defaults_to_no_session_guard_limits() -> None:
-    project = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
-
-    assert project.max_session_tokens is None
-    assert project.max_session_turns is None
-
-
-def test_project_accepts_session_guard_limits_with_litellm_proxy() -> None:
-    project = Project(
-        repo="nosetech/project-a",
-        worktree_path="/tmp/project-a",
-        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
-        litellm_model="ollama/qwen2.5-coder:7b",
-        max_session_tokens=24000,
-        max_session_turns=20,
-    )
-
-    assert project.max_session_tokens == 24000
-    assert project.max_session_turns == 20
-
-
-def test_project_rejects_max_session_tokens_with_claude_code_mode() -> None:
-    with pytest.raises(ValueError, match="max_session_tokens"):
-        Project(
-            repo="nosetech/project-a",
-            worktree_path="/tmp/project-a",
-            max_session_tokens=24000,
-        )
-
-
-def test_project_rejects_max_session_turns_with_claude_code_mode() -> None:
-    with pytest.raises(ValueError, match="max_session_turns"):
-        Project(
-            repo="nosetech/project-a",
-            worktree_path="/tmp/project-a",
-            max_session_turns=20,
-        )
-
-
 def test_load_projects_reads_execution_mode_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "projects.yaml"
     config_path.write_text(
