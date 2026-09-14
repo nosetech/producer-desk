@@ -29,6 +29,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.session_store import SessionState
 from orchestrator.usage_store import LocalLlmUsageReport, UsageRecord
 
 # UTCの01:02:03はJSTで同日10:02:03になる（ログファイル名がJST基準である
@@ -87,19 +88,30 @@ class FakePopenFactory:
         return FakePopen(self.lines, self.returncode)
 
 
-class FakePersistSessionId:
+class FakePersistSessionState:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int, str]] = []
+        self.calls: list[tuple[str, int, SessionState]] = []
 
-    def __call__(self, repo: str, issue_number: int, session_id: str) -> None:
-        self.calls.append((repo, issue_number, session_id))
+    def __call__(self, repo: str, issue_number: int, state: SessionState) -> None:
+        self.calls.append((repo, issue_number, state))
 
 
-class FakeGetSessionId:
-    def __init__(self, sessions: dict[tuple[str, int], str] | None = None) -> None:
-        self.sessions = dict(sessions or {})
+class FakeClearSessionState:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
 
-    def __call__(self, repo: str, issue_number: int) -> str | None:
+    def __call__(self, repo: str, issue_number: int) -> None:
+        self.calls.append((repo, issue_number))
+
+
+class FakeGetSessionState:
+    def __init__(self, sessions: dict[tuple[str, int], SessionState | str] | None = None) -> None:
+        self.sessions = {
+            key: (value if isinstance(value, SessionState) else SessionState(value, 0))
+            for key, value in (sessions or {}).items()
+        }
+
+    def __call__(self, repo: str, issue_number: int) -> SessionState | None:
         return self.sessions.get((repo, issue_number))
 
 
@@ -430,7 +442,7 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory()
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
 
     result = run_agent_runner(
         project,
@@ -442,7 +454,8 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -463,8 +476,8 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState()
+    persist = FakePersistSessionState()
 
     result = run_agent_runner(
         project,
@@ -476,8 +489,8 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
     )
@@ -486,7 +499,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     assert "--session-id" in popen.calls[0]["cmd"]
     assert "--resume" not in popen.calls[0]["cmd"]
     assert popen.calls[0]["cwd"] == str(worktree)
-    assert persist.calls == [("nosetech/project-a", 1, FIXED_UUID())]
+    assert persist.calls == [("nosetech/project-a", 1, SessionState(FIXED_UUID(), 1))]
     assert result.success is True
     assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
 
@@ -547,7 +560,7 @@ def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     monkeypatch.setattr(
         agent_runner,
         "_resolve_ollama_bench_path",
@@ -564,7 +577,8 @@ def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -592,15 +606,17 @@ def test_resolve_ollama_bench_path_logs_warning_when_unresolved(
     assert any("ollama-bench" in record.message for record in caplog.records)
 
 
-def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: Path) -> None:
+def test_run_agent_runner_resumes_existing_session_and_increments_turn_count(
+    tmp_path: Path,
+) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "続きをやりました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 2): "existing-id"})
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState({("nosetech/project-a", 2): SessionState("existing-id", 3)})
+    persist = FakePersistSessionState()
 
     result = run_agent_runner(
         project,
@@ -612,15 +628,16 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
     )
 
     assert result.session_id == "existing-id"
     assert "--resume" in popen.calls[0]["cmd"]
     assert "--session-id" not in popen.calls[0]["cmd"]
-    assert persist.calls == []
+    # issue #189: ターン数上限判定のため、resume時もターン数を+1して保存する。
+    assert persist.calls == [("nosetech/project-a", 2, SessionState("existing-id", 4))]
 
 
 def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) -> None:
@@ -637,8 +654,8 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 38): "session-for-38"})
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState({("nosetech/project-a", 38): "session-for-38"})
+    persist = FakePersistSessionState()
 
     run_agent_runner(
         project,
@@ -650,8 +667,8 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
     )
@@ -660,7 +677,7 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     assert "--session-id" in popen.calls[0]["cmd"]
     assert "--resume" not in popen.calls[0]["cmd"]
     assert "session-for-38" not in popen.calls[0]["cmd"]
-    assert persist.calls == [("nosetech/project-a", 32, FIXED_UUID())]
+    assert persist.calls == [("nosetech/project-a", 32, SessionState(FIXED_UUID(), 1))]
 
 
 def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: Path) -> None:
@@ -670,7 +687,7 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["not json\n"], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
@@ -682,7 +699,8 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -698,7 +716,7 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["boom\n"], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -710,7 +728,8 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -742,7 +761,7 @@ def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_p
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -754,7 +773,8 @@ def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
@@ -788,7 +808,7 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -800,7 +820,8 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
@@ -831,7 +852,7 @@ def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_pat
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -843,7 +864,8 @@ def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_pat
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
@@ -874,7 +896,7 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
         lines=[result_line({"result": "このままpushしてPRを作成してよろしいですか？"})],
         returncode=0,
     )
-    get_session = FakeGetSessionId({("nosetech/project-a", 70): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 70): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -886,7 +908,8 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -915,7 +938,7 @@ def test_run_agent_runner_success_with_ci_wait_marker_skips_forced_fallback(
         f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 172}}\n-->'
     )
     popen = FakePopenFactory(lines=[result_line({"result": result_text})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 173): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 173): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -927,7 +950,8 @@ def test_run_agent_runner_success_with_ci_wait_marker_skips_forced_fallback(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -949,7 +973,7 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -961,7 +985,8 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=FakeResolvePrNumber(81),
     )
@@ -984,7 +1009,7 @@ def test_run_agent_runner_status_in_review_with_resolvable_pr_skips_pr_reference
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(81)
     get_current_branch_fn = FakeGetCurrentBranch("feature/71-something")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
@@ -1000,7 +1025,8 @@ def test_run_agent_runner_status_in_review_with_resolvable_pr_skips_pr_reference
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1030,7 +1056,7 @@ def test_run_agent_runner_status_in_review_without_resolvable_pr_appends_issue_r
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 136): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
@@ -1048,7 +1074,8 @@ def test_run_agent_runner_status_in_review_without_resolvable_pr_appends_issue_r
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1086,7 +1113,7 @@ def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warni
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("develop")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
@@ -1102,7 +1129,8 @@ def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warni
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1130,7 +1158,7 @@ def test_run_agent_runner_status_in_review_skips_append_when_reference_already_p
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 136): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
@@ -1151,7 +1179,8 @@ def test_run_agent_runner_status_in_review_skips_append_when_reference_already_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1180,7 +1209,7 @@ def test_run_agent_runner_status_in_review_swallows_called_process_error(
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
 
     def resolve_pr_number_fn(repo: str, issue_number: int) -> int | None:
         raise subprocess.CalledProcessError(1, ["gh", "api", "..."])
@@ -1195,7 +1224,8 @@ def test_run_agent_runner_status_in_review_swallows_called_process_error(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
     )
@@ -1222,7 +1252,7 @@ def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_ou
     popen = FakePopenFactory(
         lines=[result_line({"result": "ok"}), "warn: something\n"], returncode=0
     )
-    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 7): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -1234,7 +1264,8 @@ def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_ou
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -1253,7 +1284,7 @@ def test_run_agent_runner_passes_stdout_and_merged_stderr_to_popen(tmp_path: Pat
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 7): "existing-id"})
 
     run_agent_runner(
         project,
@@ -1265,7 +1296,8 @@ def test_run_agent_runner_passes_stdout_and_merged_stderr_to_popen(tmp_path: Pat
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -1301,7 +1333,7 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1314,7 +1346,8 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
@@ -1354,7 +1387,7 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1367,7 +1400,8 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
@@ -1396,7 +1430,7 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["not json\n"], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1409,7 +1443,8 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
@@ -1607,7 +1642,7 @@ def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: P
     )
     payload_line = result_line({"result": summary, "is_error": False})
     popen = FakePopenFactory(lines=[payload_line], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
 
     run_agent_runner(
@@ -1620,7 +1655,8 @@ def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: P
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
         now=FIXED_NOW,
     )
@@ -1647,7 +1683,7 @@ def test_run_agent_runner_does_not_record_local_llm_usage_report_when_marker_mis
     comments = FakeComments()
     payload_line = result_line({"result": "実装しました。", "is_error": False})
     popen = FakePopenFactory(lines=[payload_line], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
 
     run_agent_runner(
@@ -1660,7 +1696,8 @@ def test_run_agent_runner_does_not_record_local_llm_usage_report_when_marker_mis
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
         now=FIXED_NOW,
     )
@@ -1750,7 +1787,7 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
@@ -1762,7 +1799,8 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=logs_dir,
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         log_retention_days=7,
     )
@@ -1811,7 +1849,7 @@ def test_run_agent_runner_uses_litellm_env_vars_and_model_flag_when_proxy_is_hea
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
 
     result = run_agent_runner(
         project,
@@ -1823,7 +1861,8 @@ def test_run_agent_runner_uses_litellm_env_vars_and_model_flag_when_proxy_is_hea
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
         get_execution_override_fn=lambda repo, issue_number: None,
@@ -1857,7 +1896,7 @@ def test_run_agent_runner_falls_back_to_claude_code_when_litellm_proxy_unhealthy
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
 
     result = run_agent_runner(
         project,
@@ -1869,7 +1908,8 @@ def test_run_agent_runner_falls_back_to_claude_code_when_litellm_proxy_unhealthy
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
         get_execution_override_fn=lambda repo, issue_number: None,
@@ -1889,6 +1929,136 @@ def test_run_agent_runner_falls_back_to_claude_code_when_litellm_proxy_unhealthy
     assert comments.posted[1] == ("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")
 
 
+def _run_litellm_proxy_session_guard_case(
+    tmp_path: Path,
+    *,
+    max_session_tokens: int | None,
+    max_session_turns: int | None,
+    existing_state: SessionState | None,
+    context_tokens: int | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FakeComments, FakePersistSessionState, FakeClearSessionState]:
+    """issue #189: 会話量・ターン数上限ガードのテスト共通セットアップ。
+
+    transcriptファイルの探索・パースはtest_session_context_guard.pyで別途検証
+    済みのため、ここでは`agent_runner.read_latest_context_tokens`自体を差し
+    替えて注入する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+        max_session_tokens=max_session_tokens,
+        max_session_turns=max_session_turns,
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    sessions = {} if existing_state is None else {("nosetech/project-a", 1): existing_state}
+    get_session = FakeGetSessionState(sessions)
+    persist = FakePersistSessionState()
+    clear = FakeClearSessionState()
+    monkeypatch.setattr(agent_runner, "read_latest_context_tokens", lambda path: context_tokens)
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
+        clear_session_state_fn=clear,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    return comments, persist, clear
+
+
+def test_run_agent_runner_resets_session_when_token_threshold_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=None,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=25000,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert comments.posted[-1][2].startswith(":arrows_counterclockwise:")
+    assert "コンテキスト量が上限" in comments.posted[-1][2]
+
+
+def test_run_agent_runner_resets_session_when_turn_threshold_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=None,
+        max_session_turns=3,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=None,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert comments.posted[-1][2].startswith(":arrows_counterclockwise:")
+    assert "ターン数が上限" in comments.posted[-1][2]
+
+
+def test_run_agent_runner_persists_incremented_turn_when_thresholds_not_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=10,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=12000,
+        monkeypatch=monkeypatch,
+    )
+
+    assert clear.calls == []
+    assert persist.calls == [("nosetech/project-a", 1, SessionState("existing-id", 3))]
+    assert not any(body.startswith(":arrows_counterclockwise:") for (_, _, body) in comments.posted)
+
+
+def test_run_agent_runner_falls_back_to_turn_count_when_transcript_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """transcriptの読み取りに失敗（None）しても、ターン数上限判定で機能を継続する。"""
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=3,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=None,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert "ターン数が上限" in comments.posted[-1][2]
+
+
 def test_run_agent_runner_message_directive_overrides_project_default_and_strips_directive(
     tmp_path: Path,
 ) -> None:
@@ -1898,7 +2068,7 @@ def test_run_agent_runner_message_directive_overrides_project_default_and_strips
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
     persisted: list[tuple] = []
 
     run_agent_runner(
@@ -1911,7 +2081,8 @@ def test_run_agent_runner_message_directive_overrides_project_default_and_strips
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
         get_execution_override_fn=lambda repo, issue_number: None,
@@ -1950,7 +2121,7 @@ def test_run_agent_runner_strips_stray_anthropic_env_vars_in_claude_code_mode(
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
 
     run_agent_runner(
         project,
@@ -1962,7 +2133,8 @@ def test_run_agent_runner_strips_stray_anthropic_env_vars_in_claude_code_mode(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
     )

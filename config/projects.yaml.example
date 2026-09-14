@@ -19,6 +19,17 @@ projects:
     # model_listで定義したモデルエイリアス名）の指定が必須。
     # execution_mode: litellm_proxy
     # litellm_model: project-b-ollama-qwen
+    #
+    # 会話量・ターン数の上限（issue #189、execution_mode: litellm_proxyの場合のみ
+    # 指定可）。Claude Code CLI自身のauto-compactionは小コンテキストのローカルLLM
+    # には間に合わないため、オーケストレータ側で上限を検知し、超過時は次回
+    # ディスパッチからセッションをリセットする（その回の完了処理自体は通常通り
+    # 行った上で、リセットする旨のコメントを追加投稿する。docs/basic-design.md
+    # 4章参照）。いずれも省略時は無制限。
+    # max_session_tokensはconfig/litellm_config.yamlで設定したnum_ctxより余裕を
+    # 持って小さい値にする（目安: num_ctxの7〜8割）。
+    # max_session_tokens: 24000
+    # max_session_turns: 20
 
 # logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
 # 保持日数（未設定時は7）。orchestrator.logはこの日数分をTimedRotatingFileHandler
