@@ -87,11 +87,19 @@ model_list:
     litellm_params:
       model: ollama/qwen2.5-coder:7b
       api_base: http://127.0.0.1:11434
+      num_ctx: 32768
     model_info:
       repo: nosetech/project-b
+      max_session_tokens: 24000
+      max_session_turns: 20
 ```
 
 `litellm_params.model`にはプロバイダAPI側のモデル指定を、プロバイダAPIキーが必要な場合は`api_key`に`os.environ/<環境変数名>`の形式で参照する環境変数名を指定する（APIキー自体をこのファイルに直接書かないこと）。ローカルLLMの場合は`api_base`に接続先URLを指定する。`model_info.repo`には、この`model_name`を実行手段として使うプロジェクトのリポジトリ名を記載する（LiteLLM ProxyはPostgreSQL等のDBを使わない運用のため、プロジェクトごとの仮想キー発行は行わず、モデルエイリアス単位で利用量の帰属先リポジトリを区別する仕組みになっている）。
+
+ローカルLLM（Ollama等）を使う場合、以下の2種類の追加設定を検討する（いずれも省略可、上のyaml例では設定済み）。
+
+- **`litellm_params.num_ctx`（モデルのコンテキストウィンドウサイズ、必須推奨）**: 未指定の場合Ollama自体の既定値2048トークンが使われるが、Claude Code CLIの自動コンテキスト圧縮（compaction）時のプロンプトは会話履歴全体を含むためこれを容易に超過し、「the prompt is longer than the context length currently available to the model」という400エラーでセッションが異常終了する。値はOllamaホストのVRAM/RAM容量に収まる範囲で実機検証して決めること（大きすぎるとOOMの恐れがある）。
+- **`model_info.max_session_tokens` / `max_session_turns`（会話量・ターン数の上限、いずれも省略時は無制限）**: Claude Code CLI自身の自動コンテキスト圧縮は`--autocompact`が100k〜1Mトークン範囲でしか設定できず、`num_ctx`程度の小さなモデル容量には間に合わない。そのためオーケストレータ側でこれらの上限を検知し、超過した回の完了処理（コメント投稿・ラベル遷移）を通常通り行った上で、セッションをリセットする旨のコメントを追加投稿する（次回のディスパッチから自然に新規セッションとして開始される）。`max_session_tokens`は`num_ctx`の7〜8割程度、`max_session_turns`は「`max_session_tokens` ÷ 1ターンあたりに消費するトークン数（実機の利用量記録等から見積もったもの）」より小さい値を目安にする。
 
 設定後、以下で起動・停止する。
 
@@ -105,6 +113,29 @@ model_list:
 起動後、ダッシュボードの手順6「使い方」で説明する設定ダイアログから、プロジェクトごとに実行手段をLiteLLM Proxy経由へ切り替える。issueコメントで都度切り替えることもできる（同じく手順6参照）。
 
 **注意**: LiteLLM Proxy経由を選んだ場合、指定したモデルがClaudeモデルであっても、Claude Code CLI直利用時のサブスクリプション枠内（追加コストなし）ではなく、プロバイダAPIの従量課金に切り替わる。
+
+### 常時起動（macOS launchd、任意）
+
+上記の`./bin/litellm_proxy_start.sh`は手動起動・PIDファイル管理のみのため、macOSの再起動やログアウト、プロセスクラッシュ時に自動復旧しない。ログイン時の自動起動・クラッシュ時の自動再起動をさせたい場合は、`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`を使ってlaunchdのLaunchAgentとして常駐化する。
+
+```bash
+cp dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+コピー後のファイル内の `/path/to/producer-desk` を、展開先の実際の絶対パスに書き換える（`ProgramArguments`・`WorkingDirectory`・`StandardOutPath`・`StandardErrorPath`の4箇所）。`litellm_proxy/.venv`が未作成の場合は、launchd起動時のネットワークアクセスを避けるため、先に`./bin/litellm_proxy_start.sh`を一度手動実行して作成しておくこと（既に起動中の場合は`./bin/litellm_proxy_stop.sh`で停止してから進める）。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+読み込み後は自動的に起動し、プロセスが落ちた場合も`KeepAlive`により自動再起動される。停止する場合:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+**注意**: `./bin/litellm_proxy_start.sh` / `stop.sh`（PIDファイル方式）とlaunchd管理は併用できない（ポートの二重bind・PIDファイルの不整合が起きる）。launchd化した後は、起動・停止を`launchctl load -w` / `unload`に一本化すること。
 
 ## 5. 起動・停止
 
