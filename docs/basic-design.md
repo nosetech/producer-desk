@@ -274,6 +274,29 @@ API Error: 400 litellm.BadRequestError: OllamaException -
 
 **受け入れ条件の検証結果**: `litellm_proxy/.venv`の実LiteLLM Proxyを一時的な別ポート（4099）で起動し、本番と同じOllamaホスト（`http://192.168.10.121:11434`）・`deepseek-coder-v2:16b`に対して`thinking`付きの`/v1/messages`リクエストを送信する実機検証を行った。対策前は上記400エラーが再現し、`async_pre_call_hook`導入後は200 OKで応答することを確認した（Claude Code CLI自体を使ったcompaction再現ではなく、CLIがcompaction時に送るリクエストと同じ形のリクエストを直接送る形での検証）。
 
+### compaction時のコンテキスト長超過エラーへの注意（`num_ctx`要設定）
+
+上記の`thinking`パラメータ対策後も、Ollamaのローカルモデルでは以下のエラーでcompactionが失敗しセッションが異常終了する場合がある。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"the prompt is longer than the context length currently available to the model;
+shorten the prompt, adjust the context length in settings, or use a model with a longer context length"}
+```
+
+**原因**: LiteLLM経由でOllamaへ送るリクエストに`num_ctx`（コンテキストウィンドウサイズ）を明示指定しない場合、Ollama自体のデフォルト値**2048トークン**が使われる（`litellm.llms.ollama.chat.transformation.OllamaChatConfig`のフィールド定義・docstring参照）。Claude Code CLIのcompaction時プロンプトは会話履歴全体を含むため、モデル自体が対応する最大コンテキスト長に関わらず、この2048トークンの上限を容易に超過する。
+
+**対策**: `config/litellm_config.yaml`の対象モデルの`litellm_params`に`num_ctx`を明示指定する（LiteLLM Routerは`litellm_params`配下の未知キーをそのまま完了APIへの追加パラメータとして転送するため、`OllamaChatConfig`が認識する`num_ctx`をyamlに書くだけで反映される）。
+
+```yaml
+litellm_params:
+  model: ollama/deepseek-coder-v2:16b
+  api_base: http://192.168.10.121:11434
+  num_ctx: 32768  # 例。実機のVRAM/RAM容量に収まる範囲で要検証（大きすぎるとOOMの恐れ）
+```
+
+適切な値はOllamaホストのメモリ容量に依存するため、実機での動作検証（大きめの`num_ctx`でOOMが起きないか、実際にcompactionが成功するか）が必要。本節はconfig例・注意点のドキュメント化までにとどめ、実際の値決定・実機検証は別途行う。
+
 ### タスク種別ごとの推奨モデル
 
 [要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。

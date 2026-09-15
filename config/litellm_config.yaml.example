@@ -22,10 +22,19 @@ model_list:
       repo: nosetech/project-a
 
   # 例2: ローカルLLM（Ollama）をproject-bの実行手段として使う場合
+  #
+  # num_ctxは必ず明示指定すること。未指定時はOllama自体のデフォルト値2048トークンが
+  # 使われるが、Claude Code CLIの自動コンテキスト圧縮（compaction）時のプロンプトは
+  # 会話履歴全体を含むためこれを容易に超過し、「the prompt is longer than the context
+  # length currently available to the model」という400エラーでセッションが異常終了する
+  # （docs/basic-design.md 4章「compaction時のコンテキスト長超過エラーへの注意」参照）。
+  # 値はOllamaホストのVRAM/RAM容量に収まる範囲で実機検証して決めること
+  # （大きすぎるとOOMの恐れがある）。
   - model_name: project-b-ollama-qwen
     litellm_params:
       model: ollama/qwen2.5-coder:7b
       api_base: http://127.0.0.1:11434
+      num_ctx: 32768
     model_info:
       repo: nosetech/project-b
 
