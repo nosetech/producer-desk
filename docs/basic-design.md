@@ -297,6 +297,20 @@ litellm_params:
 
 適切な値はOllamaホストのメモリ容量に依存するため、実機での動作検証（大きめの`num_ctx`でOOMが起きないか、実際にcompactionが成功するか）が必要。本節はconfig例・注意点のドキュメント化までにとどめ、実際の値決定・実機検証は別途行う。
 
+### オーケストレータ側での会話量・ターン数上限によるセッションリセット（issue #189）
+
+issue #185（上記）解決後も、より根深い構造的な問題が残っていることが実機調査で判明した。Claude Code CLIは`execution_mode: litellm_proxy`で使う未知のカスタムモデルのコンテキスト長を認識できず、セッションログに`[claude-code:unrecognized_model]`が出力される場合、auto-compaction（自動コンテキスト圧縮）の発火判断を実際のモデル容量ではなく既定の大容量モデル相当（約200Kトークン）を前提に行っているとみられる。一方、`--autocompact`（auto-compactionの閾値）はCLIの仕様上100k〜1Mトークンの範囲でしか設定できず、「モデルの実容量より手前でauto-compactionを発火させる」対策はドキュメント化されたCLIの仕組みでは実現不可能である（実機で`--autocompact 10000`を指定すると起動時に即エラーで拒否されることを確認済み）。
+
+実際に異常終了した本番セッションは、compactionを試みた時点で既に約211,336トークン（Claude Code CLI自身の累計トークンカウント、セッションtranscriptの`cache_read_input_tokens`推移から確認）まで会話が伸びており、これはモデル自体のハード上限（`deepseek-coder-v2:16b`で163,840トークン、`ollama show`の`model_info["deepseek2.context_length"]`より確認）すら超えていた。つまり`num_ctx`（前節参照）をいくらに設定しても——たとえモデルのハード上限いっぱいにしても——このクラスの異常終了は防げない。CLIが「そろそろ圧縮しよう」と判断する頃には、モデルの絶対的な限界をとうに超えてしまっているためである。
+
+**対応方針**: Claude Code CLI自身のauto-compactionに頼らず、オーケストレータ側でAgent Runner呼び出し1回ごとに会話量・ターン数を評価し、閾値を超えたら次回ディスパッチから新規セッションへ切り替える。
+
+- **測定方法**: Claude Code CLIはセッションの会話全体を`~/.claude/projects/<cwdの`/`を`-`に置換したディレクトリ名>/<session-id>.jsonl`にNDJSON形式で保存している（issue #189の実機調査で実際に使った方法と同一）。`orchestrator/orchestrator/session_context_guard.py`の`read_latest_context_tokens`が、このファイルの最後のassistantメッセージの`usage`（`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`）を読み、その時点でモデルへ送られている実際の文脈サイズを取得する。Agent Runner自身が返す最終`result`イベントの`usage`/`modelUsage`は当該invocation内で消費したトークンの累計（コスト計算用）であり、「今の会話サイズ」の直接測定にはならないため使わない。
+  - これはClaude Code CLIの非公式な内部実装（ファイル形式・保存先パスの規則）に依存する連携であり、CLIのアップデートで変わりうる。ファイルの探索・パースに失敗した場合は例外を送出せず`None`を返し、トークンベースの判定はスキップしてターン数ベースの判定にフォールバックする（機能停止させない）。
+- **ターン数**: `orchestrator/orchestrator/session_store.py`の`SessionState`が`session_id`と併せて`turn_count`（そのissueに対してAgent Runnerを呼び出した回数）を保持する。トークン測定に依存しない、モデル非依存のシンプルなフォールバック上限として使う。
+- **設定**: `max_session_tokens`/`max_session_turns`（いずれも省略時は無制限）は、プロジェクト単位の`config/projects.yaml`ではなく、`num_ctx`と同じ`config/litellm_config.yaml`の`model_list[].model_info`に定義する（`config/litellm_config.yaml.example`参照）。「そのモデルがどれだけの会話量を扱えるか」という関心事は`num_ctx`と同一であり、1箇所にまとめることで両者の食い違いを防ぐ（`orchestrator/orchestrator/litellm_model_config.py`の`resolve_session_guard_settings`が、Agent Runnerに渡す`litellm_model`（model_listの`model_name`）をキーに`model_info`から読む。`model_info.repo`と同様、LiteLLM自体には転送されないオーケストレータ側の付加メタデータ）。`max_session_tokens`は`num_ctx`より余裕を持って小さい値にする（目安: num_ctxの7〜8割）。
+- **リセットの実施方法**: 閾値超過を検知した回の完了処理（コメント投稿・ラベル遷移）は通常通り実行した上で、追加でリセットする旨を知らせるコメントを投稿し、`orchestrator/orchestrator/session_store.py`の`clear_session_state`で当該issueのセッション状態を削除する。次回ディスパッチは`get_session_state_fn`が`None`を返すため`resume=False`となり、Claude Code CLIは新規セッションとして起動する。会話履歴そのものは失われるが、直前の完了報告・リセット通知コメントがissueのコメント履歴として残るため、新規セッションはこれを読むことである程度の引き継ぎができる（「GitHub Issuesが正のデータストア」という既存方針、[CLAUDE.md「確定済みの設計判断」](../CLAUDE.md)とも整合する）。
+
 ### タスク種別ごとの推奨モデル
 
 [要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。
