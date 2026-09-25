@@ -128,12 +128,12 @@ model_list:
 
 **注意**: LiteLLM Proxy経由を選んだ場合、指定したモデルがClaudeモデルであっても、Claude Code CLI直利用時のサブスクリプション枠内（追加コストなし）ではなく、プロバイダAPIの従量課金に切り替わります。
 
-#### 常時起動（macOS launchd、任意）
+#### LiteLLM Proxyの常時起動（macOS launchd、任意）
 
-上記の`./bin/litellm_proxy_start.sh`は手動起動・PIDファイル管理のみのため、macOSの再起動やログアウト、プロセスクラッシュ時に自動復旧しません。ログイン時の自動起動・クラッシュ時の自動再起動をさせたい場合は、`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`を使ってlaunchdのLaunchAgentとして常駐化します。
+`./bin/litellm_proxy_start.sh`は手動起動・PIDファイル管理のみのため、macOSの再起動やログアウト、プロセスクラッシュ時に自動復旧しません。ログイン時の自動起動・クラッシュ時の自動再起動をさせたい場合は、`scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`を使ってlaunchdのLaunchAgentとして常駐化します。
 
 ```bash
-cp dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example \
+cp scripts/com.nosetech.producer-desk.litellm-proxy.plist.example \
   ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
 ```
 
@@ -175,6 +175,32 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 ```bash
 ./bin/stop.sh
 ```
+
+### 本体の常時起動（macOS launchd、任意）
+
+`./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しません。自動復旧させたい場合は、orchestrator・dashboardの2プロセスをそれぞれlaunchdのper-user LaunchAgentとして常駐化します（両方の登録が必要です）。**`./bin/start.sh` / `./bin/stop.sh`とは併用できません**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使ってください）。手動起動中の場合は先に`./bin/stop.sh`で停止してください。
+
+```bash
+cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+コピー後、各ファイル冒頭のコメントに従って以下を書き換えます。launchdは対話シェルのPATH・`.env`を引き継がないため、絶対パスや環境変数の明示が必要です。
+
+- 両ファイル: `/path/to/producer-desk`を展開先の絶対パスに
+- dashboard: `/path/to/node`を`which node`の結果に
+- orchestrator: `EnvironmentVariables`の`PATH`を、`which gh`・`which claude`のあるディレクトリを含む値に。`.env`で設定していた`SLACK_WEBHOOK_URL`等も同じ箇所へ転記（未転記でもエラーにならず、Slack通知だけが無言で無効になります）
+
+`config/projects.yaml`を作成済みであることを確認してから読み込みます。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+停止・解除は`launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.<orchestrator|dashboard>.plist`で行います。
 
 ## 使い方
 
