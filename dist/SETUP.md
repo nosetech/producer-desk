@@ -9,8 +9,10 @@
 - Node.js 20以降
 - Python 3.11以降
 - [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること）
-- [Claude Code CLI](https://claude.com/product/claude-code)（Pro/Maxプラン等のサブスクリプション認証済みであること）
+- [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
+
+自走タスク本体の実行手段は上記のClaude Code CLI直利用（サブスクリプション内、追加コストなし）に固定されているわけではなく、プロジェクトごとに任意で[LiteLLM Proxy](https://docs.litellm.ai/)経由に切り替え、他プロバイダ（OpenAI等）やローカルLLM（Ollama等）を従量課金で利用することもできる。使わない場合は手順4の追加設定は不要（詳細は手順4参照）。
 
 ## 1. 展開
 
@@ -35,7 +37,7 @@ cp config/projects.yaml.example config/projects.yaml
 ./scripts/add_project.sh nosetech/project-a /Users/producer/worktrees/project-a
 ```
 
-ベースブランチは省略時`develop`で、対象リポジトリに無ければ`main`→`master`の順にフォールバックする（3番目の引数で明示指定も可）。既にラベル・worktree・エントリが存在する場合はそれぞれスキップされ、何度実行しても安全。実行後はこのSETUPの手順4に従ってproducer-deskを（再）起動すること。
+ベースブランチは省略時`develop`で、対象リポジトリに無ければ`main`→`master`の順にフォールバックする（3番目の引数で明示指定も可）。既にラベル・worktree・エントリが存在する場合はそれぞれスキップされ、何度実行しても安全。実行後はこのSETUPの手順5に従ってproducer-deskを（再）起動すること。
 
 ## 3. Slack通知設定（任意）
 
@@ -60,7 +62,82 @@ export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 `.env` に記載した値とシェルでexportした値の両方が存在する場合、`.env` 側の値で上書きされる（`bin/start.sh`は起動のたびに`.env`を`source`するため）。恒常的な設定は方法A、その場限りの一時的な上書きには方法Bを使う、という使い分けを推奨する。
 
-## 4. 起動・停止
+## 4. LiteLLM Proxyのセットアップ（任意）
+
+自走タスク本体をプロジェクトごとにClaude Code CLI直利用以外の実行手段に切り替えたい場合（他プロバイダのAPI・ローカルLLMを従量課金で使いたい場合）は、LiteLLM Proxyを導入する。使わない場合、以下の設定は不要。
+
+`config/litellm_config.yaml.example` をコピーして `config/litellm_config.yaml` を作成し、`model_list`にプロジェクトごとの実行手段として使いたいモデルを定義する。
+
+```bash
+cp config/litellm_config.yaml.example config/litellm_config.yaml
+```
+
+```yaml
+model_list:
+  # 例1: OpenAIのモデルをproject-aの実行手段として使う場合
+  - model_name: project-a-openai-gpt4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      repo: nosetech/project-a
+
+  # 例2: ローカルLLM（Ollama）をproject-bの実行手段として使う場合
+  - model_name: project-b-ollama-qwen
+    litellm_params:
+      model: ollama/qwen2.5-coder:7b
+      api_base: http://127.0.0.1:11434
+      num_ctx: 32768
+    model_info:
+      repo: nosetech/project-b
+      max_session_tokens: 24000
+      max_session_turns: 20
+```
+
+`litellm_params.model`にはプロバイダAPI側のモデル指定を、プロバイダAPIキーが必要な場合は`api_key`に`os.environ/<環境変数名>`の形式で参照する環境変数名を指定する（APIキー自体をこのファイルに直接書かないこと）。ローカルLLMの場合は`api_base`に接続先URLを指定する。`model_info.repo`には、この`model_name`を実行手段として使うプロジェクトのリポジトリ名を記載する（LiteLLM ProxyはPostgreSQL等のDBを使わない運用のため、プロジェクトごとの仮想キー発行は行わず、モデルエイリアス単位で利用量の帰属先リポジトリを区別する仕組みになっている）。
+
+ローカルLLM（Ollama等）を使う場合、以下の2種類の追加設定を検討する（いずれも省略可、上のyaml例では設定済み）。
+
+- **`litellm_params.num_ctx`（モデルのコンテキストウィンドウサイズ、必須推奨）**: 未指定の場合Ollama自体の既定値2048トークンが使われるが、Claude Code CLIの自動コンテキスト圧縮（compaction）時のプロンプトは会話履歴全体を含むためこれを容易に超過し、「the prompt is longer than the context length currently available to the model」という400エラーでセッションが異常終了する。値はOllamaホストのVRAM/RAM容量に収まる範囲で実機検証して決めること（大きすぎるとOOMの恐れがある）。
+- **`model_info.max_session_tokens` / `max_session_turns`（会話量・ターン数の上限、いずれも省略時は無制限）**: Claude Code CLI自身の自動コンテキスト圧縮は`--autocompact`が100k〜1Mトークン範囲でしか設定できず、`num_ctx`程度の小さなモデル容量には間に合わない。そのためオーケストレータ側でこれらの上限を検知し、超過した回の完了処理（コメント投稿・ラベル遷移）を通常通り行った上で、セッションをリセットする旨のコメントを追加投稿する（次回のディスパッチから自然に新規セッションとして開始される）。`max_session_tokens`は`num_ctx`の7〜8割程度、`max_session_turns`は「`max_session_tokens` ÷ 1ターンあたりに消費するトークン数（実機の利用量記録等から見積もったもの）」より小さい値を目安にする。
+
+設定後、以下で起動・停止する。
+
+```bash
+./bin/litellm_proxy_start.sh
+./bin/litellm_proxy_stop.sh
+```
+
+初回起動時、LiteLLM Proxy専用の`litellm_proxy/.venv`を自動作成し`litellm[proxy]`をインストールする（オーケストレータ本体のvenvとは分離されている）。bindポートは環境変数`LITELLM_PROXY_PORT`（既定4000）、オーケストレータ・Agent Runnerが接続する先は`LITELLM_PROXY_URL`（既定`http://127.0.0.1:<LITELLM_PROXY_PORT>`）で上書きできる（他のポート系環境変数と同様、`.env`に記載しておくと起動のたびに自動で読み込まれる）。
+
+起動後、ダッシュボードの手順6「使い方」で説明する設定ダイアログから、プロジェクトごとに実行手段をLiteLLM Proxy経由へ切り替える。issueコメントで都度切り替えることもできる（同じく手順6参照）。
+
+**注意**: LiteLLM Proxy経由を選んだ場合、指定したモデルがClaudeモデルであっても、Claude Code CLI直利用時のサブスクリプション枠内（追加コストなし）ではなく、プロバイダAPIの従量課金に切り替わる。
+
+### LiteLLM Proxyの常時起動（macOS launchd、任意）
+
+`./bin/litellm_proxy_start.sh`は手動起動・PIDファイル管理のみのため、macOSの再起動やログアウト、プロセスクラッシュ時に自動復旧しない。ログイン時の自動起動・クラッシュ時の自動再起動をさせたい場合は、`scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`を使ってlaunchdのLaunchAgentとして常駐化する。
+
+```bash
+cp scripts/com.nosetech.producer-desk.litellm-proxy.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+コピー後のファイル内の `/path/to/producer-desk` を、展開先の実際の絶対パスに書き換える（`ProgramArguments`・`WorkingDirectory`・`StandardOutPath`・`StandardErrorPath`の4箇所）。`litellm_proxy/.venv`が未作成の場合は、launchd起動時のネットワークアクセスを避けるため、先に`./bin/litellm_proxy_start.sh`を一度手動実行して作成しておくこと（既に起動中の場合は`./bin/litellm_proxy_stop.sh`で停止してから進める）。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+読み込み後は自動的に起動し、プロセスが落ちた場合も`KeepAlive`により自動再起動される。停止する場合:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+```
+
+**注意**: `./bin/litellm_proxy_start.sh` / `stop.sh`（PIDファイル方式）とlaunchd管理は併用できない（ポートの二重bind・PIDファイルの不整合が起きる）。launchd化した後は、起動・停止を`launchctl load -w` / `unload`に一本化すること。
+
+## 5. 起動・停止
 
 ```bash
 ./bin/start.sh
@@ -85,7 +162,33 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 ./bin/stop.sh
 ```
 
-## 5. 使い方
+### 本体の常時起動（macOS launchd、任意）
+
+`./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、orchestrator・dashboardの2プロセスをそれぞれlaunchdのper-user LaunchAgentとして常駐化する（両方の登録が必要）。**`./bin/start.sh` / `./bin/stop.sh`とは併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。手動起動中の場合は先に`./bin/stop.sh`で停止する。
+
+```bash
+cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
+  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+コピー後、各ファイル冒頭のコメントに従って以下を書き換える。launchdは対話シェルのPATH・`.env`を引き継がないため、絶対パスや環境変数の明示が必要。
+
+- 両ファイル: `/path/to/producer-desk`を展開先の絶対パスに
+- dashboard: `/path/to/node`を`which node`の結果に
+- orchestrator: `EnvironmentVariables`の`PATH`を、`which gh`・`which claude`のあるディレクトリを含む値に。`.env`で設定していた`SLACK_WEBHOOK_URL`等も同じ箇所へ転記（未転記でもエラーにならず、Slack通知だけが無言で無効になる）
+
+`config/projects.yaml`を作成済みであることを確認してから読み込む。
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
+launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+```
+
+停止・解除は`launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.<orchestrator|dashboard>.plist`で行う。
+
+## 6. 使い方
 
 起動後、ブラウザで`http://127.0.0.1:3000`（またはLAN IP経由）を開くとダッシュボードが表示される。
 
@@ -93,11 +196,14 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 - **レビュー待ち一覧**: `status:in-review`ラベルが付いたissue（Agent RunnerがPRを作成し終えたもの）が並ぶ。紐づくPRへのリンクが表示されるので内容を確認し、「承認」でそのPRをsquash mergeしてissueをクローズする。差し戻したい場合は自由記述で修正指示を送ると、Agent Runnerが同じPRブランチで対応を続ける。
 - **新規タスクの作成**: プロジェクトを選び、タイトルと自由記述のプロンプト（指示内容）を入力してissueを新規作成できる。「即時着手」を選ぶとすぐにAgent Runnerがディスパッチされ、「todo登録」を選ぶと`status:todo`のまま登録だけ行われ、後で着手を指示できる。
 - **プロジェクトの並行状況**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態と状態別のissue件数が表示される。ラベルは付いているのに対応するAgent Runnerのプロセスが実際には動いていない異常（`status:in-progress`のまま停止している等）は警告アイコンで示される。
+- **プロジェクトの実行設定**: 各プロジェクトチップの歯車アイコンから設定ダイアログを開き、そのプロジェクトの自走タスク本体の実行手段（既定の「Claude Code」、または手順4の「LiteLLM Proxy経由」）を選択・保存できる。「LiteLLM Proxy経由」を選ぶ場合は、`config/litellm_config.yaml`の`model_list`で定義したモデルエイリアスを併せて選ぶ（未定義の場合はその旨が表示され、先に設定ファイルを編集する必要がある）。ここでの設定はプロジェクトの既定値で、後述のissueコメントによる都度上書きが優先される。
 - **Slack通知**: 判断待ち・レビュー待ちが新規に発生すると、設定したSlackチャンネルに通知が届く（起動時点で既に判断待ち・レビュー待ちだったissueは再通知しない）。
 
 GitHub issueに直接コメントを書いても（ダッシュボードを介さなくても）、次回ポーリング（最大5分後）でAgent Runnerへの指示として検知される。
 
-## 6. ログ
+個別issueに限定してその場限りで実行手段を切り替えたい場合は、issueコメント本文の独立した行に`/model claude_code`（Claude Code CLI直利用に戻す）または`/model litellm:<モデルエイリアス>`（`config/litellm_config.yaml`の`model_name`を指定、例: `/model litellm:project-a-openai-gpt4o`）と書く。この指定はそのissueに保存され、プロジェクトの既定設定より優先して以降のディスパッチ（`--resume`による再開時も含む）に使われ続ける。ディレクティブ行だけを送った場合（作業指示を伴わない場合）は、実行手段の切り替えのみとして扱われ、Agent Runnerは直前までの作業を継続する。
+
+## 7. ログ
 
 各種ログはすべて展開先ルート直下の`logs/`ディレクトリに出力される。
 
@@ -105,7 +211,7 @@ GitHub issueに直接コメントを書いても（ダッシュボードを介�
 - **dashboardのログ**: `logs/dashboard.log`にNext.jsサーバー自体の標準出力・標準エラー出力が記録される。
 - **orchestratorのログ**: `logs/orchestrator.log`に`時刻(JST) [レベル] メッセージ`形式で記録される。日付単位でローテーションし、`log_retention_days`（既定7日）分保持される。万一この仕組み自体が動き出す前にクラッシュした場合の記録は、フォールバックとして`logs/orchestrator.stderr.log`に残る。
 
-## 7. システムの動作仕様（概要）
+## 8. システムの動作仕様（概要）
 
 producer-deskは独自のデータベースを持たず、**GitHub Issuesを正のデータストア**として動作する。詳細設計は[`docs/basic-design.md`](https://github.com/nosetech/producer-desk/blob/master/docs/basic-design.md)（GitHubリポジトリ側、このtarballには同梱されない）を参照。ここでは運用者が押さえておくべき挙動の要点のみをまとめる。
 
@@ -115,35 +221,6 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはない。issueの再オープンはproducer-deskの操作範囲外で、再着手させたい場合は人間がGitHub上でreopenする必要がある。issueのクローズ自体は、レビュー承認時にproducer-desk（オーケストレータ）がPRのsquash merge後に明示的に行う（GitHubのPRマージによる自動クローズには依存しない。本プロジェクトのPRは`develop`向けのため、GitHubの`Closes #`による自動クローズが働かないための対処）。
 - **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていない。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されている。
 - **Agent Runner実行時はユーザー個別のClaude Code設定が適用されない場合がある**: Agent Runnerは`claude -p`によるheadless（非対話）実行のため、対話セッションでは有効な利用者個人の`~/.claude/settings.json`のフック（特に`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示が、Agent Runner実行時には適用されない場合がある。確実に反映させたい指示（回答言語等）は、対象プロジェクトリポジトリ自身の`CLAUDE.md`に明記する（Agent Runnerは対象プロジェクトのworktreeをカレントディレクトリとして起動されるため、そのプロジェクトのCLAUDE.mdは確実に読み込まれる）。
-
-## 8. producer-desk本体の常時起動（macOS launchd、任意）
-
-「4. 起動・停止」の`./bin/start.sh` / `./bin/stop.sh`はPIDファイル方式での手動起動・停止のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。常時起動しておきたい場合は、launchdのper-user LaunchAgentとして常駐化する。本体はorchestrator・dashboardの2プロセス構成のため、以下2つのplistサンプルの両方を登録する必要がある。
-
-**`./bin/start.sh` / `./bin/stop.sh`とこのlaunchd常駐化は併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。
-
-```bash
-cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
-  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
-cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
-  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
-```
-
-コピー後、両ファイル内の`/path/to/producer-desk`を展開先の実際の絶対パスに書き換える。`com.nosetech.producer-desk.dashboard.plist`は`ProgramArguments`先頭の`/path/to/node`も、`which node`で確認した実際のnode実行ファイルの絶対パスに書き換える必要がある（launchdは対話シェルのPATHを引き継がないため、bareの`node`コマンド名では解決できない）。
-
-同様の理由で、`com.nosetech.producer-desk.orchestrator.plist`の`EnvironmentVariables`の`PATH`も、`which gh`・`which claude`で確認した実際のパスに書き換えること。オーケストレータは内部で`gh`・`claude`コマンドをbareコマンド名のsubprocessとして呼び出す（ラベル操作・コメント投稿・Agent Runnerディスパッチ等）ため、PATHが誤っているとオーケストレータ自体は起動に成功したままこれらの操作だけが無言で失敗し続ける。`.env`で`SLACK_WEBHOOK_URL`等を設定している場合も、launchd経由では`.env`が自動読み込みされないため、同じく`EnvironmentVariables`へ転記すること。
-
-```bash
-launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
-launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
-```
-
-読み込み後は自動的に起動し、`launchctl start com.nosetech.producer-desk.orchestrator` / `launchctl start com.nosetech.producer-desk.dashboard`で即時起動して動作確認できる。停止・恒久的な解除は以下で行う。
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
-launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
-```
 
 ## 9. DBバックアップ（macOS launchd、任意）
 
@@ -187,5 +264,6 @@ cd producer-desk-<new-version>
 
 - **`config/projects.yaml が見つかりません`**: 手順2を実施していない。`config/projects.yaml.example` からコピーして作成する。
 - **`orchestrator/dist/*.whl が見つかりません`**: 配布パッケージ（tarball）が壊れている可能性がある。ダウンロードし直す。
-- **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` で別ポートを指定する。
+- **ポートが衝突する**: 環境変数 `ORCHESTRATOR_PORT` / `DASHBOARD_PORT` （LiteLLM Proxyを使っている場合は `LITELLM_PROXY_PORT` も）で別ポートを指定する。
 - **`orchestrator/.venv/bin/orchestrator` コマンドを直接実行しても `config/projects.yaml` が見つからないと言われる**: このコマンドは実行時のカレントディレクトリを展開先ルート（このファイルがある場所）とみなして`config/`・`logs/`を探す。必ず展開先ルートで `./bin/start.sh` 経由で起動し、`orchestrator`コマンドを別ディレクトリから直接実行しないこと。
+- **LiteLLM Proxy経由を選んでいるのに、実行結果がClaude Code CLI直利用にフォールバックされたと通知される**: LiteLLM Proxyプロセスが起動していない、または応答しない場合、Agent Runnerはその旨をissueコメントで通知した上で自動的にClaude Code CLI直利用にフォールバックする（自走タスクの進行自体を止めないための挙動で、`needs-human-decision`には遷移しない）。プロジェクト・issueに保存済みの実行手段の設定自体は変更されないため、`./bin/litellm_proxy_start.sh`でLiteLLM Proxyを起動し直せば、次回以降のディスパッチから再びLiteLLM Proxy経由が使われる。

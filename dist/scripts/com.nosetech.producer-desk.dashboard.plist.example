@@ -37,7 +37,7 @@
      解決できない）。
 
      使い方（配布パッケージ利用者はdist/SETUP.md、git clone開発環境利用者は
-     CONTRIBUTING.mdの「本体（オーケストレータ・ダッシュボード）の常時起動」参照）:
+     CONTRIBUTING.mdの「日常運用」内「常時起動（macOS launchd）」参照）:
        1. 配布パッケージ利用者は追加の準備は不要（server.jsはビルド済み）。
           git clone開発環境利用者は先に npm ci && npm run build を一度手動実行する
        2. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist

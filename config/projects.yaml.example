@@ -19,6 +19,11 @@ projects:
     # model_listで定義したモデルエイリアス名）の指定が必須。
     # execution_mode: litellm_proxy
     # litellm_model: project-b-ollama-qwen
+    #
+    # 会話量・ターン数上限（issue #189）はここではなく、モデルごとの
+    # config/litellm_config.yaml（model_list[].model_info）で定義する
+    # （num_ctxと同じ「そのモデルがどれだけの会話量を扱えるか」という関心事の
+    # ため。config/litellm_config.yaml.example参照）。
 
 # logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
 # 保持日数（未設定時は7）。orchestrator.logはこの日数分をTimedRotatingFileHandler

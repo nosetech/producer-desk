@@ -62,11 +62,22 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
+from orchestrator.litellm_model_config import SessionGuardSettings
+from orchestrator.litellm_model_config import (
+    resolve_session_guard_settings as litellm_resolve_session_guard_settings,
+)
 from orchestrator.litellm_proxy import build_env_overrides as litellm_build_env_overrides
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
-from orchestrator.session_store import get_session_id, persist_session_id
+from orchestrator.session_context_guard import (
+    read_latest_context_tokens,
+    resolve_transcript_path,
+)
+from orchestrator.session_store import SessionState
+from orchestrator.session_store import clear_session_state as store_clear_session_state
+from orchestrator.session_store import get_session_state as store_get_session_state
+from orchestrator.session_store import persist_session_state as store_persist_session_state
 from orchestrator.timezone import JST
 from orchestrator.usage_store import (
     LocalLlmUsageReport,
@@ -89,8 +100,10 @@ DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 PopenFn = Callable[..., subprocess.Popen]
 NowFn = Callable[[], datetime]
 UuidFn = Callable[[], str]
-GetSessionIdFn = Callable[[str, int], str | None]
-PersistSessionIdFn = Callable[[str, int, str], None]
+GetSessionStateFn = Callable[[str, int], SessionState | None]
+PersistSessionStateFn = Callable[[str, int, SessionState], None]
+ClearSessionStateFn = Callable[[str, int], None]
+ResolveSessionGuardSettingsFn = Callable[[str | None], SessionGuardSettings]
 
 
 @dataclass
@@ -845,8 +858,12 @@ def run_agent_runner(
     add_label: AddLabelFn = gh_add_label,
     remove_label: RemoveLabelFn = gh_remove_label,
     logs_dir: Path = DEFAULT_LOGS_DIR,
-    get_session_id_fn: GetSessionIdFn = get_session_id,
-    persist_session_id_fn: PersistSessionIdFn = persist_session_id,
+    get_session_state_fn: GetSessionStateFn = store_get_session_state,
+    persist_session_state_fn: PersistSessionStateFn = store_persist_session_state,
+    clear_session_state_fn: ClearSessionStateFn = store_clear_session_state,
+    resolve_session_guard_settings_fn: ResolveSessionGuardSettingsFn = (
+        litellm_resolve_session_guard_settings
+    ),
     record_usage_fn: RecordUsageFn = store_record_usage,
     record_local_llm_usage_report_fn: RecordLocalLlmUsageReportFn = (
         store_record_local_llm_usage_report
@@ -867,18 +884,26 @@ def run_agent_runner(
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
-    セッションはissue単位（`get_session_id_fn`/`persist_session_id_fn`が
+    セッションはissue単位（`get_session_state_fn`/`persist_session_state_fn`が
     `(repo, issue_number)`をキーに管理、[[docs/basic-design.md 3-1]]参照）で
     保持する。プロジェクト単位で1つのセッションを共有すると、あるissueが
     判断待ちで止まっている間に別issueが同じセッションで進行し、後から前者を
     resumeした際に後者issueの文脈を引きずってしまう（issue #32）。
+
+    issue #189: `execution_mode: litellm_proxy`かつ、解決した`litellm_model`に
+    対して`config/litellm_config.yaml`側で`max_session_tokens`/
+    `max_session_turns`が設定されている場合（`resolve_session_guard_settings_fn`
+    参照）、実行完了後に会話量・ターン数を評価し、閾値を超えていれば
+    `clear_session_state_fn`でセッション状態を破棄する。次回ディスパッチは
+    `get_session_state_fn`が`None`を返すため、Claude Code CLI自身の
+    auto-compactionに頼らず新規セッションとして開始される。
     """
     # ログファイル名はJST基準（issue #114）。`now`自体は既定でUTCを返す
     # （record_usage_fn側のrecorded_at契約を維持するため、`now()`の戻り値
     # そのものは変更せずJSTへ変換するだけに留める）。
     timestamp = now().astimezone(JST).strftime("%Y%m%dT%H%M%S")
     worktree_path = Path(project.worktree_path)
-    existing_session_id = get_session_id_fn(project.repo, issue_number)
+    existing_state = get_session_state_fn(project.repo, issue_number)
 
     if not worktree_path.is_dir():
         error_message = f"worktreeが見つかりません: {project.worktree_path}"
@@ -902,12 +927,13 @@ def run_agent_runner(
             issue_number=issue_number,
             exit_code=-1,
             log_path=log_path,
-            session_id=existing_session_id or "",
+            session_id=existing_state.session_id if existing_state else "",
             success=False,
         )
 
-    resume = existing_session_id is not None
-    session_id = existing_session_id or new_uuid()
+    resume = existing_state is not None
+    session_id = existing_state.session_id if existing_state else new_uuid()
+    turn_number = (existing_state.turn_count if existing_state else 0) + 1
 
     # issue #176: 実行手段（(A) Claude Code CLI直利用／(B) LiteLLM Proxy経由）を
     # 都度上書き指令→issue単位の保存済み上書き→プロジェクトのデフォルト設定の
@@ -998,9 +1024,6 @@ def run_agent_runner(
     stdout_text = _stream_process_output(process, log_path)
     returncode = process.wait()
 
-    if not resume:
-        persist_session_id_fn(project.repo, issue_number, session_id)
-
     success = returncode == 0
     payload = _parse_result_payload(stdout_text)
     usage_records = _extract_usage_records(payload, repo=project.repo, issue_number=issue_number)
@@ -1065,6 +1088,59 @@ def run_agent_runner(
             get_labels=get_labels,
             add_label=add_label,
             remove_label=remove_label,
+        )
+
+    # issue #189: (B) LiteLLM Proxy経由の小コンテキストローカルLLMは、Claude Code
+    # CLI自身のauto-compactionに頼れない（発火が実際のモデル容量より大幅に遅れる）。
+    # 正常終了した回に限り会話量・ターン数を評価し、閾値超過時は次回ディスパッチから
+    # セッションをリセットする（`clear_session_state_fn`でセッション状態を破棄し、
+    # 次回`get_session_state_fn`がNoneを返すことで自然に新規セッションになる）。
+    reset_session = False
+    if execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY and success:
+        # issue #189フォローアップ: max_session_tokens/max_session_turnsは
+        # 「そのモデルがどれだけの会話量を扱えるか」という、litellm_params.num_ctx
+        # と同じ関心事のため、プロジェクト単位のconfig/projects.yamlではなく
+        # num_ctxと同じconfig/litellm_config.yamlのmodel_info（モデル単位）で
+        # 管理する（resolve_session_guard_settings_fn参照）。
+        guard_settings = resolve_session_guard_settings_fn(execution_settings.litellm_model)
+        context_tokens = read_latest_context_tokens(
+            resolve_transcript_path(worktree_path, session_id)
+        )
+        token_exceeded = (
+            guard_settings.max_session_tokens is not None
+            and context_tokens is not None
+            and context_tokens >= guard_settings.max_session_tokens
+        )
+        turn_exceeded = (
+            guard_settings.max_session_turns is not None
+            and turn_number >= guard_settings.max_session_turns
+        )
+        reset_session = token_exceeded or turn_exceeded
+        if reset_session:
+            if token_exceeded:
+                reason = (
+                    f"コンテキスト量が上限（{context_tokens}/{guard_settings.max_session_tokens}"
+                    "トークン）に達した"
+                )
+            else:
+                reason = (
+                    f"ターン数が上限（{turn_number}/{guard_settings.max_session_turns}回）に達した"
+                )
+            post_comment(
+                project.repo,
+                issue_number,
+                f":arrows_counterclockwise: セッションの{reason}ため、"
+                "次回の指示ではセッションをリセットして新規に開始します。"
+                "これまでの進捗は上記コメント・issue履歴を参照してください。",
+            )
+
+    if reset_session:
+        clear_session_state_fn(project.repo, issue_number)
+    else:
+        persist_session_state_fn(
+            project.repo,
+            issue_number,
+            SessionState(session_id=session_id, turn_count=turn_number),
         )
 
     cleanup_old_agent_logs(logs_dir / project.repo, log_retention_days, now)

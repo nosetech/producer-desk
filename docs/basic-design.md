@@ -257,6 +257,60 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 - **repo単位の利用量帰属方法（issue #176で確定）**: LiteLLM ProxyはDBなし運用のため、プロジェクトごとの仮想キー発行機能（`/key/generate`、LiteLLM側のDB依存機能）は使わない。単一の共有トークン（同一LAN内アクセスのみという既存のネットワーク境界に認証を委ね、`config/litellm_config.yaml`に`master_key`を設定しない運用。[6-2](#6-2-ネットワークアクセスの認証設計)と同じ考え方）ではAPIキー単位での「どのプロジェクトからのリクエストか」の区別ができないため、代わりに`config/litellm_config.yaml`の`model_list`エントリをプロジェクトごとに分け、各エントリの`model_info.repo`にリポジトリ名を埋め込む。`Project.litellm_model`にはこの`model_name`（プロジェクト固有のエイリアス）を設定し、`claude -p --model <litellm_model>`として渡すことで、コールバック側は`kwargs["litellm_params"]["model_info"]["repo"]`からrepoを解決できる。issue番号単位の帰属はこの仕組みでは得られない（1プロジェクトにつき1エイリアスのため、Claude Code CLIが`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`経由の接続でissue番号等の追加メタデータをリクエストに含める手段を持たない）。そのため`usage_records.issue_number`には実在しないissue番号`0`をセンチネル値として記録する（「プロジェクト単位で集計されたLiteLLM Proxy経由の利用量」であることを示す。列のNOT NULL制約は変更しないため、スキーマ移行は不要）。ダッシュボードの日次・モデル別集計（`usage_store.daily_model_usage`）はissue_numberを見ないため表示に影響しない。`model_info.repo`が解決できない場合（設定漏れ等）は`"unknown"`として記録する。
 - **LiteLLM Proxy自体のネイティブ導入・常駐化（issue #176）**: `bin/litellm_proxy_start.sh`/`bin/litellm_proxy_stop.sh`で、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）に`pip install 'litellm[proxy]'`する（`litellm[proxy]`は依存が重く、オーケストレータ本体の`pyproject.toml`には追加しない。両者は別プロセス・別venvで動くネイティブ構成として分離する）。カスタムコールバックが`usage_store.py`をインポートできるよう、この専用venvへ`orchestrator`パッケージも`pip install -e`する。設定ファイルは`config/litellm_config.yaml`（`config/litellm_config.yaml.example`参照、`.gitignore`対象）。常時起動が必要なプロセスのため、オーケストレータ本体（`bin/start.sh`）と同様に`launchd`のper-user LaunchAgentとして常駐化できる（`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`、`RunAtLoad`+`KeepAlive`。日次バックアップ等の定期実行タスク向け`StartCalendarInterval`とは異なる用途のため別ファイルとする）。配布パッケージ（[7章](#7-配布パッケージ化設計)、issue #110）へのtarball同梱・`dist/bin/`向けの起動スクリプト整備は本issueのスコープ外とし、将来必要になった時点で改めて対応する。
 
+### compaction時のthinkingパラメータ非互換対策（issue #185）
+
+execution_mode: litellm_proxyでOllamaのローカルモデルを実行手段として使っている場合、Agent Runnerのセッションが長くなりClaude Code CLIが自動コンテキスト圧縮（compaction）を行おうとすると、以下のエラーで即座に異常終了する不具合があった。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"\"<model>\" does not support thinking"}.
+```
+
+**原因**: Claude Code CLIは`ANTHROPIC_BASE_URL`経由でLiteLLM Proxyの`/v1/messages`（Anthropic Messages API互換）エンドポイントを叩く。compaction実行時、CLIはこのリクエストに必ず拡張思考（`thinking`）パラメータを付与する。ところが`think`機能を持たないOllamaモデル（現状productor-deskで利用している`deepseek-coder-v2:16b`等はすべて該当）へこれをそのまま中継すると、Ollama自体（LiteLLMではなく）が上記400エラーを返す。compaction自体が失敗するとセッション全体が続行不能になり、実作業を行わないまま異常終了する。
+
+**`litellm_settings.drop_params: true`では解決しない（実機検証済み）**: 対応方針の検討当初は`drop_params: true`が最有力候補だったが、実際にLiteLLM Proxyを起動し`/v1/messages`へ`thinking`付きリクエストを送って検証したところ、`drop_params: true`を設定しても同じ400エラーが再現した。理由は、`drop_params`が効くのは通常のchat/completions系リクエストが通る`litellm.utils.get_optional_params`のOpenAI形式パラメータ検証・ドロップ経路のみであり、`/v1/messages`エンドポイントの実装（LiteLLM側の`llms/anthropic/experimental_pass_through/messages/`、Anthropic Messages APIをそのまま他プロバイダへ中継する実験的機能）はこの経路を通らず、`thinking`パラメータを検証なしにOllamaへそのまま転送するため。
+
+**実装した対策**: `orchestrator/orchestrator/litellm_callback.py`の`UsageStoreLogger`（既存の利用量記録コールバックと同一クラス。`config/litellm_config.yaml`の`litellm_settings.callbacks`への登録も既存のまま変更不要）に`async_pre_call_hook`（LiteLLM ProxyのCustomLoggerが提供する、モデル呼び出し前にリクエストデータを書き換えられるフック）を追加した。`call_type == "anthropic_messages"`（`/v1/messages`宛リクエスト）かつ、宛先モデルがOllama系プロバイダ（LiteLLM Proxyの`llm_router.get_model_list()`で解決した`litellm_params.model`が`ollama/`または`ollama_chat/`で始まる）の場合に限り、リクエストボディから`thinking`パラメータ自体を送信前に除去する（`_is_ollama_backed_model`）。OpenAI等、拡張思考に対応しうる他プロバイダ宛のリクエストは対象外とし、既存の拡張思考機能を損なわない。
+
+**受け入れ条件の検証結果**: `litellm_proxy/.venv`の実LiteLLM Proxyを一時的な別ポート（4099）で起動し、本番と同じOllamaホスト（`http://192.168.10.121:11434`）・`deepseek-coder-v2:16b`に対して`thinking`付きの`/v1/messages`リクエストを送信する実機検証を行った。対策前は上記400エラーが再現し、`async_pre_call_hook`導入後は200 OKで応答することを確認した（Claude Code CLI自体を使ったcompaction再現ではなく、CLIがcompaction時に送るリクエストと同じ形のリクエストを直接送る形での検証）。
+
+### compaction時のコンテキスト長超過エラーへの注意（`num_ctx`要設定）
+
+上記の`thinking`パラメータ対策後も、Ollamaのローカルモデルでは以下のエラーでcompactionが失敗しセッションが異常終了する場合がある。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"the prompt is longer than the context length currently available to the model;
+shorten the prompt, adjust the context length in settings, or use a model with a longer context length"}
+```
+
+**原因**: LiteLLM経由でOllamaへ送るリクエストに`num_ctx`（コンテキストウィンドウサイズ）を明示指定しない場合、Ollama自体のデフォルト値**2048トークン**が使われる（`litellm.llms.ollama.chat.transformation.OllamaChatConfig`のフィールド定義・docstring参照）。Claude Code CLIのcompaction時プロンプトは会話履歴全体を含むため、モデル自体が対応する最大コンテキスト長に関わらず、この2048トークンの上限を容易に超過する。
+
+**対策**: `config/litellm_config.yaml`の対象モデルの`litellm_params`に`num_ctx`を明示指定する（LiteLLM Routerは`litellm_params`配下の未知キーをそのまま完了APIへの追加パラメータとして転送するため、`OllamaChatConfig`が認識する`num_ctx`をyamlに書くだけで反映される）。
+
+```yaml
+litellm_params:
+  model: ollama/deepseek-coder-v2:16b
+  api_base: http://192.168.10.121:11434
+  num_ctx: 32768  # 例。実機のVRAM/RAM容量に収まる範囲で要検証（大きすぎるとOOMの恐れ）
+```
+
+適切な値はOllamaホストのメモリ容量に依存するため、実機での動作検証（大きめの`num_ctx`でOOMが起きないか、実際にcompactionが成功するか）が必要。本節はconfig例・注意点のドキュメント化までにとどめ、実際の値決定・実機検証は別途行う。
+
+### オーケストレータ側での会話量・ターン数上限によるセッションリセット（issue #189）
+
+issue #185（上記）解決後も、より根深い構造的な問題が残っていることが実機調査で判明した。Claude Code CLIは`execution_mode: litellm_proxy`で使う未知のカスタムモデルのコンテキスト長を認識できず、セッションログに`[claude-code:unrecognized_model]`が出力される場合、auto-compaction（自動コンテキスト圧縮）の発火判断を実際のモデル容量ではなく既定の大容量モデル相当（約200Kトークン）を前提に行っているとみられる。一方、`--autocompact`（auto-compactionの閾値）はCLIの仕様上100k〜1Mトークンの範囲でしか設定できず、「モデルの実容量より手前でauto-compactionを発火させる」対策はドキュメント化されたCLIの仕組みでは実現不可能である（実機で`--autocompact 10000`を指定すると起動時に即エラーで拒否されることを確認済み）。
+
+実際に異常終了した本番セッションは、compactionを試みた時点で既に約211,336トークン（Claude Code CLI自身の累計トークンカウント、セッションtranscriptの`cache_read_input_tokens`推移から確認）まで会話が伸びており、これはモデル自体のハード上限（`deepseek-coder-v2:16b`で163,840トークン、`ollama show`の`model_info["deepseek2.context_length"]`より確認）すら超えていた。つまり`num_ctx`（前節参照）をいくらに設定しても——たとえモデルのハード上限いっぱいにしても——このクラスの異常終了は防げない。CLIが「そろそろ圧縮しよう」と判断する頃には、モデルの絶対的な限界をとうに超えてしまっているためである。
+
+**対応方針**: Claude Code CLI自身のauto-compactionに頼らず、オーケストレータ側でAgent Runner呼び出し1回ごとに会話量・ターン数を評価し、閾値を超えたら次回ディスパッチから新規セッションへ切り替える。
+
+- **測定方法**: Claude Code CLIはセッションの会話全体を`~/.claude/projects/<cwdの`/`を`-`に置換したディレクトリ名>/<session-id>.jsonl`にNDJSON形式で保存している（issue #189の実機調査で実際に使った方法と同一）。`orchestrator/orchestrator/session_context_guard.py`の`read_latest_context_tokens`が、このファイルの最後のassistantメッセージの`usage`（`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`）を読み、その時点でモデルへ送られている実際の文脈サイズを取得する。Agent Runner自身が返す最終`result`イベントの`usage`/`modelUsage`は当該invocation内で消費したトークンの累計（コスト計算用）であり、「今の会話サイズ」の直接測定にはならないため使わない。
+  - これはClaude Code CLIの非公式な内部実装（ファイル形式・保存先パスの規則）に依存する連携であり、CLIのアップデートで変わりうる。ファイルの探索・パースに失敗した場合は例外を送出せず`None`を返し、トークンベースの判定はスキップしてターン数ベースの判定にフォールバックする（機能停止させない）。
+- **ターン数**: `orchestrator/orchestrator/session_store.py`の`SessionState`が`session_id`と併せて`turn_count`（そのissueに対してAgent Runnerを呼び出した回数）を保持する。トークン測定に依存しない、モデル非依存のシンプルなフォールバック上限として使う。
+- **設定**: `max_session_tokens`/`max_session_turns`（いずれも省略時は無制限）は、プロジェクト単位の`config/projects.yaml`ではなく、`num_ctx`と同じ`config/litellm_config.yaml`の`model_list[].model_info`に定義する（`config/litellm_config.yaml.example`参照）。「そのモデルがどれだけの会話量を扱えるか」という関心事は`num_ctx`と同一であり、1箇所にまとめることで両者の食い違いを防ぐ（`orchestrator/orchestrator/litellm_model_config.py`の`resolve_session_guard_settings`が、Agent Runnerに渡す`litellm_model`（model_listの`model_name`）をキーに`model_info`から読む。`model_info.repo`と同様、LiteLLM自体には転送されないオーケストレータ側の付加メタデータ）。`max_session_tokens`は`num_ctx`より余裕を持って小さい値にする（目安: num_ctxの7〜8割）。
+- **リセットの実施方法**: 閾値超過を検知した回の完了処理（コメント投稿・ラベル遷移）は通常通り実行した上で、追加でリセットする旨を知らせるコメントを投稿し、`orchestrator/orchestrator/session_store.py`の`clear_session_state`で当該issueのセッション状態を削除する。次回ディスパッチは`get_session_state_fn`が`None`を返すため`resume=False`となり、Claude Code CLIは新規セッションとして起動する。会話履歴そのものは失われるが、直前の完了報告・リセット通知コメントがissueのコメント履歴として残るため、新規セッションはこれを読むことである程度の引き継ぎができる（「GitHub Issuesが正のデータストア」という既存方針、[CLAUDE.md「確定済みの設計判断」](../CLAUDE.md)とも整合する）。
+
 ### タスク種別ごとの推奨モデル
 
 [要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。

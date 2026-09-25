@@ -45,7 +45,7 @@
          で無効化される。必要な値はEnvironmentVariablesへ個別に転記すること
 
      使い方（配布パッケージ利用者はdist/SETUP.md、git clone開発環境利用者は
-     CONTRIBUTING.mdの「本体（オーケストレータ・ダッシュボード）の常時起動」参照）:
+     CONTRIBUTING.mdの「日常運用」内「常時起動（macOS launchd）」参照）:
        1. orchestrator/.venv が未作成の場合は先に ./bin/start.sh を一度手動
           実行し、venvの作成・依存関係のインストールを済ませておく（launchd
           起動時のビルド・ネットワークアクセスを避けるため）。その後、手動
