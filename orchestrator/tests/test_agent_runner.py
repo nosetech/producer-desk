@@ -2145,3 +2145,38 @@ def test_run_agent_runner_strips_stray_anthropic_env_vars_in_claude_code_mode(
     call = popen.calls[0]
     assert "ANTHROPIC_BASE_URL" not in call["env"]
     assert "ANTHROPIC_AUTH_TOKEN" not in call["env"]
+
+
+def test_build_failure_comment_includes_error_message(tmp_path: Path) -> None:
+    payload = {"type": "result", "is_error": True, "result": "API Error: 400 bad request"}
+    log_path = tmp_path / "x.log"
+
+    comment = agent_runner._build_failure_comment(payload, returncode=1, log_path=log_path)
+
+    assert "終了コード: 1" in comment
+    assert "エラー内容: API Error: 400 bad request" in comment
+    assert f"ログ: {log_path}" in comment
+
+
+def test_build_failure_comment_truncates_long_error_message(tmp_path: Path) -> None:
+    long_text = "a" * (agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS + 500)
+    payload = {"type": "result", "is_error": True, "result": long_text}
+
+    comment = agent_runner._build_failure_comment(
+        payload, returncode=1, log_path=tmp_path / "x.log"
+    )
+
+    assert "a" * agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS in comment
+    assert "a" * (agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS + 1) not in comment
+    assert "省略" in comment
+
+
+@pytest.mark.parametrize("payload", [None, {"type": "result", "is_error": True, "result": ""}])
+def test_build_failure_comment_falls_back_to_log_path_only(
+    payload: dict | None, tmp_path: Path
+) -> None:
+    log_path = tmp_path / "x.log"
+
+    comment = agent_runner._build_failure_comment(payload, returncode=2, log_path=log_path)
+
+    assert comment == f":warning: Agent Runnerが異常終了しました（終了コード: 2）。ログ: {log_path}"
