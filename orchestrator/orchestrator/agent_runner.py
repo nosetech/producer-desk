@@ -826,6 +826,9 @@ def _ensure_pr_issue_reference(
         )
 
 
+_FAILURE_COMMENT_ERROR_MAX_CHARS = 2000
+
+
 # issue #146: プロセスが異常終了（returncode != 0）した際、原因を問わず一律で
 # 「ログを見てください」という文面を投稿していた。この手の異常終了は大抵の場合
 # APIリミット到達（429）が原因であり、`_extract_usage_records`（issue #60）が
@@ -844,7 +847,18 @@ def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: P
             f"（{error_info.limit_reset_text}）"
         )
 
-    return f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。ログ: {log_path}"
+    base = f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。"
+    # issue #190: ログパスだけでは何が起きたか分からないため、取得できていれば
+    # `result`のエラーメッセージ本文をコメントに含める（長大な場合は切り詰める）。
+    error_text = (error_info.result_text or "").strip()
+    if error_text:
+        if len(error_text) > _FAILURE_COMMENT_ERROR_MAX_CHARS:
+            error_text = (
+                error_text[:_FAILURE_COMMENT_ERROR_MAX_CHARS] + "…（省略、詳細はログを参照）"
+            )
+        return f"{base}\n\nエラー内容: {error_text}\n\nログ: {log_path}"
+
+    return f"{base}ログ: {log_path}"
 
 
 def run_agent_runner(
