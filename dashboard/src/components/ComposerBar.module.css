@@ -206,6 +206,51 @@
   font-family: inherit;
 }
 
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.modelRowNew {
+  margin-bottom: 8px;
+}
+
+.modelLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+
+.modelSelect {
+  flex: 0 1 260px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.modelHint {
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .textareaPrompt {
   min-height: 120px;
 }
@@ -276,6 +321,18 @@
 }
 
 @media (max-width: 640px) {
+  .modelRow {
+    flex-wrap: wrap;
+  }
+
+  .modelSelect {
+    flex: 1 1 100%;
+  }
+
+  .modelHint {
+    display: none;
+  }
+
   .trigger {
     left: auto;
     right: 16px;
