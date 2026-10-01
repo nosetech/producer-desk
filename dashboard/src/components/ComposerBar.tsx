@@ -1,14 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import { postCreateIssue, postInstruct } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { fetchProjectSettings, postCreateIssue, postInstruct } from "@/lib/api";
+import {
+  MODEL_DEFAULT,
+  applyModelDirective,
+  modelOptions,
+} from "@/lib/modelDirective";
 import { shortRepoName } from "@/lib/projectStatus";
 import {
   resolveStages,
   useStageProgress,
   type StageDef,
 } from "@/lib/stageProgress";
-import type { Dispatch, InstructAction } from "@/lib/types";
+import type {
+  Dispatch,
+  InstructAction,
+  ProjectSettingsResponse,
+} from "@/lib/types";
 import { SpinnerIcon, StageList } from "./StageProgress";
 import styles from "./ComposerBar.module.css";
 
@@ -37,6 +46,63 @@ const CREATE_QUEUED_STAGES: StageDef[] = [
   { key: "issue", label: "issueを作成", note: "POST /issues" },
   { key: "label", label: "todoとして登録", note: "label" },
 ];
+
+function defaultModelHint(settings: ProjectSettingsResponse | undefined) {
+  return `既定: ${
+    settings?.execution_mode === "litellm_proxy"
+      ? `LiteLLM · ${settings.litellm_model ?? ""}`
+      : "Claude Code"
+  }`;
+}
+
+function ModelSelectRow({
+  value,
+  settings,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  settings: ProjectSettingsResponse | undefined;
+  disabled: boolean;
+  onChange: (model: string) => void;
+}) {
+  return (
+    <div className={styles.modelRow}>
+      <span className={styles.modelLabel}>
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <rect x="4" y="4" width="16" height="16" rx="3" />
+          <path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" />
+        </svg>
+        使用するモデル
+      </span>
+      <select
+        className={styles.modelSelect}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        aria-label="使用するモデル"
+      >
+        {modelOptions(settings?.available_models ?? []).map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+      {value === MODEL_DEFAULT && (
+        <span className={styles.modelHint}>{defaultModelHint(settings)}</span>
+      )}
+    </div>
+  );
+}
 
 export default function ComposerBar({
   open,
@@ -76,8 +142,59 @@ export default function ComposerBar({
     reset: resetProgress,
   } = useStageProgress();
 
+  const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
+  const [newModel, setNewModel] = useState(MODEL_DEFAULT);
+  const [settingsByRepo, setSettingsByRepo] = useState<
+    Record<string, ProjectSettingsResponse>
+  >({});
+
   const newRepo = newTaskRepo || repos[0] || "";
   const isReply = mode === "reply";
+  const replyRepo = replyTarget?.repo;
+
+  // 使用モデルの選択肢（available_models）と既定値の表示用に、対象repoの設定を取得する。
+  // 取得に失敗した場合は選択肢が「既定のまま」「Claude Code」のみになる（送信自体は妨げない）。
+  useEffect(() => {
+    const repo = isReply ? replyRepo : newRepo;
+    if (!open || !repo) return;
+    let cancelled = false;
+    fetchProjectSettings(repo)
+      .then((data) => {
+        if (!cancelled)
+          setSettingsByRepo((prev) => ({ ...prev, [repo]: data }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isReply, replyRepo, newRepo]);
+
+  function handleReplyModelChange(model: string) {
+    setReplyModel(model);
+    setMessage((m) => applyModelDirective(m, model));
+  }
+
+  function handleNewModelChange(model: string) {
+    setNewModel(model);
+    setPrompt((p) => applyModelDirective(p, model));
+  }
+
+  function handleNewRepoChange(repo: string) {
+    // プロジェクトごとにavailable_modelsが異なるため、選択済みのモデルは破棄する。
+    handleNewModelChange(MODEL_DEFAULT);
+    onNewTaskRepoChange(repo);
+  }
+
+  // 返信対象のissueが変わったら、前の対象に向けた選択・自動挿入を引き継がない。
+  const replyKey = replyTarget
+    ? `${replyTarget.repo}#${replyTarget.number}`
+    : "";
+  const [prevReplyKey, setPrevReplyKey] = useState(replyKey);
+  if (replyKey !== prevReplyKey) {
+    setPrevReplyKey(replyKey);
+    setReplyModel(MODEL_DEFAULT);
+    setMessage((m) => applyModelDirective(m, MODEL_DEFAULT));
+  }
 
   function endStages() {
     resetProgress();
@@ -92,6 +209,8 @@ export default function ComposerBar({
       setMessage("");
       setTitle("");
       setPrompt("");
+      setReplyModel(MODEL_DEFAULT);
+      setNewModel(MODEL_DEFAULT);
       setError(null);
     }
   }
@@ -268,6 +387,12 @@ export default function ComposerBar({
                 判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
               </div>
             )}
+            <ModelSelectRow
+              value={replyModel}
+              settings={replyRepo ? settingsByRepo[replyRepo] : undefined}
+              disabled={submitting || !replyTarget}
+              onChange={handleReplyModelChange}
+            />
             <textarea
               className={styles.textarea}
               placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
@@ -313,7 +438,7 @@ export default function ComposerBar({
               <select
                 className={styles.select}
                 value={newRepo}
-                onChange={(e) => onNewTaskRepoChange(e.target.value)}
+                onChange={(e) => handleNewRepoChange(e.target.value)}
               >
                 {repos.map((repo) => (
                   <option key={repo} value={repo}>
@@ -334,6 +459,14 @@ export default function ComposerBar({
             </div>
             <div className={styles.promptField}>
               <div className={styles.fieldLabel}>指示内容 / プロンプト</div>
+              <div className={styles.modelRowNew}>
+                <ModelSelectRow
+                  value={newModel}
+                  settings={settingsByRepo[newRepo]}
+                  disabled={submitting}
+                  onChange={handleNewModelChange}
+                />
+              </div>
               <textarea
                 className={`${styles.textarea} ${styles.textareaPrompt}`}
                 placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
