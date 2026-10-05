@@ -35,9 +35,20 @@
   border-radius: 12px;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
+  cursor: pointer;
   transition:
     border-color 0.12s,
-    background 0.12s;
+    background 0.12s,
+    transform 0.12s,
+    box-shadow 0.12s;
+}
+
+/* Claude Design ProducerDesk.dc.htmlの chipHover（issue #116）。 */
+.chip:hover {
+  border-color: var(--accent-blue);
+  background: var(--bg-panel);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
 }
 
 .chipTop {
@@ -64,11 +75,6 @@
   white-space: nowrap;
   flex: 1;
   min-width: 0;
-}
-
-.repoName:hover {
-  color: var(--accent-blue);
-  text-decoration: underline;
 }
 
 .orphanBadge {

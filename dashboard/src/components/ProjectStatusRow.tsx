@@ -6,9 +6,11 @@ import {
   statusCountMeta,
   statusMeta,
 } from "@/lib/status";
+import { useRouter } from "next/navigation";
 import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
+import { WarningIcon } from "./Icons";
 import styles from "./ProjectStatusRow.module.css";
 
 // 件数チップの表示順（0件のキーは表示しない、Claude Designの`SLK`に対応）。
@@ -19,25 +21,6 @@ const COUNT_ORDER: (keyof StatusCounts)[] = [
   STATUS_IN_REVIEW,
   "untagged",
 ];
-
-function WarningIcon({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-      <path d="M12 9v4" />
-      <path d="M12 17h.01" />
-    </svg>
-  );
-}
 
 function GearIcon() {
   return (
@@ -84,6 +67,7 @@ export default function ProjectStatusRow({
   onQuickCreate: (repo: string) => void;
   onOpenSettings: (repo: string) => void;
 }) {
+  const router = useRouter();
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
@@ -98,21 +82,26 @@ export default function ProjectStatusRow({
             (key) => project.counts[key] > 0,
           );
           return (
-            <div key={project.repo} className={styles.chip}>
+            <div
+              key={project.repo}
+              className={styles.chip}
+              role="link"
+              tabIndex={0}
+              title={`${project.repo}のissue一覧を開く`}
+              onClick={() => router.push(`/projects/${project.repo}`)}
+              onKeyDown={(e) => {
+                if (e.target === e.currentTarget && e.key === "Enter")
+                  router.push(`/projects/${project.repo}`);
+              }}
+            >
               <div className={styles.chipTop}>
                 <span
                   className={styles.dot}
                   style={{ backgroundColor: `var(${meta.colorVar})` }}
                 />
-                <a
-                  className={styles.repoName}
-                  title={project.repo}
-                  href={`https://github.com/${project.repo}/issues`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <span className={styles.repoName} title={project.repo}>
                   {shortRepoName(project.repo)}
-                </a>
+                </span>
                 {project.isOrphaned && (
                   <span
                     className={styles.orphanBadge}
@@ -124,7 +113,10 @@ export default function ProjectStatusRow({
                 <button
                   type="button"
                   className={styles.addButton}
-                  onClick={() => onQuickCreate(project.repo)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQuickCreate(project.repo);
+                  }}
                   aria-label={`${project.repo}に新規タスクを作成`}
                   title="このプロジェクトに新規タスクを作成"
                 >
@@ -133,7 +125,10 @@ export default function ProjectStatusRow({
                 <button
                   type="button"
                   className={styles.addButton}
-                  onClick={() => onOpenSettings(project.repo)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSettings(project.repo);
+                  }}
                   aria-label={`${project.repo}の実行手段・モデルを設定`}
                   title={`${project.repo}の実行手段・モデルを設定`}
                 >

@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState
+from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, build_project_issues
 from orchestrator.config import Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
@@ -62,6 +62,8 @@ INSTRUCT_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/instruct$"
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
+# プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
+LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 
@@ -219,8 +221,39 @@ def _make_handler(
                 self._handle_progress(progress_match.group("progress_id"))
                 return
 
+            list_issues_match = LIST_ISSUES_PATH.match(self.path)
+            if list_issues_match:
+                self._handle_list_issues(list_issues_match.group("repo"))
+                return
+
             self.send_response(404)
             self.end_headers()
+
+        def _handle_list_issues(self, repo: str) -> None:
+            """プロジェクト別issue一覧（issue #116）。
+
+            詳細ページを開く操作は低頻度のため、StateStoreにキャッシュせずリクエスト都度
+            `list_issues`（`gh issue list`）で取得する。
+            """
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                issues = list_issues(repo)
+            except subprocess.CalledProcessError as e:
+                logger.warning("issue一覧の取得に失敗しました (%s): %s", repo, e)
+                self._send_json(502, {"error": f"{repo} のissue一覧を取得できませんでした"})
+                return
+            self._send_json(
+                200,
+                {
+                    "repo": repo,
+                    "issues": [
+                        dataclasses.asdict(i)
+                        for i in build_project_issues(issues, dispatch_queue.is_active)
+                    ],
+                },
+            )
 
         def _handle_progress(self, progress_id: str) -> None:
             self._send_json(200, {"stage": progress_store.get(progress_id)})

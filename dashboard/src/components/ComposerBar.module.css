@@ -19,7 +19,7 @@
 }
 
 .backdrop {
-  position: fixed;
+  position: absolute;
   z-index: 40;
   inset: 0;
   background: rgba(6, 10, 15, 0.32);
@@ -27,7 +27,7 @@
 }
 
 .trigger {
-  position: fixed;
+  position: absolute;
   z-index: 40;
   left: 50%;
   bottom: 18px;
@@ -57,7 +57,7 @@
 }
 
 .panel {
-  position: fixed;
+  position: absolute;
   z-index: 41;
   left: 50%;
   top: 18px;
