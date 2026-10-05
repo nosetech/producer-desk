@@ -103,6 +103,8 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
 - **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "reviews": [...], "project_status": [...], "status_counts": {...}}` 形式のJSONで返す。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
 - **指示出し操作直後の同期更新**: [2-3](#2-3-指示出しapi内部api)の`POST /api/projects/{repo}/issues/{issue_number}/instruct`・`POST /api/projects/{repo}/issues`がGitHub側の変更（ラベル・コメント・PRマージ等）に成功した直後、レスポンスを返す前に本節のポーリング1回分（`orchestrator/orchestrator/polling.py`の`poll_once`）を同期的に実行し、その結果でこのキャッシュを更新する。上記5分間隔の背景ポーリングだけに頼ると、ダッシュボードが操作直後に`GET /api/state`を再取得しても最大5分間は古いスナップショットが返り続け、操作対象のissueがまだ一覧に残っているように見えて二重操作できてしまう不具合があった（issue #70）。この同期更新自体が失敗しても、既に成功している指示操作のレスポンスは成功のまま返し、最新化は次回の背景ポーリングに委ねる。
 
+- **プロジェクト別issue一覧の取得（issue #116）**: `GET /api/projects/{repo}/issues`（`/api/state`と同じサーバー、新規issue作成の`POST`と同一パス・別メソッド）。ダッシュボードのissue一覧画面（`/projects/{owner}/{name}`）向けに、対象リポジトリのissue（`gh issue list --state all`、最大100件）を`{"repo": ..., "issues": [{"number", "title", "label", "state", "comments_count", "updated_at", "is_orphaned"}]}`で更新が新しい順に返す。詳細画面を開く操作は低頻度のため`StateStore`にはキャッシュせず、リクエスト都度`list_issues`を呼ぶ。`label`は表示に採用する状態ラベル（OPENで状態ラベル無しは`null`＝タグなし、クローズ済みで状態ラベル無しは`status:closed`）。`is_orphaned`は`/api/state`の`project_status`と同じ孤立in-progress判定（`aggregation._is_orphaned_in_progress`）をissue単位で適用した結果。未登録リポジトリは404、`gh`の失敗は502。
+
 ### 2-3. 指示出しAPI（内部API）
 
 ダッシュボード（Next.js）とオーケストレータ間の内部APIは以下の通り。既存issueへの指示（承認・自由記述）と、新規タスク（新規issue）の作成の2系統を持つ。
@@ -165,7 +167,7 @@ Content-Type: application/json
 
 ### 2-4. ダッシュボードの画面設計
 
-視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
 
 ## 3. Agent Runner連携設計
 

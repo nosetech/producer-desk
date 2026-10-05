@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_LABEL_PRIORITY,
@@ -130,6 +131,48 @@ def _is_orphaned_in_progress(
     if is_dispatch_active is None or label != STATUS_IN_PROGRESS:
         return False
     return not is_dispatch_active(issue.repo, issue.number)
+
+
+@dataclass
+class ProjectIssue:
+    """プロジェクト別issue一覧ページ（issue #116）の1行分。"""
+
+    number: int
+    title: str
+    # 5つの状態ラベルのうち表示に採用する1つ。クローズ済みで状態ラベルが未付与のissueは
+    # `status:closed`として扱い、OPENで状態ラベルが無いissue（タグなし）はNone。
+    label: str | None
+    state: str
+    comments_count: int
+    updated_at: str
+    # `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。
+    is_orphaned: bool
+
+
+def build_project_issues(
+    issues: list[IssueSummary],
+    is_dispatch_active: IsDispatchActiveFn | None = None,
+) -> list[ProjectIssue]:
+    """1リポジトリのissue一覧を、issue一覧ページ向けに状態ラベル・孤立判定付きで整形する。"""
+    result: list[ProjectIssue] = []
+    for issue in issues:
+        label = _current_status_label(issue)
+        if label is None and issue.state == "CLOSED":
+            label = STATUS_CLOSED
+        result.append(
+            ProjectIssue(
+                number=issue.number,
+                title=issue.title,
+                label=label,
+                state=issue.state,
+                comments_count=len(issue.comments),
+                updated_at=issue.updated_at,
+                is_orphaned=label is not None
+                and _is_orphaned_in_progress(issue, label, is_dispatch_active),
+            )
+        )
+    result.sort(key=lambda i: i.updated_at, reverse=True)
+    return result
 
 
 def aggregate(

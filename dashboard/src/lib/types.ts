@@ -144,3 +144,21 @@ export interface UsageResponse {
   daily: DailyUsage[];
   currentLimit: CurrentLimitStatus | null;
 }
+
+/** GET /api/projects/{owner}/{name}/issues の issues 配列要素（issue #116）。 */
+export interface ProjectIssue {
+  number: number;
+  title: string;
+  /** 表示に採用する状態ラベル。タグなし（OPENで状態ラベル無し）はnull。 */
+  label: StatusLabel | null;
+  state: string;
+  comments_count: number;
+  updated_at: string;
+  /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
+  is_orphaned: boolean;
+}
+
+export interface ProjectIssuesResponse {
+  repo: string;
+  issues: ProjectIssue[];
+}

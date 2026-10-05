@@ -10,7 +10,7 @@
 }
 
 .toast {
-  position: fixed;
+  position: absolute;
   z-index: 50;
   left: 50%;
   bottom: 78px;

@@ -7,6 +7,7 @@ import {
   type InstructAction,
   type InstructResult,
   type ProgressResponse,
+  type ProjectIssuesResponse,
   type ProjectSettingsResponse,
   type ProjectsResponse,
   type UpdateProjectSettingsResult,
@@ -116,5 +117,13 @@ export function patchProjectSettings(
 export function fetchProgress(progressId: string): Promise<ProgressResponse> {
   return fetch(`/api/progress/${progressId}`, { cache: "no-store" }).then(
     (res) => parseJsonOrThrow<ProgressResponse>(res),
+  );
+}
+
+export function fetchProjectIssues(
+  repo: string,
+): Promise<ProjectIssuesResponse> {
+  return fetch(`${repoPath(repo)}/issues`, { cache: "no-store" }).then((res) =>
+    parseJsonOrThrow<ProjectIssuesResponse>(res),
   );
 }

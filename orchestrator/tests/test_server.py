@@ -1255,3 +1255,96 @@ def test_patch_project_settings_missing_execution_mode_returns_400() -> None:
         assert status == 400
     finally:
         server.shutdown()
+
+
+def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def fake_list_issues(repo: str) -> list[IssueSummary]:
+        return [
+            IssueSummary(
+                repo=repo,
+                number=1,
+                title="作業中の孤立issue",
+                labels=[STATUS_IN_PROGRESS],
+                comments=[{"body": "c"}],
+                updated_at="2026-08-01T00:00:00Z",
+            ),
+            IssueSummary(
+                repo=repo,
+                number=2,
+                title="タグなし",
+                labels=[],
+                comments=[],
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+            IssueSummary(
+                repo=repo,
+                number=3,
+                title="クローズ済み",
+                labels=[],
+                comments=[],
+                updated_at="2026-07-01T00:00:00Z",
+                state="CLOSED",
+            ),
+        ]
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_issues=fake_list_issues,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert status == 200
+        assert body["repo"] == "nosetech/project-a"
+        # 更新が新しい順。
+        assert [i["number"] for i in body["issues"]] == [2, 1, 3]
+        by_number = {i["number"]: i for i in body["issues"]}
+        assert by_number[1]["label"] == STATUS_IN_PROGRESS
+        assert by_number[1]["is_orphaned"] is True
+        assert by_number[1]["comments_count"] == 1
+        assert by_number[2]["label"] is None
+        assert by_number[2]["is_orphaned"] is False
+        assert by_number[3]["label"] == STATUS_CLOSED
+    finally:
+        server.shutdown()
+
+
+def test_get_project_issues_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        try:
+            _get(server, "/api/projects/nosetech/unknown-repo/issues")
+            raise AssertionError("expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        server.shutdown()
+
+
+def test_get_project_issues_returns_502_when_gh_fails() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def failing_list_issues(repo: str) -> list[IssueSummary]:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_issues=failing_list_issues,
+    )
+    try:
+        try:
+            _get(server, "/api/projects/nosetech/project-a/issues")
+            raise AssertionError("expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 502
+    finally:
+        server.shutdown()
