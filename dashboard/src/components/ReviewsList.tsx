@@ -1,5 +1,5 @@
 import type { IssueRef } from "./ComposerBar";
-import type { IssueSummary } from "@/lib/types";
+import type { IssueComment, IssueSummary } from "@/lib/types";
 import ReviewCard from "./ReviewCard";
 import styles from "./ReviewsList.module.css";
 
@@ -12,7 +12,12 @@ export default function ReviewsList({
 }: {
   reviews: IssueSummary[];
   onApproved: () => Promise<void>;
-  onReply: (repo: string, issueNumber: number, title: string) => void;
+  onReply: (
+    repo: string,
+    issueNumber: number,
+    title: string,
+    comment?: IssueComment,
+  ) => void;
   onToast: (text: string) => void;
   lockedIssue: IssueRef | null;
 }) {

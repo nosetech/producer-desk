@@ -7,9 +7,11 @@ import {
   useStageProgress,
   type StageDef,
 } from "@/lib/stageProgress";
+import { commentSummary, latestComment } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
 import { SpinnerIcon, StageList } from "./StageProgress";
+import CommentViewer from "./CommentViewer";
 import styles from "./DecisionCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の apply_instruction（コメント投稿は
@@ -20,17 +22,6 @@ const APPROVE_STAGES: StageDef[] = [
   { key: "label", label: "ラベルを更新", note: "label" },
   { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
 ];
-
-function latestComment(issue: IssueSummary): IssueComment | undefined {
-  return issue.comments[issue.comments.length - 1];
-}
-
-function commentSummary(comment: IssueComment): string {
-  // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
-  // 付与されている（orchestrator/orchestrator/github_client.py参照）。表示上は不要なので取り除く。
-  const withoutMarkers = comment.body.replace(/<!--[\s\S]*?-->/g, "");
-  return withoutMarkers.replace(/\s+/g, " ").trim();
-}
 
 function CheckIcon({ size = 15 }: { size?: number }) {
   return (
@@ -76,11 +67,17 @@ export default function DecisionCard({
 }: {
   decision: IssueSummary;
   onApproved: () => Promise<void>;
-  onReply: (repo: string, issueNumber: number, title: string) => void;
+  onReply: (
+    repo: string,
+    issueNumber: number,
+    title: string,
+    comment?: IssueComment,
+  ) => void;
   onToast: (text: string) => void;
   locked: boolean;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const stageProgress = useStageProgress();
@@ -184,9 +181,29 @@ export default function DecisionCard({
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
-          <span className={styles.summaryText} title={summary}>
-            {summary}
-          </span>
+          <div className={styles.summaryBody}>
+            <span className={styles.summaryText}>{summary}</span>
+            <button
+              type="button"
+              className={styles.fullTextBtn}
+              onClick={() => setViewerOpen(true)}
+              aria-haspopup="dialog"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+              </svg>
+              全文を表示
+            </button>
+          </div>
         </div>
       )}
 
@@ -204,7 +221,7 @@ export default function DecisionCard({
           type="button"
           className={`${styles.btn} ${styles.btnReply}`}
           onClick={() =>
-            onReply(decision.repo, decision.number, decision.title)
+            onReply(decision.repo, decision.number, decision.title, last)
           }
           disabled={busy}
         >
@@ -212,6 +229,21 @@ export default function DecisionCard({
           返信
         </button>
       </div>
+
+      {viewerOpen && last && (
+        <CommentViewer
+          comment={last}
+          label={`${repoName} #${decision.number}`}
+          kindLabel="判断待ち"
+          title={decision.title}
+          onClose={() => setViewerOpen(false)}
+          onReply={() => {
+            setViewerOpen(false);
+            onReply(decision.repo, decision.number, decision.title, last);
+          }}
+          replyDisabled={busy}
+        />
+      )}
 
       {confirmOpen && (
         <div className={styles.confirmOverlay} onClick={closeConfirm}>

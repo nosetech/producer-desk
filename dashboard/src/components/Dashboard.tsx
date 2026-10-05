@@ -6,6 +6,7 @@ import { deriveProjectStatus } from "@/lib/projectStatus";
 import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
+  type IssueComment,
   type ProjectExecutionSettings,
 } from "@/lib/types";
 import Header from "./Header";
@@ -98,9 +99,22 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [refresh, refreshProjects]);
 
-  function handleReply(repo: string, issueNumber: number, title: string) {
+  function handleReply(
+    repo: string,
+    issueNumber: number,
+    title: string,
+    comment?: IssueComment,
+  ) {
     setComposerMode("reply");
-    setReplyTarget({ repo, number: issueNumber, title });
+    // 返信先コメントは返信を開いた時点のスナップショットを保持する（ポーリングで
+    // commentsが更新されても入れ替えない）。
+    setReplyTarget({
+      repo,
+      number: issueNumber,
+      title,
+      comment,
+      openedAt: new Date().toISOString(),
+    });
     setComposerOpen(true);
   }
 

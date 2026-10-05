@@ -1,0 +1,98 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.viewer {
+  gap: 12px;
+  --body-size: 13.5px;
+  --body-line: 1.75;
+  --heading-size: 13px;
+  --mark-size: 12px;
+  --code-size: 12px;
+}
+
+.quote {
+  gap: 8px;
+  --body-size: 12.5px;
+  --body-line: 1.65;
+  --heading-size: 12px;
+  --mark-size: 11px;
+  --code-size: 11px;
+}
+
+.heading {
+  font-size: var(--heading-size);
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: -3px;
+}
+
+.paragraph {
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  margin: 0;
+}
+
+.list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+
+.listItem {
+  display: flex;
+  gap: 8px;
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+}
+
+.mark {
+  flex: none;
+  min-width: 16px;
+  text-align: right;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--mark-size);
+  color: var(--text-tertiary);
+}
+
+.itemText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.inlineCode {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.code {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--code-size);
+  line-height: 1.6;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
