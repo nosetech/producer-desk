@@ -13,11 +13,14 @@ import {
   useStageProgress,
   type StageDef,
 } from "@/lib/stageProgress";
+import { formatCommentTime, stripBotMarkers } from "@/lib/comment";
 import type {
   Dispatch,
   InstructAction,
+  IssueComment,
   ProjectSettingsResponse,
 } from "@/lib/types";
+import CommentBody from "./CommentBody";
 import { SpinnerIcon, StageList } from "./StageProgress";
 import styles from "./ComposerBar.module.css";
 
@@ -25,6 +28,10 @@ export interface IssueRef {
   repo: string;
   number: number;
   title: string;
+  /** 返信を開いた時点の最新コメント（返信欄で読み取り専用表示する）。 */
+  comment?: IssueComment;
+  /** 返信を開いた時点（ISO8601）。 */
+  openedAt?: string;
 }
 
 export type ComposerMode = "reply" | "new";
@@ -99,6 +106,115 @@ function ModelSelectRow({
       </select>
       {value === MODEL_DEFAULT && (
         <span className={styles.modelHint}>{defaultModelHint(settings)}</span>
+      )}
+    </div>
+  );
+}
+
+function ReplyQuote({
+  comment,
+  openedAt,
+  open,
+  onToggle,
+}: {
+  comment: IssueComment;
+  openedAt?: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const label = open ? "コメントを折りたたむ" : "コメントを展開";
+  const summary = stripBotMarkers(comment.body).replace(/\s+/g, " ");
+  const openedTime = openedAt
+    ? new Date(openedAt).toLocaleTimeString("ja-JP", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+  return (
+    <div className={styles.quoteBox}>
+      <div className={styles.quoteHeader}>
+        <span className={styles.quoteAiTag}>AI</span>
+        <div className={styles.quoteHeaderText}>
+          <span className={styles.quoteHeading}>返信先のコメント</span>
+          <span className={styles.quoteMeta}>
+            <span className={styles.quoteAuthor}>
+              {comment.author?.login ?? "unknown"}
+            </span>
+            <span className={styles.quoteAt}>
+              {formatCommentTime(comment.createdAt)}
+            </span>
+          </span>
+        </div>
+        <a
+          href={comment.url}
+          target="_blank"
+          rel="noreferrer"
+          className={styles.quoteIconBtn}
+          title="GitHubでコメントを開く"
+          aria-label="GitHubでコメントを開く"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <path d="M15 3h6v6M10 14 21 3" />
+          </svg>
+        </a>
+        <button
+          type="button"
+          className={styles.quoteIconBtn}
+          onClick={onToggle}
+          title={label}
+          aria-label={label}
+          aria-expanded={open}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={styles.quoteChevron}
+            style={{ transform: open ? "rotate(180deg)" : "none" }}
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+      </div>
+      {open ? (
+        <div className={styles.quoteBody}>
+          <CommentBody body={comment.body} size="quote" />
+          {openedTime && (
+            <div className={styles.quoteSnapshot}>
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+              返信を開いた時点（{openedTime}）の内容を表示中
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className={styles.quoteCollapsed}>{summary}</div>
       )}
     </div>
   );
@@ -190,8 +306,10 @@ export default function ComposerBar({
     ? `${replyTarget.repo}#${replyTarget.number}`
     : "";
   const [prevReplyKey, setPrevReplyKey] = useState(replyKey);
+  const [quoteOpen, setQuoteOpen] = useState(true);
   if (replyKey !== prevReplyKey) {
     setPrevReplyKey(replyKey);
+    setQuoteOpen(true);
     setReplyModel(MODEL_DEFAULT);
     setMessage((m) => applyModelDirective(m, MODEL_DEFAULT));
   }
@@ -386,6 +504,14 @@ export default function ComposerBar({
               <div className={styles.noTarget}>
                 判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
               </div>
+            )}
+            {replyTarget?.comment && (
+              <ReplyQuote
+                comment={replyTarget.comment}
+                openedAt={replyTarget.openedAt}
+                open={quoteOpen}
+                onToggle={() => setQuoteOpen((o) => !o)}
+              />
             )}
             <ModelSelectRow
               value={replyModel}

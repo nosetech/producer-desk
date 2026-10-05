@@ -147,8 +147,41 @@
   margin-top: 1px;
 }
 
-.summaryText {
+.summaryBody {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.fullTextBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fullTextBtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .fullTextBtn {
+    padding: 7px 0 3px;
+  }
+}
+
+.summaryText {
   min-width: 0;
   font-size: 12.5px;
   display: -webkit-box;
