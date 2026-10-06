@@ -8,6 +8,13 @@ import {
   type IssueComment,
   type ProjectExecutionSettings,
 } from "@/lib/types";
+import {
+  invalidateIssueCache,
+  lookupIssueCache,
+  storeIssueCache,
+  type IssueCacheEntry,
+} from "@/lib/issueCache";
+import type { ProjectIssue } from "@/lib/types";
 import { AppProvider } from "./AppContext";
 import Header from "./Header";
 import Sidebar from "./Sidebar";
@@ -77,6 +84,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
+  // 画面遷移・タブ切替をまたいで保持するプロジェクト別issue一覧キャッシュ（issue #198）。
+  const issueCache = useRef(new Map<string, IssueCacheEntry>());
+  const lookupIssues = useCallback(
+    (repo: string) => lookupIssueCache(issueCache.current, repo, Date.now()),
+    [],
+  );
+  const storeIssues = useCallback((repo: string, issues: ProjectIssue[]) => {
+    storeIssueCache(issueCache.current, repo, issues, Date.now());
+  }, []);
+  // 操作元が対象リポジトリを特定できないため、全リポジトリ分を破棄する。
+  const refreshAfterAction = useCallback((): Promise<void> => {
+    invalidateIssueCache(issueCache.current);
+    return refresh();
+  }, [refresh]);
+
   const refreshProjects = useCallback((): Promise<void> => {
     // refresh()と同様、取得失敗時は前回の一覧を残す（別タブでのプロジェクト設定変更や
     // config/projects.yaml直接編集を定期反映するためのポーリング対象でもあるため、
@@ -140,6 +162,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         lockedIssue,
         refresh,
         refreshProjects,
+        refreshAfterAction,
+        lookupIssues,
+        storeIssues,
         showToast,
         openReply,
         openNewTask,
@@ -165,7 +190,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               repos={repos}
               newTaskRepo={newTaskRepo}
               onNewTaskRepoChange={setNewTaskRepo}
-              onSubmitted={refresh}
+              onSubmitted={refreshAfterAction}
               onReplySubmittingChange={setLockedIssue}
             />
           </div>

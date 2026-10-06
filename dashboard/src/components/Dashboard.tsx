@@ -19,6 +19,7 @@ export default function Dashboard() {
     error,
     lockedIssue,
     refresh,
+    refreshAfterAction,
     refreshProjects,
     showToast,
     openReply,
@@ -71,14 +72,14 @@ export default function Dashboard() {
         <div className={styles.left}>
           <DecisionsList
             decisions={state.decisions}
-            onApproved={refresh}
+            onApproved={refreshAfterAction}
             onReply={openReply}
             onToast={showToast}
             lockedIssue={lockedIssue}
           />
           <ReviewsList
             reviews={state.reviews}
-            onApproved={refresh}
+            onApproved={refreshAfterAction}
             onReply={openReply}
             onToast={showToast}
             lockedIssue={lockedIssue}

@@ -29,7 +29,7 @@ const SKELETON_WIDTHS = [62, 48, 70, 40, 56, 44];
 type LoadState = "loading" | "ready" | "error";
 // initial: 初回表示・プロジェクト切替・エラー画面の再試行（スケルトン表示）。
 // manual: 再取得ボタン（一覧を残しボタンのみ読み込み中表示、失敗はToast）。
-// poll: 30秒ごとの定期更新（一覧を残し、失敗は無視）。
+// poll: 30秒ごとの定期更新、およびTTL超過キャッシュ表示時のバックグラウンド再取得（一覧を残し、失敗は無視）。
 type FetchMode = "initial" | "manual" | "poll";
 
 function orphanNote(updatedAt: string): string {
@@ -94,9 +94,25 @@ function CommentIcon({ size }: { size: number }) {
 }
 
 export default function ProjectIssues({ repo }: { repo: string }) {
-  const { state, repos, refresh, showToast, openReply, openNewTask } = useApp();
-  const [load, setLoad] = useState<LoadState>("loading");
-  const [issues, setIssues] = useState<ProjectIssue[]>([]);
+  const {
+    state,
+    repos,
+    refresh,
+    showToast,
+    openReply,
+    openNewTask,
+    lookupIssues,
+    storeIssues,
+  } = useApp();
+  // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
+  // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
+  const [initialCache] = useState(() => lookupIssues(repo));
+  const [load, setLoad] = useState<LoadState>(
+    initialCache.kind === "miss" ? "loading" : "ready",
+  );
+  const [issues, setIssues] = useState<ProjectIssue[]>(
+    initialCache.kind === "miss" ? [] : initialCache.entry.issues,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(FILTER_ALL);
   const [showDone, setShowDone] = useState(false);
@@ -118,6 +134,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq !== requestSeq.current) return;
           await refresh();
           if (seq !== requestSeq.current) return;
+          storeIssues(repo, data.issues);
           setIssues(data.issues);
           setLoad("ready");
           // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
@@ -140,14 +157,18 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq === requestSeq.current) setRefreshing(false);
         });
     },
-    [repo, refresh, showToast],
+    [repo, refresh, showToast, storeIssues],
   );
 
   useEffect(() => {
     try {
       localStorage.setItem("issueProject", repo);
     } catch {}
-    fetchIssues("initial");
+    // TTL内のキャッシュは取得せず表示のみ、TTL超過は表示しつつ静かに再取得、無ければ従来通り。
+    // 手動再取得（fetchIssues("manual")）は常にキャッシュを無視して取得する。
+    const cached = lookupIssues(repo);
+    if (cached.kind === "miss") fetchIssues("initial");
+    else if (cached.kind === "stale") fetchIssues("poll");
     let interval: ReturnType<typeof setInterval>;
     const start = () => {
       clearInterval(interval);
@@ -156,7 +177,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     restartPoll.current = start;
     start();
     return () => clearInterval(interval);
-  }, [repo, fetchIssues]);
+  }, [repo, fetchIssues, lookupIssues]);
 
   const ready = load === "ready";
   const orphans = issues.filter((i) => i.is_orphaned);
