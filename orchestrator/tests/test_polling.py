@@ -12,7 +12,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
-from orchestrator.polling import poll_once, run_polling_loop
+from orchestrator.polling import fetch_project_issues, poll_once, run_polling_loop
 
 PROJECT_A = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
 PROJECT_B = Project(repo="nosetech/project-b", worktree_path="/tmp/project-b")
@@ -155,3 +155,23 @@ def test_run_polling_loop_stops_immediately_when_stop_event_already_set() -> Non
 
     # stop_eventが既にセット済みでも、最初の1回は実行してから停止する
     assert updates == [1]
+
+
+def test_fetch_project_issues_resolves_pr_number_only_for_in_review() -> None:
+    issues = [
+        _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW]),
+        _issue("nosetech/project-a", 2, [STATUS_TODO]),
+    ]
+
+    result = fetch_project_issues(
+        PROJECT_A, list_issues=lambda repo: issues, resolve_pr_number=lambda repo, n: 100 + n
+    )
+
+    assert [(i.number, i.pr_number) for i in result] == [(1, 101), (2, None)]
+
+
+def test_poll_once_records_fetch_and_poll_timestamps() -> None:
+    state = poll_once([PROJECT_A, PROJECT_B], list_issues=lambda repo: [])
+
+    assert state.last_polled_at is not None
+    assert [p.fetched_at is not None for p in state.project_status] == [True, True]

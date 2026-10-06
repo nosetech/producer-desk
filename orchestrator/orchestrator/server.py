@@ -18,7 +18,14 @@ import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, build_project_issues
+from orchestrator.aggregation import (
+    STATUS_COUNT_KEYS,
+    AggregatedState,
+    IsDispatchActiveFn,
+    IssueSummary,
+    aggregate,
+    build_project_issues,
+)
 from orchestrator.config import Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
@@ -48,7 +55,7 @@ from orchestrator.labels import (
     gh_get_labels,
     gh_remove_label,
 )
-from orchestrator.polling import ListIssuesFn, poll_once
+from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, poll_once
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 from orchestrator.usage_store import current_limit_status as store_current_limit_status
 from orchestrator.usage_store import daily_model_usage as store_daily_model_usage
@@ -64,6 +71,10 @@ INSTRUCT_PATH = re.compile(
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
+# プロジェクト単位のissue・ラベル情報の再取得（issue #197）。
+REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh$")
+# 全プロジェクトの再取得（issue #197）。
+REFRESH_ALL_PATH = "/api/refresh"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 
@@ -87,6 +98,36 @@ class StateStore:
 
     def get(self) -> AggregatedState | None:
         with self._lock:
+            return self._state
+
+    def replace_repo(
+        self,
+        repo: str,
+        issues: list[IssueSummary],
+        *,
+        fetched_at: str,
+        is_dispatch_active: IsDispatchActiveFn | None = None,
+    ) -> AggregatedState:
+        """指定リポジトリ分のissueのみ差し替えて再集約し、保持する（issue #197）。
+
+        他リポジトリのissue・取得時刻と`last_polled_at`は前回の値のまま維持する。
+        """
+        with self._lock:
+            current = self._state
+            issues_by_repo = dict(current.issues_by_repo) if current else {}
+            fetched_at_by_repo = (
+                {p.repo: p.fetched_at for p in current.project_status if p.fetched_at}
+                if current
+                else {}
+            )
+            issues_by_repo[repo] = issues
+            fetched_at_by_repo[repo] = fetched_at
+            self._state = aggregate(
+                issues_by_repo,
+                is_dispatch_active=is_dispatch_active,
+                fetched_at_by_repo=fetched_at_by_repo,
+                last_polled_at=current.last_polled_at if current else None,
+            )
             return self._state
 
 
@@ -188,13 +229,14 @@ def _make_handler(
             raw = self.rfile.read(length) if length else b"{}"
             return json.loads(raw)
 
-        def _refresh_store(self) -> None:
+        def _refresh_store(self) -> bool:
             """instruct/create_issue成功直後にStateStoreを同期更新する（issue #70）。
 
             バックグラウンドポーリング（5分間隔）を待たずダッシュボードの再取得
             （GET /api/state）に最新状態を反映させ、カードが消えないまま二重操作
             できてしまう不具合を防ぐ。再取得自体の失敗は指示操作の成功を損なわないよう
             ログ警告に留め、次回のバックグラウンドポーリングでの復旧に委ねる。
+            成功したかどうかを返す（全プロジェクト再取得エンドポイントが利用、issue #197）。
             """
             try:
                 state = poll_once(
@@ -205,8 +247,9 @@ def _make_handler(
                 )
             except subprocess.CalledProcessError as e:
                 logger.warning("instruct成功後のstate再取得に失敗しました: %s", e)
-                return
+                return False
             store.set(state)
+            return True
 
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandlerのインターフェースに合わせる)
             if self.path == "/api/state":
@@ -255,22 +298,67 @@ def _make_handler(
                 },
             )
 
-        def _handle_progress(self, progress_id: str) -> None:
-            self._send_json(200, {"stage": progress_store.get(progress_id)})
-
-        def _handle_state(self) -> None:
-            state = store.get()
-            self._send_json(
-                200,
-                dataclasses.asdict(state)
-                if state is not None
-                else {
+        def _state_payload(self, state: AggregatedState | None) -> dict:
+            if state is None:
+                return {
                     "decisions": [],
                     "reviews": [],
                     "project_status": [],
                     "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
+                    "last_polled_at": None,
+                }
+            payload = dataclasses.asdict(state)
+            payload.pop("issues_by_repo", None)  # 内部用データ。APIには含めない
+            return payload
+
+        def _handle_refresh_project(self, repo: str) -> None:
+            """1プロジェクト分のissue・ラベル情報をGitHubから再取得する（issue #197）。
+
+            全プロジェクトを走査する`poll_once`ではなく、当該リポジトリのみ取得して
+            StateStoreを差し替え再集約する。取得失敗時はStateStoreを変更しない。
+            """
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                issues = fetch_project_issues(
+                    projects_by_repo[repo],
+                    list_issues=list_issues,
+                    resolve_pr_number=resolve_pr_number,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.warning("プロジェクト再取得に失敗しました (%s): %s", repo, e)
+                self._send_json(502, {"error": f"{repo} の情報を再取得できませんでした"})
+                return
+            fetched_at = now_iso()
+            state = store.replace_repo(
+                repo, issues, fetched_at=fetched_at, is_dispatch_active=dispatch_queue.is_active
+            )
+            self._send_json(
+                200,
+                {
+                    "repo": repo,
+                    "fetched_at": fetched_at,
+                    "issues": [
+                        dataclasses.asdict(i)
+                        for i in build_project_issues(issues, dispatch_queue.is_active)
+                    ],
+                    "state": self._state_payload(state),
                 },
             )
+
+        def _handle_refresh_all(self) -> None:
+            """全プロジェクトの情報を再取得してStateStoreを更新する（issue #197）。"""
+            if not self._refresh_store():
+                self._send_json(502, {"error": "プロジェクト情報を再取得できませんでした"})
+                return
+            self._send_json(200, self._state_payload(store.get()))
+
+        def _handle_progress(self, progress_id: str) -> None:
+            self._send_json(200, {"stage": progress_store.get(progress_id)})
+
+        def _handle_state(self) -> None:
+            self._send_json(200, self._state_payload(store.get()))
 
         def _handle_usage(self) -> None:
             limit_status = current_limit_status()
@@ -285,6 +373,15 @@ def _make_handler(
             )
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == REFRESH_ALL_PATH:
+                self._handle_refresh_all()
+                return
+
+            refresh_match = REFRESH_PROJECT_PATH.match(self.path)
+            if refresh_match:
+                self._handle_refresh_project(refresh_match.group("repo"))
+                return
+
             instruct_match = INSTRUCT_PATH.match(self.path)
             if instruct_match:
                 self._handle_instruct(

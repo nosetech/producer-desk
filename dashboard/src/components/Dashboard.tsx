@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { postRefreshAll } from "@/lib/api";
 import { deriveProjectStatus } from "@/lib/projectStatus";
 import { useApp } from "./AppContext";
 import ProjectStatusRow from "./ProjectStatusRow";
@@ -24,6 +25,24 @@ export default function Dashboard() {
     openNewTask,
   } = useApp();
   const [settingsRepo, setSettingsRepo] = useState<string | null>(null);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+
+  // 全プロジェクトのissue・ラベル情報をGitHubから再取得する（issue #197）。
+  // 失敗時は表示中の内容を残したままToastで通知する。
+  const refreshAll = () => {
+    if (refreshingAll) return;
+    setRefreshingAll(true);
+    postRefreshAll()
+      .then(() => refresh())
+      .catch((e) =>
+        showToast(
+          e instanceof Error
+            ? `再取得に失敗しました: ${e.message}`
+            : "再取得に失敗しました",
+        ),
+      )
+      .finally(() => setRefreshingAll(false));
+  };
 
   const projectStatuses = repos.map((repo) =>
     deriveProjectStatus(
@@ -45,6 +64,8 @@ export default function Dashboard() {
         projects={projectStatuses}
         onQuickCreate={openNewTask}
         onOpenSettings={setSettingsRepo}
+        refreshing={refreshingAll}
+        onRefreshAll={refreshAll}
       />
       <main className={styles.main}>
         <div className={styles.left}>

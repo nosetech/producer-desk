@@ -1,9 +1,8 @@
-import { formatRelativeTime } from "@/lib/time";
 import ThemeToggle from "./ThemeToggle";
 import styles from "./Header.module.css";
 import { version } from "../../package.json";
 
-export default function Header({ lastUpdated }: { lastUpdated: Date | null }) {
+export default function Header() {
   return (
     <header className={styles.header}>
       <div className={styles.brand}>
@@ -57,26 +56,6 @@ export default function Header({ lastUpdated }: { lastUpdated: Date | null }) {
         </div>
       </div>
       <div className={styles.meta}>
-        {lastUpdated && (
-          <span className={styles.updatedAt}>
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.1"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ flex: "none" }}
-              aria-hidden="true"
-            >
-              <path d="M21 12a9 9 0 1 1-2.6-6.4" />
-              <path d="M21 4v5h-5" />
-            </svg>
-            {formatRelativeTime(lastUpdated.toISOString())}に更新
-          </span>
-        )}
         <ThemeToggle />
       </div>
     </header>

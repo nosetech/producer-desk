@@ -23,6 +23,7 @@ const EMPTY_STATE: AggregatedState = {
   reviews: [],
   project_status: [],
   status_counts: EMPTY_STATUS_COUNTS,
+  last_polled_at: null,
 };
 
 /**
@@ -36,7 +37,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [projectSettings, setProjectSettings] = useState<
     Record<string, ProjectExecutionSettings>
   >({});
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [composerOpen, setComposerOpen] = useState(false);
@@ -70,7 +70,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return fetchState()
       .then((data) => {
         setState(data);
-        setLastUpdated(new Date());
         setError(null);
       })
       .catch((e) => {
@@ -147,7 +146,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       }}
     >
       <div className={styles.shell}>
-        <Header lastUpdated={lastUpdated} />
+        <Header />
         <div className={styles.body}>
           <Sidebar attentionCount={attentionCount} anyOrphan={anyOrphan} />
           <div className={styles.contentPane}>

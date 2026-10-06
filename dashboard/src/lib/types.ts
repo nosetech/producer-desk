@@ -56,6 +56,8 @@ export interface ProjectStatusSummary {
   is_orphaned: boolean;
   /** そのリポジトリ単体の状態別OPEN issue件数（`status:closed`は含まない）。 */
   counts: StatusCounts;
+  /** オーケストレータが実際にGitHubからこのリポジトリを取得した時刻（ISO 8601、issue #197）。 */
+  fetched_at: string | null;
 }
 
 export interface AggregatedState {
@@ -63,6 +65,8 @@ export interface AggregatedState {
   reviews: IssueSummary[];
   project_status: ProjectStatusSummary[];
   status_counts: StatusCounts;
+  /** オーケストレータの最終ポーリング時刻（ISO 8601、issue #197）。未ポーリングならnull。 */
+  last_polled_at: string | null;
 }
 
 export const EMPTY_STATUS_COUNTS: StatusCounts = {

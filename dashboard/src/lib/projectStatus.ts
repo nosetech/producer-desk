@@ -12,6 +12,8 @@ export interface ProjectStatus {
   label: StatusLabel;
   isOrphaned: boolean;
   counts: StatusCounts;
+  /** オーケストレータが最後にGitHubから取得した時刻（issue #197）。 */
+  fetchedAt: string | null;
   executionSettings: ProjectExecutionSettings;
 }
 
@@ -49,6 +51,7 @@ export function deriveProjectStatus(
     label,
     isOrphaned,
     counts,
+    fetchedAt: status?.fetched_at ?? null,
     executionSettings: executionSettings ?? {
       execution_mode: "claude_code",
       litellm_model: null,

@@ -177,6 +177,7 @@ def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
             "reviews": [],
             "project_status": [],
             "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
+            "last_polled_at": None,
         }
     finally:
         server.shutdown()
@@ -1346,5 +1347,167 @@ def test_get_project_issues_returns_502_when_gh_fails() -> None:
             raise AssertionError("expected HTTPError")
         except urllib.error.HTTPError as e:
             assert e.code == 502
+    finally:
+        server.shutdown()
+
+
+def _issue_in(repo: str, number: int, labels: list[str]) -> IssueSummary:
+    return IssueSummary(
+        repo=repo,
+        number=number,
+        title="t",
+        labels=labels,
+        comments=[],
+        updated_at="2026-08-01T00:00:00Z",
+    )
+
+
+PROJECT_B = Project(repo="nosetech/project-b", worktree_path="/tmp/project-b")
+
+
+def test_get_api_state_includes_polling_timestamps_and_hides_internal_issues() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[
+                ProjectStatus(repo="nosetech/project-a", fetched_at="2026-10-06T00:00:00+00:00")
+            ],
+            last_polled_at="2026-10-06T00:00:01+00:00",
+            issues_by_repo={"nosetech/project-a": []},
+        )
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        _, body = _get(server, "/api/state")
+        assert body["last_polled_at"] == "2026-10-06T00:00:01+00:00"
+        assert body["project_status"][0]["fetched_at"] == "2026-10-06T00:00:00+00:00"
+        assert "issues_by_repo" not in body
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_updates_only_that_repo_in_store() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[
+                ProjectStatus(repo=PROJECT_A.repo, fetched_at="old-a"),
+                ProjectStatus(repo=PROJECT_B.repo, fetched_at="old-b"),
+            ],
+            last_polled_at="old-poll",
+            issues_by_repo={
+                PROJECT_A.repo: [],
+                PROJECT_B.repo: [_issue_in(PROJECT_B.repo, 9, [STATUS_TODO])],
+            },
+        )
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, PROJECT_B],
+        dispatch_queue=dispatch_queue,
+        list_issues=lambda repo: [_issue_in(repo, 1, [STATUS_IN_REVIEW])],
+        resolve_pr_number=lambda repo, n: 55,
+    )
+    try:
+        status, body = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 200
+        assert [i["number"] for i in body["issues"]] == [1]
+        assert body["fetched_at"] != "old-a"
+        by_repo = {p["repo"]: p for p in body["state"]["project_status"]}
+        assert by_repo[PROJECT_A.repo]["fetched_at"] == body["fetched_at"]
+        assert by_repo[PROJECT_A.repo]["counts"][STATUS_IN_REVIEW] == 1
+        assert by_repo[PROJECT_B.repo]["fetched_at"] == "old-b"
+        assert by_repo[PROJECT_B.repo]["counts"][STATUS_TODO] == 1
+        assert body["state"]["last_polled_at"] == "old-poll"
+        assert store.get().reviews[0].pr_number == 55
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_returns_404_for_unknown_repo() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/unknown/refresh", {})
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_returns_502_and_keeps_store_when_gh_fails() -> None:
+    store = StateStore()
+    before = AggregatedState(
+        project_status=[ProjectStatus(repo=PROJECT_A.repo, fetched_at="old-a")],
+        issues_by_repo={PROJECT_A.repo: []},
+    )
+    store.set(before)
+
+    def failing(repo: str):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, list_issues=failing
+    )
+    try:
+        status, _ = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 502
+        assert store.get() is before
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_works_before_first_poll() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, body = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 200
+        assert body["state"]["last_polled_at"] is None
+        assert body["state"]["project_status"][0]["fetched_at"] == body["fetched_at"]
+    finally:
+        server.shutdown()
+
+
+def test_post_refresh_all_repolls_every_project_and_updates_store() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, PROJECT_B],
+        dispatch_queue=dispatch_queue,
+        list_issues=lambda repo: [_issue_in(repo, 1, [STATUS_TODO])],
+    )
+    try:
+        status, body = _post(server, "/api/refresh", {})
+        assert status == 200
+        assert body["last_polled_at"] is not None
+        assert {p["repo"] for p in body["project_status"]} == {PROJECT_A.repo, PROJECT_B.repo}
+        assert all(p["fetched_at"] for p in body["project_status"])
+        assert store.get() is not None
+    finally:
+        server.shutdown()
+
+
+def test_post_refresh_all_returns_502_and_keeps_store_when_gh_fails() -> None:
+    store = StateStore()
+    before = AggregatedState()
+    store.set(before)
+
+    def failing(repo: str):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, list_issues=failing
+    )
+    try:
+        status, _ = _post(server, "/api/refresh", {})
+        assert status == 502
+        assert store.get() is before
     finally:
         server.shutdown()

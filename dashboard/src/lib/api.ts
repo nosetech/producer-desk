@@ -35,8 +35,12 @@ export function fetchState(): Promise<AggregatedState> {
       // 再起動タイミングがずれても画面がクラッシュしないようにする。
       decisions: data.decisions ?? [],
       reviews: data.reviews ?? [],
-      project_status: data.project_status ?? [],
+      project_status: (data.project_status ?? []).map((p) => ({
+        ...p,
+        fetched_at: p.fetched_at ?? null,
+      })),
       status_counts: data.status_counts ?? EMPTY_STATUS_COUNTS,
+      last_polled_at: data.last_polled_at ?? null,
     }));
 }
 
@@ -125,5 +129,26 @@ export function fetchProjectIssues(
 ): Promise<ProjectIssuesResponse> {
   return fetch(`${repoPath(repo)}/issues`, { cache: "no-store" }).then((res) =>
     parseJsonOrThrow<ProjectIssuesResponse>(res),
+  );
+}
+
+/**
+ * 1プロジェクト分のissue・ラベル情報をGitHubから再取得する（issue #197）。
+ * オーケストレータのStateStoreも当該リポジトリ分のみ更新されるため、呼び出し後に
+ * `useApp().refresh()` でラベル別件数・更新時刻を反映する。
+ */
+export function postRefreshProject(
+  repo: string,
+): Promise<ProjectIssuesResponse> {
+  return fetch(`${repoPath(repo)}/refresh`, {
+    method: "POST",
+    cache: "no-store",
+  }).then((res) => parseJsonOrThrow<ProjectIssuesResponse>(res));
+}
+
+/** 全プロジェクトの情報をGitHubから再取得する（issue #197）。 */
+export function postRefreshAll(): Promise<void> {
+  return fetch("/api/refresh", { method: "POST", cache: "no-store" }).then(
+    (res) => parseJsonOrThrow<unknown>(res).then(() => undefined),
   );
 }
