@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 from orchestrator.config import (
     DEFAULT_LOG_RETENTION_DAYS,
     EXECUTION_MODE_CLAUDE_CODE,
@@ -70,6 +72,13 @@ from orchestrator.litellm_proxy import build_env_overrides as litellm_build_env_
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
+from orchestrator.prompts import (
+    PromptSpec,
+    RequiredToken,
+    load_overrides,
+    render_prompt,
+    resolve_prompt_text,
+)
 from orchestrator.session_context_guard import (
     read_latest_context_tokens,
     resolve_transcript_path,
@@ -212,7 +221,7 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "間は空行で区切る）。CI完了の検知と後続処理の再開はオーケストレータのポーリングが"
     "自動的に行うため、あなた自身がCI結果が出るまで待ち続ける必要はありません。\n"
     f"  {CI_WAIT_MARKER_PREFIX}\n"
-    '  {{"pr_number": <PR番号（整数）>}}\n'
+    '  {"pr_number": <PR番号（整数）>}\n'
     "  -->\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
@@ -325,12 +334,12 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "本文の内容と重複しても構いません。\n"
     "  使用した場合:\n"
     f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {{"used": true, "model": "deepseek-coder-v2:16b", '
-    '"task_type": "code_review_support", "note": "..."}}\n'
+    '  {"used": true, "model": "deepseek-coder-v2:16b", '
+    '"task_type": "code_review_support", "note": "..."}\n'
     "  -->\n"
     "  使用しなかった場合:\n"
     f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {{"used": false, "reason": "..."}}\n'
+    '  {"used": false, "reason": "..."}\n'
     "  -->"
 )
 
@@ -410,6 +419,107 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
 )
 
 
+# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
+# 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
+# トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視・ローカルLLM利用量記録）
+# が依存する文字列で、編集で失われるとシステムが壊れるため保存時に検証する。
+AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
+    PromptSpec(
+        key="label_instruction",
+        title="状態ラベル遷移の指示",
+        description=(
+            "Agent Runner自身にghコマンドで状態ラベル（needs-human-decision / "
+            "status:in-review）への遷移とCI待ちマーカーの出力を行わせる指示"
+        ),
+        default=AGENT_RUNNER_LABEL_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                STATUS_NEEDS_HUMAN_DECISION,
+                "人間の判断が必要な場合に自己付与するラベル名。無いと判断待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                STATUS_IN_REVIEW,
+                "作業完了時に自己付与するラベル名。無いとレビュー待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                CI_WAIT_MARKER_PREFIX,
+                "CI完了待ちの機械可読マーカー。無いとCI完了後の自動再開が行われず"
+                "needs-human-decisionへ誤遷移します",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="comment_marker_instruction",
+        title="コメントマーカー付与の指示",
+        description="issueへの自己投稿コメントにボットマーカーを付与させ、最終応答の扱いを伝える指示",
+        default=AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                BOT_COMMENT_MARKER,
+                "AI自身のコメントを示すマーカー。無いとAIのコメントが人間の新規指示と誤認され、"
+                "同一内容が無限に再ディスパッチされます",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="design_verification_instruction",
+        title="デザイン実ソース取得の指示",
+        description="ダッシュボード画面の実装時にDesignSync MCPで実ソースを取得させる指示",
+        default=AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="local_llm_instruction",
+        title="ローカルLLM活用方針",
+        description="補助タスクでのローカルLLM（Ollama）併用方針とタスク種別ごとの推奨モデル",
+        default=AGENT_RUNNER_LOCAL_LLM_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                LOCAL_LLM_USAGE_MARKER_PREFIX,
+                "ローカルLLM活用状況の機械可読マーカー。無いと活用状況が記録・可視化されません",
+            ),
+            RequiredToken(
+                "$OLLAMA_BENCH_PATH",
+                "利用量を記録するollama-benchコマンドの参照。無いと利用量が記録されません",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="pr_issue_reference_instruction",
+        title="PR本文のissue参照記法の指示",
+        description="PR本文に`Closes #<issue番号>`を独立した行として含めさせる指示",
+        default=AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="final_message_instruction",
+        title="最終応答の書き方の指示",
+        description="最終応答が人間向けのissueコメントになることを踏まえた書き方の指示",
+        default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+)
+
+
+def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | None = None) -> str:
+    """`--append-system-prompt`に渡す指示文を、現在の設定で組み立てる。
+
+    起動のたびに`config/prompts.yaml`を読み直すため、保存した変更は次回の
+    Agent Runner起動分から反映される（実行中のセッションには反映されない）。
+    """
+    overrides = _load_prompt_overrides(prompts_path)
+    return "\n\n".join(
+        render_prompt(resolve_prompt_text(spec, overrides), repo=repo, issue_number=issue_number)
+        for spec in AGENT_RUNNER_PROMPT_SPECS
+    )
+
+
+def _load_prompt_overrides(prompts_path: Path | None) -> dict[str, str]:
+    try:
+        return load_overrides(prompts_path)
+    except (OSError, yaml.YAMLError) as e:
+        logger.warning("config/prompts.yamlを読み込めないためデフォルトを使用します: %s", e)
+        return {}
+
+
 def build_claude_command(
     message: str,
     *,
@@ -423,19 +533,7 @@ def build_claude_command(
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
     """
-    system_prompt = (
-        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION
-    )
+    system_prompt = build_system_prompt(repo, issue_number)
     command = [
         "claude",
         "-p",

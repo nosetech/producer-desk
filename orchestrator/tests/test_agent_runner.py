@@ -2180,3 +2180,35 @@ def test_build_failure_comment_falls_back_to_log_path_only(
     comment = agent_runner._build_failure_comment(payload, returncode=2, log_path=log_path)
 
     assert comment == f":warning: Agent Runnerが異常終了しました（終了コード: 2）。ログ: {log_path}"
+
+
+# issue #149: config/prompts.yamlの上書きが次回起動のsystem promptに反映されること。
+
+
+def _system_prompt_of(command: list[str]) -> str:
+    return command[command.index("--append-system-prompt") + 1]
+
+
+def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
+    from orchestrator.prompts import save_prompt_override
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_issue_reference_instruction")
+    save_prompt_override(spec, "独自ルール: {repo} #{issue_number}")
+
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "独自ルール: o/r #5" in prompt
+    assert spec.default not in prompt
+
+
+def test_build_claude_command_without_overrides_renders_placeholders() -> None:
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "o/r#5" in prompt
+    assert "{repo}" not in prompt
+    assert "{issue_number}" not in prompt
+    # JSON例示の波括弧は置換の影響を受けず、そのまま残る。
+    assert '{"pr_number": <PR番号（整数）>}' in prompt

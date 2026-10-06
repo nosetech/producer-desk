@@ -1,0 +1,154 @@
+"""orchestrator/prompts.py のテスト（issue #149）。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from orchestrator.prompts import (
+    PromptSpec,
+    PromptValidationError,
+    RequiredToken,
+    describe_prompt,
+    load_overrides,
+    load_prompt_text,
+    render_prompt,
+    reset_prompt_override,
+    save_prompt_override,
+    validate_prompt_text,
+)
+
+SPEC = PromptSpec(
+    key="sample",
+    title="サンプル",
+    description="テスト用",
+    default="{repo}#{issue_number} を処理 <!-- marker -->",
+    required_tokens=(RequiredToken("<!-- marker -->", "テスト用マーカー"),),
+)
+
+
+def test_validate_accepts_default() -> None:
+    assert validate_prompt_text(SPEC, SPEC.default) == []
+
+
+def test_validate_rejects_empty_text() -> None:
+    errors = validate_prompt_text(PromptSpec("k", "t", "d", "x"), "  ")
+
+    assert errors == ["本文が空です"]
+
+
+def test_validate_rejects_missing_required_token() -> None:
+    errors = validate_prompt_text(SPEC, "{repo} だけ")
+
+    assert errors == ["必須トークン <!-- marker --> が含まれていません"]
+
+
+def test_validate_rejects_unknown_placeholder() -> None:
+    errors = validate_prompt_text(SPEC, "{foo} <!-- marker -->")
+
+    assert len(errors) == 1
+    assert "{foo}" in errors[0]
+
+
+def test_validate_allows_json_example_braces() -> None:
+    text = '{"pr_number": 1} <!-- marker -->'
+
+    assert validate_prompt_text(SPEC, text) == []
+
+
+def test_render_replaces_placeholders_without_touching_json_braces() -> None:
+    rendered = render_prompt('{repo} {issue_number} {"a": 1}', repo="o/r", issue_number=7)
+
+    assert rendered == 'o/r 7 {"a": 1}'
+
+
+def test_load_returns_default_when_file_missing(tmp_path: Path) -> None:
+    assert load_prompt_text(SPEC, tmp_path / "none.yaml") == SPEC.default
+
+
+def test_save_persists_override_and_load_reads_it(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    save_prompt_override(SPEC, "新しい本文 <!-- marker -->", path)
+
+    assert load_prompt_text(SPEC, path) == "新しい本文 <!-- marker -->"
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {
+        "prompts": {"sample": "新しい本文 <!-- marker -->"}
+    }
+
+
+def test_save_keeps_other_overrides(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text(yaml.safe_dump({"prompts": {"other": "keep"}}), encoding="utf-8")
+
+    save_prompt_override(SPEC, "変更 <!-- marker -->", path)
+
+    assert load_overrides(path) == {"other": "keep", "sample": "変更 <!-- marker -->"}
+
+
+def test_save_rejects_invalid_text_and_does_not_write(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    with pytest.raises(PromptValidationError) as exc_info:
+        save_prompt_override(SPEC, "マーカー無し", path)
+
+    assert exc_info.value.errors == ["必須トークン <!-- marker --> が含まれていません"]
+    assert not path.exists()
+
+
+def test_save_default_text_removes_override(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    save_prompt_override(SPEC, "変更 <!-- marker -->", path)
+
+    save_prompt_override(SPEC, SPEC.default, path)
+
+    assert load_overrides(path) == {}
+
+
+def test_reset_removes_override(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    save_prompt_override(SPEC, "変更 <!-- marker -->", path)
+
+    reset_prompt_override(SPEC, path)
+
+    assert load_prompt_text(SPEC, path) == SPEC.default
+
+
+def test_reset_without_override_is_noop(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    reset_prompt_override(SPEC, path)
+
+    assert not path.exists()
+
+
+def test_load_falls_back_to_default_when_hand_edited_override_is_invalid(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text(yaml.safe_dump({"prompts": {"sample": "マーカー無し"}}), encoding="utf-8")
+
+    assert load_prompt_text(SPEC, path) == SPEC.default
+
+
+def test_load_falls_back_to_default_when_yaml_is_broken(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text("prompts: [unclosed", encoding="utf-8")
+
+    assert load_prompt_text(SPEC, path) == SPEC.default
+
+
+def test_describe_prompt_reports_state(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    assert describe_prompt(SPEC, path)["is_default"] is True
+    save_prompt_override(SPEC, "変更 <!-- marker -->", path)
+    info = describe_prompt(SPEC, path)
+
+    assert info["is_default"] is False
+    assert info["text"] == "変更 <!-- marker -->"
+    assert info["default"] == SPEC.default
+    assert info["required_tokens"] == [{"token": "<!-- marker -->", "reason": "テスト用マーカー"}]
+    assert info["placeholders"] == ["repo", "issue_number"]

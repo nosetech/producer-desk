@@ -38,10 +38,21 @@ from orchestrator.labels import (
     resolve_instruction_label,
     transition_label,
 )
+from orchestrator.prompts import PromptSpec, load_prompt_text
 from orchestrator.worktree import SyncWorktreeFn
 from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
+
+# issue #149: 承認時にmessageが空だった場合にissueコメントとして投稿される定型文。
+# Agent Runnerへの指示としてそのまま渡るため、他のプロンプトと同様ダッシュボード
+# から編集できるようにする（必須トークン・プレースホルダは無し）。
+APPROVE_DEFAULT_MESSAGE_SPEC = PromptSpec(
+    key="approve_default_message",
+    title="承認時の定型コメント",
+    description="承認ボタンを押したときにissueへ投稿される、メッセージ未入力時の定型文",
+    default=APPROVE_DEFAULT_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +209,7 @@ def handle_instruct(
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":
-        comment = message or APPROVE_DEFAULT_MESSAGE
+        comment = message or load_prompt_text(APPROVE_DEFAULT_MESSAGE_SPEC)
     elif action == "instruct":
         if not message:
             raise ValueError("instructアクションにはmessageが必須です")

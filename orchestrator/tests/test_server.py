@@ -1511,3 +1511,129 @@ def test_post_refresh_all_returns_502_and_keeps_store_when_gh_fails() -> None:
         assert store.get() is before
     finally:
         server.shutdown()
+
+
+# --- Agent Runnerプロンプト設定API（issue #149） ---
+
+
+def _put(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _delete(server, path: str) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(f"http://{host}:{port}{path}", method="DELETE")
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _prompt_server():
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    return _run_server(StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue)[0]
+
+
+def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    by_key = {p["key"]: p for p in body["prompts"]}
+    assert list(by_key) == [
+        "label_instruction",
+        "comment_marker_instruction",
+        "design_verification_instruction",
+        "local_llm_instruction",
+        "pr_issue_reference_instruction",
+        "final_message_instruction",
+        "approve_default_message",
+    ]
+    assert all(p["is_default"] for p in by_key.values())
+    assert by_key["design_verification_instruction"]["required_tokens"] == []
+    comment_tokens = [t["token"] for t in by_key["comment_marker_instruction"]["required_tokens"]]
+    assert comment_tokens == ["<!-- producer-desk:bot-comment -->"]
+
+
+def test_put_prompt_saves_and_marks_as_edited() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        _, listed = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["text"] == "新本文"
+    assert body["is_default"] is False
+    edited = {p["key"]: p for p in listed["prompts"]}["final_message_instruction"]
+    assert edited["text"] == "新本文"
+
+
+def test_put_prompt_missing_required_token_returns_400_with_errors() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/comment_marker_instruction", {"text": "無し"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert body["errors"] == ["必須トークン <!-- producer-desk:bot-comment --> が含まれていません"]
+
+
+def test_put_prompt_unknown_placeholder_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "{foo}"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "{foo}" in body["error"]
+
+
+def test_put_prompt_unknown_key_returns_404() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/nope", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 404
+
+
+def test_put_prompt_without_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_delete_prompt_resets_to_default() -> None:
+    server = _prompt_server()
+    try:
+        _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        status, body = _delete(server, "/api/prompts/final_message_instruction")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["is_default"] is True

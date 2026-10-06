@@ -3,6 +3,7 @@ config/projects.yaml
 config/sessions.json
 config/usage.db
 config/execution_overrides.json
+config/prompts.yaml
 config/litellm_config.yaml
 .env
 .env.*
