@@ -6,6 +6,8 @@ import type {
   IssueComment,
   ProjectExecutionSettings,
 } from "@/lib/types";
+import type { IssueCacheLookup } from "@/lib/issueCache";
+import type { ProjectIssue } from "@/lib/types";
 import type { IssueRef } from "./ComposerBar";
 
 export interface AppContextValue {
@@ -16,6 +18,11 @@ export interface AppContextValue {
   lockedIssue: IssueRef | null;
   refresh: () => Promise<void>;
   refreshProjects: () => Promise<void>;
+  /** 指示操作・承認・新規issue作成の成功後に呼ぶ。issue一覧キャッシュを破棄してから`refresh()`する。 */
+  refreshAfterAction: () => Promise<void>;
+  /** プロジェクト別issue一覧のクライアントキャッシュ（issue #198）。 */
+  lookupIssues: (repo: string) => IssueCacheLookup;
+  storeIssues: (repo: string, issues: ProjectIssue[]) => void;
   showToast: (text: string) => void;
   openReply: (
     repo: string,

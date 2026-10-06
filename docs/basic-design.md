@@ -107,7 +107,8 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
 - **プロジェクト単位・全体の再取得（issue #197）**:
   - `POST /api/projects/{repo}/refresh`: 当該リポジトリ1件分のみ`polling.fetch_project_issues`（`poll_once`と共通の取得ロジック。`gh issue list`＋`status:in-review`のPR番号解決）で取得し、`StateStore.replace_repo`で当該リポジトリ分のissueと取得時刻（`fetched_at`）だけ差し替えて再集約する（他プロジェクトは前回ポーリング値のまま、`last_polled_at`も変更しない）。`{"repo", "fetched_at", "issues": [...(GET .../issuesと同形式)], "state": {...(GET /api/stateと同形式)}}`を返す。未登録リポジトリは404、`gh`の失敗は502（`StateStore`は前回値のまま維持）。全プロジェクトを走査する`poll_once`より軽い。
   - `POST /api/refresh`: 全プロジェクトを対象に`poll_once`を1回同期実行して`StateStore`を更新し、`GET /api/state`と同形式を返す（`gh`の失敗は502）。ダッシュボード画面の全体再取得ボタン向け。
-  - ダッシュボードのissue一覧画面は、初期表示・プロジェクト切替・再取得ボタン・30秒間隔の定期更新のいずれも`POST /api/projects/{repo}/refresh`を使い、完了後に`GET /api/state`を再取得する。これにより一覧・ラベル別件数・タブの未完了件数・更新時刻が同時に最新化され食い違わない（`GET .../issues`はダッシュボードからは使わなくなったが、API互換のため残す）。
+  - ダッシュボードのissue一覧画面は、再取得ボタン・30秒間隔の定期更新・（キャッシュなし／TTL超過時の）初期表示とプロジェクト切替のいずれも`POST /api/projects/{repo}/refresh`を使い、完了後に`GET /api/state`を再取得する。これにより一覧・ラベル別件数・タブの未完了件数・更新時刻が同時に最新化され食い違わない（`GET .../issues`はダッシュボードからは使わなくなったが、API互換のため残す）。
+  - **ダッシュボード側のクライアントキャッシュ（issue #198）**: 上記のオーケストレータ側が「`StateStore`にはキャッシュせず都度取得」である点は変えず、ダッシュボード（`AppShell`が`useRef`で保持、ロジックは`dashboard/src/lib/issueCache.ts`）がリポジトリごとの`{issues, fetchedAt}`を持つ。初期表示・プロジェクト切替時、TTL（`ISSUE_CACHE_TTL_MS`＝60秒）以内なら取得せずキャッシュを即時表示（スケルトンなし）、TTL超過ならキャッシュを即時表示しつつバックグラウンド（`silent`）で再取得して差し替え（stale-while-revalidate）、キャッシュなしなら従来通りスケルトン表示で取得する。取得成功のたびに（30秒ポーリング・手動再取得含む）キャッシュを更新する。**手動再取得（再取得ボタン）は常にキャッシュを無視して取得する**。指示操作・承認・新規issue作成が成功した場合は`refreshAfterAction`で全リポジトリ分のキャッシュを破棄する（操作元が対象リポジトリを特定できないため保守的に全件破棄、#70と同趣旨）。バックグラウンド再取得の失敗はキャッシュ表示を残して握りつぶす。
 
 ### 2-3. 指示出しAPI（内部API）
 
