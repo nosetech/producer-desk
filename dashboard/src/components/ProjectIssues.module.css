@@ -339,6 +339,15 @@
   color: var(--text-secondary);
 }
 
+/* 表示中プロジェクトの更新タイミング（issue #197、デザインのipSyncAgo）。 */
+.sync {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
 .sortSelect {
   padding: 6px 9px;
   border-radius: 8px;

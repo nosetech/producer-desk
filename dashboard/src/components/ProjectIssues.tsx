@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchProjectIssues } from "@/lib/api";
+import { postRefreshProject } from "@/lib/api";
 import {
   FILTER_ALL,
   FILTER_ORPHAN,
@@ -19,12 +19,18 @@ import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { useApp } from "./AppContext";
 import { ExternalLinkIcon, WarningIcon } from "./Icons";
+import RefreshButton from "./RefreshButton";
+import SyncAgo from "./SyncAgo";
 import styles from "./ProjectIssues.module.css";
 
 const POLL_INTERVAL_MS = 30_000;
 const SKELETON_WIDTHS = [62, 48, 70, 40, 56, 44];
 
 type LoadState = "loading" | "ready" | "error";
+// initial: 初回表示・プロジェクト切替・エラー画面の再試行（スケルトン表示）。
+// manual: 再取得ボタン（一覧を残しボタンのみ読み込み中表示、失敗はToast）。
+// poll: 30秒ごとの定期更新（一覧を残し、失敗は無視）。
+type FetchMode = "initial" | "manual" | "poll";
 
 function orphanNote(updatedAt: string): string {
   const ago = formatRelativeTime(updatedAt);
@@ -88,44 +94,67 @@ function CommentIcon({ size }: { size: number }) {
 }
 
 export default function ProjectIssues({ repo }: { repo: string }) {
-  const { state, repos, openReply, openNewTask } = useApp();
+  const { state, repos, refresh, showToast, openReply, openNewTask } = useApp();
   const [load, setLoad] = useState<LoadState>("loading");
   const [issues, setIssues] = useState<ProjectIssue[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(FILTER_ALL);
   const [showDone, setShowDone] = useState(false);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
+  const [refreshing, setRefreshing] = useState(false);
   const requestSeq = useRef(0);
+  const restartPoll = useRef<() => void>(() => {});
 
+  // 一覧だけでなくラベル（状態）別件数・更新時刻も最新化するため、オーケストレータの
+  // プロジェクト単位再取得（issue #197）で当該リポジトリ分のStateStoreを更新してから
+  // `refresh()` でダッシュボード側のstateに反映する。
   const fetchIssues = useCallback(
-    (silent: boolean) => {
+    (mode: FetchMode) => {
       const seq = ++requestSeq.current;
-      if (!silent) setLoad("loading");
-      return fetchProjectIssues(repo)
-        .then((data) => {
+      if (mode === "initial") setLoad("loading");
+      if (mode === "manual") setRefreshing(true);
+      return postRefreshProject(repo)
+        .then(async (data) => {
+          if (seq !== requestSeq.current) return;
+          await refresh();
           if (seq !== requestSeq.current) return;
           setIssues(data.issues);
           setLoad("ready");
+          // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
+          if (mode === "manual") restartPoll.current();
         })
         .catch((e) => {
           if (seq !== requestSeq.current) return;
+          const message =
+            e instanceof Error ? e.message : "issueの取得に失敗しました";
+          if (mode === "initial") {
+            setErrorMessage(message);
+            setLoad("error");
+          } else if (mode === "manual") {
+            // 表示中の一覧は残したまま通知する。
+            showToast(`再取得に失敗しました: ${message}`);
+          }
           // 定期更新の失敗では、表示中の一覧を消さずに残す。
-          if (silent) return;
-          setErrorMessage(
-            e instanceof Error ? e.message : "issueの取得に失敗しました",
-          );
-          setLoad("error");
+        })
+        .finally(() => {
+          if (seq === requestSeq.current) setRefreshing(false);
         });
     },
-    [repo],
+    [repo, refresh, showToast],
   );
 
   useEffect(() => {
     try {
       localStorage.setItem("issueProject", repo);
     } catch {}
-    fetchIssues(false);
-    const interval = setInterval(() => fetchIssues(true), POLL_INTERVAL_MS);
+    fetchIssues("initial");
+    let interval: ReturnType<typeof setInterval>;
+    const start = () => {
+      clearInterval(interval);
+      interval = setInterval(() => fetchIssues("poll"), POLL_INTERVAL_MS);
+    };
+    restartPoll.current = start;
+    start();
     return () => clearInterval(interval);
   }, [repo, fetchIssues]);
 
@@ -320,6 +349,17 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 <option value="asc">更新が古い順</option>
               </select>
             </label>
+            <SyncAgo
+              className={styles.sync}
+              fetchedAt={statusByRepo.get(repo)?.fetched_at ?? null}
+              loadingText={refreshing ? "取得中…" : undefined}
+            />
+            <RefreshButton
+              size="md"
+              refreshing={refreshing || load === "loading"}
+              title="issueを再取得"
+              onClick={() => fetchIssues("manual")}
+            />
           </div>
         </div>
 
@@ -402,7 +442,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
               <button
                 type="button"
                 className={styles.primaryBtn}
-                onClick={() => fetchIssues(false)}
+                onClick={() => fetchIssues("initial")}
               >
                 <svg
                   width="15"

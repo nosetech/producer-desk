@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from orchestrator.aggregation import AggregatedState, IsDispatchActiveFn, IssueSummary, aggregate
 from orchestrator.config import Project
@@ -32,6 +33,27 @@ def _resolve_review_pr_numbers(
         for issue in issues:
             if STATUS_IN_REVIEW in issue.labels:
                 issue.pr_number = resolve_pr_number(issue.repo, issue.number)
+
+
+def now_iso() -> str:
+    """現在時刻をISO 8601（UTC、秒精度）で返す。"""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def fetch_project_issues(
+    project: Project,
+    *,
+    list_issues: ListIssuesFn = gh_list_issues,
+    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+) -> list[IssueSummary]:
+    """1プロジェクト分のissueを取得し、`status:in-review` のPR番号を解決して返す（issue #197）。
+
+    `poll_once`（全プロジェクト）と、プロジェクト単位の再取得エンドポイントの双方から
+    使う共通の取得ロジック。
+    """
+    issues = list_issues(project.repo)
+    _resolve_review_pr_numbers({project.repo: issues}, resolve_pr_number)
+    return issues
 
 
 def poll_once(
@@ -60,13 +82,27 @@ def poll_once(
     呼び出し等、オーケストレータ自身によるラベル遷移が起きない経路）の場合は
     再取得せず、無駄なGitHub API呼び出しを避ける。
     """
-    issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
-    _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
+
+    def fetch_all() -> tuple[dict[str, list[IssueSummary]], dict[str, str]]:
+        issues_by_repo: dict[str, list[IssueSummary]] = {}
+        fetched_at_by_repo: dict[str, str] = {}
+        for project in projects:
+            issues_by_repo[project.repo] = fetch_project_issues(
+                project, list_issues=list_issues, resolve_pr_number=resolve_pr_number
+            )
+            fetched_at_by_repo[project.repo] = now_iso()
+        return issues_by_repo, fetched_at_by_repo
+
+    issues_by_repo, fetched_at_by_repo = fetch_all()
     if on_issues_fetched is not None:
         on_issues_fetched(issues_by_repo)
-        issues_by_repo = {project.repo: list_issues(project.repo) for project in projects}
-        _resolve_review_pr_numbers(issues_by_repo, resolve_pr_number)
-    return aggregate(issues_by_repo, is_dispatch_active=is_dispatch_active)
+        issues_by_repo, fetched_at_by_repo = fetch_all()
+    return aggregate(
+        issues_by_repo,
+        is_dispatch_active=is_dispatch_active,
+        fetched_at_by_repo=fetched_at_by_repo,
+        last_polled_at=now_iso(),
+    )
 
 
 def run_polling_loop(

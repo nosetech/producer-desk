@@ -77,15 +77,6 @@
   gap: 10px;
 }
 
-.updatedAt {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
 @media (max-width: 640px) {
   .header {
     height: 56px;
@@ -98,10 +89,6 @@
   }
 
   .subtitle {
-    display: none;
-  }
-
-  .updatedAt {
     display: none;
   }
 }

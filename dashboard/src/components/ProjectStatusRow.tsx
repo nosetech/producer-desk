@@ -11,6 +11,8 @@ import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
 import { WarningIcon } from "./Icons";
+import RefreshButton from "./RefreshButton";
+import SyncAgo from "./SyncAgo";
 import styles from "./ProjectStatusRow.module.css";
 
 // 件数チップの表示順（0件のキーは表示しない、Claude Designの`SLK`に対応）。
@@ -62,10 +64,14 @@ export default function ProjectStatusRow({
   projects,
   onQuickCreate,
   onOpenSettings,
+  refreshing,
+  onRefreshAll,
 }: {
   projects: ProjectStatus[];
   onQuickCreate: (repo: string) => void;
   onOpenSettings: (repo: string) => void;
+  refreshing: boolean;
+  onRefreshAll: () => void;
 }) {
   const router = useRouter();
   return (
@@ -74,6 +80,12 @@ export default function ProjectStatusRow({
         <span className={styles.sectionTitle}>
           {projects.length} プロジェクト
         </span>
+        <RefreshButton
+          size="sm"
+          refreshing={refreshing}
+          title="全プロジェクトの情報を再取得"
+          onClick={onRefreshAll}
+        />
       </div>
       <div className={styles.row}>
         {projects.map((project) => {
@@ -102,6 +114,10 @@ export default function ProjectStatusRow({
                 <span className={styles.repoName} title={project.repo}>
                   {shortRepoName(project.repo)}
                 </span>
+                <SyncAgo
+                  fetchedAt={project.fetchedAt}
+                  className={styles.sync}
+                />
                 {project.isOrphaned && (
                   <span
                     className={styles.orphanBadge}
