@@ -63,6 +63,7 @@ from orchestrator.labels import (
 )
 from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, poll_once
 from orchestrator.prompts import (
+    USER_NAME_SPEC,
     PromptSpec,
     PromptValidationError,
     describe_prompt,
@@ -95,7 +96,11 @@ PROMPTS_PATH = "/api/prompts"
 PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
 
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
-PROMPT_SPECS: tuple[PromptSpec, ...] = (*AGENT_RUNNER_PROMPT_SPECS, APPROVE_DEFAULT_MESSAGE_SPEC)
+PROMPT_SPECS: tuple[PromptSpec, ...] = (
+    *AGENT_RUNNER_PROMPT_SPECS,
+    APPROVE_DEFAULT_MESSAGE_SPEC,
+    USER_NAME_SPEC,
+)
 
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]

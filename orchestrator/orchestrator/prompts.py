@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 PROMPTS_PATH_ENV = "ORCHESTRATOR_PROMPTS_PATH"
 DEFAULT_PROMPTS_PATH = REPO_ROOT / "config" / "prompts.yaml"
 
-# プロンプト本文中で使えるプレースホルダ。起動時に置換される。
-ALLOWED_PLACEHOLDERS: tuple[str, ...] = ("repo", "issue_number")
+# 指示文本文中で使えるプレースホルダ。起動時に置換される。`user_name`はユーザーの呼称
+# （下記`USER_NAME_SPEC`）で、既定では「人間」。
+ALLOWED_PLACEHOLDERS: tuple[str, ...] = ("repo", "issue_number", "user_name")
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -44,6 +45,9 @@ _PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 # スレッドから同時に呼ばれうるため、プロセス内でこのロックにより直列化する
 # （config.pyの`_PROJECTS_YAML_WRITE_LOCK`と同じ方針）。
 _PROMPTS_YAML_WRITE_LOCK = threading.Lock()
+
+
+DEFAULT_USER_NAME = "人間"
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,10 @@ class PromptSpec:
     description: str
     default: str
     required_tokens: tuple[RequiredToken, ...] = ()
+    # この項目の本文で使えるプレースホルダ。展開されない項目（定型コメント・呼称自身）は空にする。
+    placeholders: tuple[str, ...] = ALLOWED_PLACEHOLDERS
+    # Falseの項目は改行・波括弧を含められない（呼称のような短い語句）。
+    multiline: bool = True
 
 
 class PromptValidationError(ValueError):
@@ -76,21 +84,25 @@ def validate_prompt_text(spec: PromptSpec, text: str) -> list[str]:
     errors: list[str] = []
     if not text.strip():
         errors.append("本文が空です")
+    if not spec.multiline and ("\n" in text or "{" in text or "}" in text):
+        errors.append("改行・波括弧（{ }）は使用できません")
     for name in dict.fromkeys(_PLACEHOLDER_PATTERN.findall(text)):
-        if name not in ALLOWED_PLACEHOLDERS:
-            errors.append(
-                f"未知のプレースホルダ {{{name}}} が含まれています"
-                f"（使用可能: {', '.join('{' + p + '}' for p in ALLOWED_PLACEHOLDERS)}）"
-            )
+        if name not in spec.placeholders:
+            usable = ", ".join("{" + p + "}" for p in spec.placeholders) or "なし"
+            errors.append(f"未知のプレースホルダ {{{name}}} が含まれています（使用可能: {usable}）")
     for required in spec.required_tokens:
         if required.token not in text:
             errors.append(f"必須トークン {required.token} が含まれていません")
     return errors
 
 
-def render_prompt(text: str, *, repo: str, issue_number: int) -> str:
+def render_prompt(text: str, *, repo: str, issue_number: int, user_name: str) -> str:
     """プレースホルダを展開する。"""
-    return text.replace("{repo}", repo).replace("{issue_number}", str(issue_number))
+    return (
+        text.replace("{repo}", repo)
+        .replace("{issue_number}", str(issue_number))
+        .replace("{user_name}", user_name)
+    )
 
 
 def _resolve_path(path: Path | None) -> Path:
@@ -185,5 +197,20 @@ def describe_prompt(spec: PromptSpec, path: Path | None = None) -> dict:
         "default": spec.default,
         "is_default": text == spec.default,
         "required_tokens": [{"token": r.token, "reason": r.reason} for r in spec.required_tokens],
-        "placeholders": list(ALLOWED_PLACEHOLDERS),
+        "placeholders": list(spec.placeholders),
+        "multiline": spec.multiline,
     }
+
+
+# issue #149: 指示文・最終応答で「人間」と呼んでいる相手（ユーザー自身）の呼称。
+# プロンプト設定の1項目として編集でき、各指示文の`{user_name}`に展開される。
+USER_NAME_SPEC = PromptSpec(
+    key="user_name",
+    title="ユーザーの呼称",
+    description=(
+        "指示文・最終応答で「人間」と呼んでいる相手の呼び名。各指示文の{user_name}に展開されます"
+    ),
+    default=DEFAULT_USER_NAME,
+    placeholders=(),
+    multiline=False,
+)

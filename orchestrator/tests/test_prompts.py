@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from orchestrator.prompts import (
+    USER_NAME_SPEC,
     PromptSpec,
     PromptValidationError,
     RequiredToken,
@@ -59,9 +60,11 @@ def test_validate_allows_json_example_braces() -> None:
 
 
 def test_render_replaces_placeholders_without_touching_json_braces() -> None:
-    rendered = render_prompt('{repo} {issue_number} {"a": 1}', repo="o/r", issue_number=7)
+    rendered = render_prompt(
+        '{repo} {issue_number} {user_name} {"a": 1}', repo="o/r", issue_number=7, user_name="先生"
+    )
 
-    assert rendered == 'o/r 7 {"a": 1}'
+    assert rendered == 'o/r 7 先生 {"a": 1}'
 
 
 def test_load_returns_default_when_file_missing(tmp_path: Path) -> None:
@@ -151,4 +154,27 @@ def test_describe_prompt_reports_state(tmp_path: Path) -> None:
     assert info["text"] == "変更 <!-- marker -->"
     assert info["default"] == SPEC.default
     assert info["required_tokens"] == [{"token": "<!-- marker -->", "reason": "テスト用マーカー"}]
-    assert info["placeholders"] == ["repo", "issue_number"]
+    assert info["placeholders"] == ["repo", "issue_number", "user_name"]
+    assert info["multiline"] is True
+
+
+def test_validate_allows_user_name_placeholder() -> None:
+    assert validate_prompt_text(SPEC, "{user_name} <!-- marker -->") == []
+
+
+def test_user_name_spec_defaults_to_ningen() -> None:
+    assert USER_NAME_SPEC.default == "人間"
+
+
+@pytest.mark.parametrize("text", ["山田\n太郎", "{repo}", "山田{", "}"])
+def test_user_name_rejects_newline_and_braces(text: str) -> None:
+    assert validate_prompt_text(USER_NAME_SPEC, text) != []
+
+
+def test_user_name_accepts_plain_name(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    save_prompt_override(USER_NAME_SPEC, "山田さん", path)
+
+    assert load_prompt_text(USER_NAME_SPEC, path) == "山田さん"
+    assert describe_prompt(USER_NAME_SPEC, path)["multiline"] is False

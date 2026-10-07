@@ -52,6 +52,7 @@ APPROVE_DEFAULT_MESSAGE_SPEC = PromptSpec(
     title="承認時の定型コメント",
     description="承認ボタンを押したときにissueへ投稿される、メッセージ未入力時の定型文",
     default=APPROVE_DEFAULT_MESSAGE,
+    placeholders=(),  # issueコメントとしてそのまま投稿され、展開されない
 )
 
 logger = logging.getLogger(__name__)

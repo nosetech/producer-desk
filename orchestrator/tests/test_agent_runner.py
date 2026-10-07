@@ -2212,3 +2212,23 @@ def test_build_claude_command_without_overrides_renders_placeholders() -> None:
     assert "{issue_number}" not in prompt
     # JSON例示の波括弧は置換の影響を受けず、そのまま残る。
     assert '{"pr_number": <PR番号（整数）>}' in prompt
+
+
+def test_build_claude_command_replaces_user_name_in_instructions(_isolated_prompts_path) -> None:
+    from orchestrator.prompts import USER_NAME_SPEC, save_prompt_override
+
+    default_prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "人間の判断が必要だと自ら判断した場合" in default_prompt
+    assert "{user_name}" not in default_prompt
+
+    save_prompt_override(USER_NAME_SPEC, "山田さん")
+    prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+
+    assert "山田さんの判断が必要だと自ら判断した場合" in prompt
+    assert "山田さん向けの状況報告" in prompt
+    assert "人間" not in prompt
+    assert "{user_name}" not in prompt

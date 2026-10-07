@@ -179,4 +179,6 @@ export interface PromptInfo {
   required_tokens: { token: string; reason: string }[];
   /** 本文中で使えるプレースホルダ名（波括弧なし）。 */
   placeholders: string[];
+  /** falseの項目（ユーザーの呼称等）は改行・波括弧を含められない短い語句。 */
+  multiline: boolean;
 }

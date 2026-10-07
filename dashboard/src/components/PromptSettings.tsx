@@ -20,6 +20,7 @@ import styles from "./PromptSettings.module.css";
 const PLACEHOLDER_DESCRIPTIONS: Record<string, string> = {
   repo: "リポジトリ名",
   issue_number: "issue番号",
+  user_name: "ユーザーの呼称",
 };
 
 /** Agent Runnerプロンプト設定画面（issue #149、docs/basic-design.md 3-6）。 */
@@ -423,48 +424,50 @@ function Editor({
         </div>
       )}
 
-      <div className={styles.phBox}>
-        <div className={styles.phHead}>
-          <span className={styles.phTitle}>プレースホルダ</span>
-          <span className={styles.phHint}>クリックでカーソル位置に挿入</span>
-        </div>
-        <div className={styles.phChips}>
-          {prompt.placeholders.map((name) => (
-            <button
-              key={name}
-              type="button"
-              className={styles.phChip}
-              disabled={diffOn}
-              title="カーソル位置に挿入"
-              onClick={() => onInsert(name)}
-            >
-              <PlusIcon size={12} />
-              {`{${name}}`}
-              <span className={styles.phDesc}>
-                {PLACEHOLDER_DESCRIPTIONS[name] ?? ""}
+      {prompt.placeholders.length > 0 && (
+        <div className={styles.phBox}>
+          <div className={styles.phHead}>
+            <span className={styles.phTitle}>プレースホルダ</span>
+            <span className={styles.phHint}>クリックでカーソル位置に挿入</span>
+          </div>
+          <div className={styles.phChips}>
+            {prompt.placeholders.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={styles.phChip}
+                disabled={diffOn}
+                title="カーソル位置に挿入"
+                onClick={() => onInsert(name)}
+              >
+                <PlusIcon size={12} />
+                {`{${name}}`}
+                <span className={styles.phDesc}>
+                  {PLACEHOLDER_DESCRIPTIONS[name] ?? ""}
+                </span>
+              </button>
+            ))}
+            {check.unknown.map((u) => (
+              <span key={u} className={styles.phUnknown}>
+                <CloseIcon size={12} />
+                {`{${u}}`}
+                <span className={styles.phUnknownNote}>使用不可</span>
               </span>
-            </button>
-          ))}
-          {check.unknown.map((u) => (
-            <span key={u} className={styles.phUnknown}>
-              <CloseIcon size={12} />
-              {`{${u}}`}
-              <span className={styles.phUnknownNote}>使用不可</span>
-            </span>
-          ))}
+            ))}
+          </div>
+          <div className={styles.phNote}>
+            波括弧で囲んだ{" "}
+            {prompt.placeholders.map((n, i) => (
+              <span key={n}>
+                {i > 0 && " / "}
+                <code>{`{${n}}`}</code>
+              </span>
+            ))}{" "}
+            は Agent Runner 起動時に実際の値へ置き換えられます。
+            <strong>それ以外の波括弧変数は使用できません。</strong>
+          </div>
         </div>
-        <div className={styles.phNote}>
-          波括弧で囲んだ{" "}
-          {prompt.placeholders.map((n, i) => (
-            <span key={n}>
-              {i > 0 && " / "}
-              <code>{`{${n}}`}</code>
-            </span>
-          ))}{" "}
-          は Agent Runner 起動時に実際の値へ置き換えられます。
-          <strong>それ以外の波括弧変数は使用できません。</strong>
-        </div>
-      </div>
+      )}
 
       {diffOn ? (
         <div className={styles.diffBox}>

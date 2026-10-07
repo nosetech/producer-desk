@@ -73,6 +73,7 @@ from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
 from orchestrator.prompts import (
+    USER_NAME_SPEC,
     PromptSpec,
     RequiredToken,
     load_overrides,
@@ -199,7 +200,7 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "以下の状態ラベル遷移は、オーケストレータ側では自動的に行われないため、"
     "該当する状況になったらあなた自身がghコマンドで実行してください"
     "（docs/basic-design.md 1章「データモデル・状態遷移設計」参照）。\n"
-    "- 人間の判断が必要だと自ら判断した場合: "
+    "- {user_name}の判断が必要だと自ら判断した場合: "
     f"`gh issue edit {{issue_number}} --repo {{repo}} "
     f"--add-label {STATUS_NEEDS_HUMAN_DECISION} --remove-label {STATUS_IN_PROGRESS}`\n"
     "- プルリクエストを作成した場合: "
@@ -254,7 +255,7 @@ AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
     "プレビュー画面のクリック操作によるコード選択、ズームしての目視推測、"
     "mcp__claude-in-chrome__* でのチャットへの問い合わせは不正確になりうるため代替に"
     "せず、その旨を実行結果に明記してその場で作業を停止し、needs-human-decisionラベルで"
-    "人間の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
+    "{user_name}の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
     "mcp__claude-in-chrome__* で実装結果とデザインのプレビューを並べて見た目が一致する"
     "ことを確認してから完了としてください。"
 )
@@ -327,7 +328,7 @@ AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
     "docs/requirements.md 2-5参照）。\n"
     "このセッションでローカルLLMを使ったか使わなかったかは、セッション終了時の"
     "最終応答（issueコメントとして投稿されます）に必ず記載してください。\n"
-    "- 人間向け: 「## ローカルLLM活用」という見出しで、使用した場合はタスク種別・"
+    "- {user_name}向け: 「## ローカルLLM活用」という見出しで、使用した場合はタスク種別・"
     "モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載してください。\n"
     "- 機械可読: 上記の見出しの直後に、以下の形式でHTMLコメントとして埋め込んで"
     "ください（本文とマーカーの間は空行で区切る）。レンダリングされないため、"
@@ -366,7 +367,7 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     "マーカーを付与してください（本文とマーカーの間は空行で区切る）。\n"
     f"{BOT_COMMENT_MARKER}\n"
     "このマーカーが無いと、オーケストレータのコメント監視処理があなた自身の"
-    "投稿を人間からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
+    "投稿を{user_name}からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
     "まいます（docs/basic-design.md 2-3「共通仕様」参照）。\n"
     "なお、あなたのセッション終了時の最終応答（このメッセージへの最後の"
     "返信）は、オーケストレータが自動的に「Agent Runner実行結果:」という"
@@ -374,7 +375,7 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     "旨をあなた自身が重ねて完了報告コメントとして投稿する必要はありません"
     "（投稿すると同内容のコメントが2つ連続で並ぶ重複が発生します）。"
     "能動的なissueコメント投稿は、長時間かかる作業の途中経過など、最終応答を"
-    "待たずに人間へ可視化する価値がある場合に限定してください。"
+    "待たずに{user_name}へ可視化する価値がある場合に限定してください。"
 )
 
 
@@ -407,15 +408,15 @@ AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
 # 自体はAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONに既にあるため重複させず、
 # ここでは「人間向け報告として何を書くべきか」の指示のみを追加する。
 AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
-    "前述の通りセッション終了時の最終応答はissueコメントとして人間に投稿され"
-    "ます。人間向けの状況報告であることを踏まえ、次の点を意識して書いて"
+    "前述の通りセッション終了時の最終応答はissueコメントとして{user_name}に投稿され"
+    "ます。{user_name}向けの状況報告であることを踏まえ、次の点を意識して書いて"
     "ください。\n"
     "- needs-human-decisionラベルを付与した場合は、最終応答に"
-    "「何について・なぜ人間の判断が必要か」と「人間が具体的に何をすればよいか」"
+    "「何について・なぜ{user_name}の判断が必要か」と「{user_name}が具体的に何をすればよいか」"
     "（例:「PR #163をレビューし、問題なければマージしてください」"
     "「A案/B案のどちらで進めるか選んでください」）を明記してください。\n"
     "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
-    "作業手順上の実装詳細は人間向け報告に含めないでください。"
+    "作業手順上の実装詳細は{user_name}向け報告に含めないでください。"
 )
 
 
@@ -506,8 +507,14 @@ def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | No
     Agent Runner起動分から反映される（実行中のセッションには反映されない）。
     """
     overrides = _load_prompt_overrides(prompts_path)
+    user_name = resolve_prompt_text(USER_NAME_SPEC, overrides)
     return "\n\n".join(
-        render_prompt(resolve_prompt_text(spec, overrides), repo=repo, issue_number=issue_number)
+        render_prompt(
+            resolve_prompt_text(spec, overrides),
+            repo=repo,
+            issue_number=issue_number,
+            user_name=user_name,
+        )
         for spec in AGENT_RUNNER_PROMPT_SPECS
     )
 

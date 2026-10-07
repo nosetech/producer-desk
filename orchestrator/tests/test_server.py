@@ -1563,6 +1563,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "pr_issue_reference_instruction",
         "final_message_instruction",
         "approve_default_message",
+        "user_name",
     ]
     assert all(p["is_default"] for p in by_key.values())
     assert by_key["design_verification_instruction"]["required_tokens"] == []
@@ -1637,3 +1638,18 @@ def test_delete_prompt_resets_to_default() -> None:
 
     assert status == 200
     assert body["is_default"] is True
+
+
+def test_put_user_name_saves_and_rejects_braces() -> None:
+    server = _prompt_server()
+    try:
+        ok_status, ok_body = _put(server, "/api/prompts/user_name", {"text": "山田さん"})
+        bad_status, _ = _put(server, "/api/prompts/user_name", {"text": "{repo}"})
+    finally:
+        server.shutdown()
+
+    assert ok_status == 200
+    assert ok_body["text"] == "山田さん"
+    assert ok_body["multiline"] is False
+    assert ok_body["placeholders"] == []
+    assert bad_status == 400
