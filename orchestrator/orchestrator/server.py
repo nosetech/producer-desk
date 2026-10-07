@@ -65,8 +65,11 @@ from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, po
 from orchestrator.prompts import (
     USER_NAME_SPEC,
     PromptSpec,
+    PromptStorageError,
     PromptValidationError,
     describe_prompt,
+    describe_prompts,
+    load_overrides_safe,
     reset_prompt_override,
     save_prompt_override,
 )
@@ -101,6 +104,9 @@ PROMPT_SPECS: tuple[PromptSpec, ...] = (
     APPROVE_DEFAULT_MESSAGE_SPEC,
     USER_NAME_SPEC,
 )
+PROMPT_SPECS_BY_KEY = {spec.key: spec for spec in PROMPT_SPECS}
+# プロンプト本文のPUTリクエスト上限（指示文は数KB程度。LAN内のみだが過大な入力を拒否する）。
+MAX_PROMPT_BODY_BYTES = 256 * 1024
 
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
@@ -283,7 +289,7 @@ def _make_handler(
                 self._handle_usage()
                 return
             if self.path == PROMPTS_PATH:
-                self._send_json(200, {"prompts": [describe_prompt(spec) for spec in PROMPT_SPECS]})
+                self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
                 return
 
             progress_match = PROGRESS_PATH.match(self.path)
@@ -448,7 +454,7 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def _find_prompt_spec(self, key: str) -> PromptSpec | None:
-            return next((spec for spec in PROMPT_SPECS if spec.key == key), None)
+            return PROMPT_SPECS_BY_KEY.get(key)
 
         def _handle_update_prompt(self, key: str) -> None:
             """issue #149: プロンプト本文を検証のうえ`config/prompts.yaml`に保存する。
@@ -459,18 +465,31 @@ def _make_handler(
             if spec is None:
                 self._send_json(404, {"error": f"未知のプロンプトです: {key}"})
                 return
+            if int(self.headers.get("Content-Length", 0)) > MAX_PROMPT_BODY_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます"})
+                return
             try:
-                text = self._read_json_body()["text"]
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
+                text = body["text"]
                 if not isinstance(text, str):
                     raise ValueError("textは文字列である必要があります")
                 save_prompt_override(spec, text)
             except PromptValidationError as e:
                 self._send_json(400, {"error": str(e), "errors": e.errors})
                 return
-            except (KeyError, ValueError) as e:
+            except KeyError:
+                self._send_json(400, {"error": "textは必須です"})
+                return
+            except ValueError as e:
                 self._send_json(400, {"error": str(e)})
                 return
-            self._send_json(200, describe_prompt(spec))
+            except PromptStorageError as e:
+                logger.warning("プロンプトの保存に失敗しました (%s): %s", key, e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, describe_prompt(spec, load_overrides_safe()))
 
         def _handle_reset_prompt(self, key: str) -> None:
             """issue #149: プロンプトの上書きを削除しデフォルトに戻す。"""
@@ -478,8 +497,13 @@ def _make_handler(
             if spec is None:
                 self._send_json(404, {"error": f"未知のプロンプトです: {key}"})
                 return
-            reset_prompt_override(spec)
-            self._send_json(200, describe_prompt(spec))
+            try:
+                reset_prompt_override(spec)
+            except PromptStorageError as e:
+                logger.warning("プロンプトのリセットに失敗しました (%s): %s", key, e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, describe_prompt(spec, load_overrides_safe()))
 
         def _handle_update_project_settings(self, repo: str) -> None:
             """issue #176: プロジェクトごとの実行手段デフォルト設定を更新する。

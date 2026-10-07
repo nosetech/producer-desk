@@ -9,6 +9,8 @@ import time
 import urllib.error
 import urllib.request
 
+import pytest
+
 from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
 from orchestrator.config import EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
@@ -19,6 +21,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.prompts import PromptStorageError
 from orchestrator.server import ProgressStore, StateStore, make_server
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
@@ -1653,3 +1656,81 @@ def test_put_user_name_saves_and_rejects_braces() -> None:
     assert ok_body["multiline"] is False
     assert ok_body["placeholders"] == []
     assert bad_status == 400
+
+
+def _raw_put(server, path: str, body: bytes) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"text"', b"123", b"null", b"{not json"])
+def test_put_prompt_non_object_body_returns_400(body: bytes) -> None:
+    server = _prompt_server()
+    try:
+        status, payload = _raw_put(server, "/api/prompts/final_message_instruction", body)
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "error" in payload
+
+
+def test_put_prompt_non_string_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {"text": 123})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_put_prompt_too_large_returns_413() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(
+            server, "/api/prompts/final_message_instruction", {"text": "a" * (300 * 1024)}
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 413
+
+
+def test_put_prompt_recovers_from_broken_yaml(_isolated_prompts_path) -> None:
+    _isolated_prompts_path.write_text("prompts: [unclosed", encoding="utf-8")
+    server = _prompt_server()
+    try:
+        list_status, _ = _get(server, "/api/prompts")
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "復旧"})
+    finally:
+        server.shutdown()
+
+    assert list_status == 200
+    assert status == 200
+    assert body["text"] == "復旧"
+
+
+def test_put_prompt_storage_failure_returns_500(_isolated_prompts_path, monkeypatch) -> None:
+    def boom(spec, text):  # noqa: ANN001
+        raise PromptStorageError("書き込めません")
+
+    monkeypatch.setattr("orchestrator.server.save_prompt_override", boom)
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 500
+    assert body["error"] == "書き込めません"

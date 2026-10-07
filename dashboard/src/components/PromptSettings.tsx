@@ -327,6 +327,9 @@ function Editor({
   const diff = diffLines(prompt.default, draft);
   const errors = [
     ...(check.empty ? [{ tok: null, msg: "本文が空です" }] : []),
+    ...(check.invalidChars
+      ? [{ tok: null, msg: "改行・波括弧（{ }）は使用できません" }]
+      : []),
     ...check.missing.map((t) => ({ tok: t, msg: "が含まれていません" })),
     ...check.unknown.map((u) => ({
       tok: `{${u}}`,
@@ -386,6 +389,12 @@ function Editor({
               <div className={styles.tokPanelDesc}>
                 Agent Runner
                 はこれらの文字列を機械的に検出しています。文章は書き換えても構いませんが、トークンは一字一句そのまま残してください。
+              </div>
+              <div className={styles.tokPanelDesc}>
+                ※
+                検証は文字列が含まれているかの確認のみです。トークンの前後の書式（マーカーの閉じ{" "}
+                <code>--&gt;</code>{" "}
+                やJSONの形など）が正しいかは確認しないため、書き換えた場合は元の形を保ってください。
               </div>
             </div>
           </div>

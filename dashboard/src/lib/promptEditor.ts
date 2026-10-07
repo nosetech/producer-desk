@@ -10,12 +10,14 @@ export interface PromptCheck {
   /** 許可されていないプレースホルダ名（波括弧なし）。 */
   unknown: string[];
   empty: boolean;
+  /** 改行・波括弧を許可しない項目（`multiline: false`）で、それらを含んでいる。 */
+  invalidChars: boolean;
   ok: boolean;
 }
 
 /** 保存前の検証。オーケストレータ側（`validate_prompt_text`）と同じ規則で、保存可否を即時に表示するために使う。 */
 export function checkPrompt(
-  prompt: Pick<PromptInfo, "required_tokens" | "placeholders">,
+  prompt: Pick<PromptInfo, "required_tokens" | "placeholders" | "multiline">,
   text: string,
 ): PromptCheck {
   const missing = prompt.required_tokens
@@ -29,11 +31,13 @@ export function checkPrompt(
     ),
   ];
   const empty = text.trim() === "";
+  const invalidChars = !prompt.multiline && /[\n{}]/.test(text);
   return {
     missing,
     unknown,
     empty,
-    ok: missing.length === 0 && unknown.length === 0 && !empty,
+    invalidChars,
+    ok: missing.length === 0 && unknown.length === 0 && !empty && !invalidChars,
   };
 }
 

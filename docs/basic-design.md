@@ -252,10 +252,10 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
-  | `label_instruction` | 状態ラベル遷移・CI待ちマーカーの指示 | `needs-human-decision` / `status:in-review` / `<!-- producer-desk:ci-wait` |
+  | `label_instruction` | 状態ラベル遷移・CI待ちマーカーの指示 | `needs-human-decision` / `status:in-review` / `"pr_number"` / `<!-- producer-desk:ci-wait` |
   | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
   | `design_verification_instruction` | DesignSyncでのデザイン実ソース取得 | なし |
-  | `local_llm_instruction` | ローカルLLM活用方針・利用状況報告 | `<!-- producer-desk:local-llm-usage` / `$OLLAMA_BENCH_PATH` |
+  | `local_llm_instruction` | ローカルLLM活用方針・利用状況報告 | `<!-- producer-desk:local-llm-usage` / `"used"` / `$OLLAMA_BENCH_PATH` |
   | `pr_issue_reference_instruction` | PR本文の`Closes #<issue番号>`記法 | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
   | `approve_default_message` | 承認時の定型コメント | なし |
@@ -267,11 +267,13 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - プレースホルダは`{repo}`・`{issue_number}`・`{user_name}`のみ許可する（展開されない`approve_default_message`・`user_name`自身は不可）。それ以外の`{xxx}`は拒否する。JSON例示の`{"used": true}`のような波括弧は識別子形式でないためそのまま使える。展開は`str.format`ではなく単純な文字列置換で行うため、`{{ }}`のエスケープは不要。
   - 上表の必須トークン（オーケストレータが依存する状態ラベル名・機械可読マーカー等）が欠けている本文は拒否する。削除すると、判断待ち・レビュー待ち一覧への表示、CI待ち後の自動再開、無限再ディスパッチ防止、ローカルLLM利用量の記録がそれぞれ壊れるため。ダッシュボードはこの必須トークンと理由を編集画面に常時表示する。
   - 空文字は拒否する。
+- **必須トークン検証の限界**: 文字列の**部分一致のみ**を確認する。トークンの前後の書式（マーカーの閉じ`-->`、JSON本文の形等）が正しいか、トークンが指示として意味のある位置にあるかは確認しない。このためダッシュボードの必須トークン説明パネルにも、その旨の注意文を表示する。マーカー本文のJSONキー（`"pr_number"`・`"used"`）は、オーケストレータがパースに使うため必須トークンに含めている。
 - **フォールバック**: `config/prompts.yaml`が手編集等で検証に通らない上書きを含む・YAMLとして壊れている場合も、Agent Runnerの起動自体は止めず、警告ログを出してデフォルト値を使う。
+- **書き込みの安全性**: `config/prompts.yaml`は`prompts`キーのみを持つ。書き込みは同一ディレクトリの一時ファイルへ書いてから`os.replace`で差し替える（Agent Runner起動・一覧取得が書き込み途中の内容を読まないようにするため）。保存・リセット時にYAMLが壊れていれば、`prompts.yaml.broken-<時刻>`へ退避したうえで上書きし、UIから復旧できるようにする。書き込み自体に失敗した場合はHTTP 500を返す。
 - **反映タイミング**: `build_system_prompt`が`build_claude_command`の呼び出し（＝Agent Runner起動）のたびに設定を読み直すため、再起動不要で**次回起動分から**反映される。実行中のセッションには反映されない（ダッシュボードの編集画面上部に常時注記する）。
 - **内部API**（`server.py`）:
   - `GET /api/prompts` — 全プロンプトの一覧（`key`/`title`/`description`/`text`/`default`/`is_default`/`required_tokens`/`placeholders`）
-  - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。検証エラーは400（`error`・`errors`）、未知のキーは404
+  - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
   - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
 - **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
 - **将来拡張**: issue #148（モデルルーティング層）でモデルごとにプロンプトを出し分ける場合は、`prompts.yaml`のキー体系を拡張する（例: `models.<alias>.<key>`）。現状の`PromptSpec`・解決処理はキー単位のため拡張を妨げない。

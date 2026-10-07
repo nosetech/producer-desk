@@ -10,10 +10,13 @@ import yaml
 from orchestrator.prompts import (
     USER_NAME_SPEC,
     PromptSpec,
+    PromptStorageError,
     PromptValidationError,
     RequiredToken,
     describe_prompt,
+    describe_prompts,
     load_overrides,
+    load_overrides_safe,
     load_prompt_text,
     render_prompt,
     reset_prompt_override,
@@ -146,9 +149,9 @@ def test_load_falls_back_to_default_when_yaml_is_broken(tmp_path: Path) -> None:
 def test_describe_prompt_reports_state(tmp_path: Path) -> None:
     path = tmp_path / "prompts.yaml"
 
-    assert describe_prompt(SPEC, path)["is_default"] is True
+    assert describe_prompt(SPEC, load_overrides_safe(path))["is_default"] is True
     save_prompt_override(SPEC, "変更 <!-- marker -->", path)
-    info = describe_prompt(SPEC, path)
+    info = describe_prompt(SPEC, load_overrides_safe(path))
 
     assert info["is_default"] is False
     assert info["text"] == "変更 <!-- marker -->"
@@ -177,7 +180,7 @@ def test_user_name_accepts_plain_name(tmp_path: Path) -> None:
     save_prompt_override(USER_NAME_SPEC, "山田さん", path)
 
     assert load_prompt_text(USER_NAME_SPEC, path) == "山田さん"
-    assert describe_prompt(USER_NAME_SPEC, path)["multiline"] is False
+    assert describe_prompt(USER_NAME_SPEC, load_overrides_safe(path))["multiline"] is False
 
 
 def test_describe_prompt_expands_user_name_in_description_and_reasons(tmp_path: Path) -> None:
@@ -190,10 +193,95 @@ def test_describe_prompt_expands_user_name_in_description_and_reasons(tmp_path: 
         required_tokens=(RequiredToken("<!-- marker -->", "{user_name}の判断に必要"),),
     )
 
-    default_info = describe_prompt(spec, path)
+    default_info = describe_prompt(spec, load_overrides_safe(path))
     save_prompt_override(USER_NAME_SPEC, "山田さん", path)
-    named_info = describe_prompt(spec, path)
+    named_info = describe_prompt(spec, load_overrides_safe(path))
 
     assert default_info["description"] == "ユーザー向けの説明"
     assert named_info["description"] == "山田さん向けの説明"
     assert named_info["required_tokens"][0]["reason"] == "山田さんの判断に必要"
+
+
+# --- レビュー指摘対応（YAML破損・アトミック書き込み・一覧の読み込み回数） ---
+
+
+def test_save_backs_up_broken_yaml_and_overwrites(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text("prompts: [unclosed", encoding="utf-8")
+
+    save_prompt_override(SPEC, "復旧 <!-- marker -->", path)
+
+    assert load_prompt_text(SPEC, path) == "復旧 <!-- marker -->"
+    backups = list(tmp_path.glob("prompts.yaml.broken-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "prompts: [unclosed"
+
+
+def test_reset_backs_up_broken_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text("prompts: [unclosed", encoding="utf-8")
+
+    reset_prompt_override(SPEC, path)
+
+    assert list(tmp_path.glob("prompts.yaml.broken-*"))
+    assert load_prompt_text(SPEC, path) == SPEC.default
+
+
+def test_save_raises_storage_error_when_write_fails(tmp_path: Path) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file", encoding="utf-8")
+
+    with pytest.raises(PromptStorageError):
+        save_prompt_override(SPEC, "x <!-- marker -->", blocker / "prompts.yaml")
+
+
+def test_save_leaves_no_temp_files(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+
+    save_prompt_override(SPEC, "x <!-- marker -->", path)
+
+    assert [p.name for p in tmp_path.iterdir()] == ["prompts.yaml"]
+
+
+def test_save_replaces_file_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    path = tmp_path / "prompts.yaml"
+    save_prompt_override(SPEC, "旧 <!-- marker -->", path)
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def spy(src, dst):  # noqa: ANN001
+        # 差し替え前の時点で、読み手には旧内容が完全な形で見えている。
+        seen.append(load_prompt_text(SPEC, path))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("orchestrator.prompts.os.replace", spy)
+
+    save_prompt_override(SPEC, "新 <!-- marker -->", path)
+
+    assert seen == ["旧 <!-- marker -->"]
+    assert load_prompt_text(SPEC, path) == "新 <!-- marker -->"
+
+
+def test_describe_prompts_reads_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    real = load_overrides
+
+    def counting(path=None):  # noqa: ANN001
+        calls.append(1)
+        return real(path)
+
+    monkeypatch.setattr("orchestrator.prompts.load_overrides", counting)
+
+    result = describe_prompts((SPEC, USER_NAME_SPEC), tmp_path / "prompts.yaml")
+
+    assert len(result) == 2
+    assert len(calls) == 1
+
+
+def test_load_overrides_safe_returns_empty_for_broken_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    path.write_text("prompts: [unclosed", encoding="utf-8")
+
+    assert load_overrides_safe(path) == {}

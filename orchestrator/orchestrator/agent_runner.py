@@ -18,8 +18,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
-
 from orchestrator.config import (
     DEFAULT_LOG_RETENTION_DAYS,
     EXECUTION_MODE_CLAUDE_CODE,
@@ -76,7 +74,7 @@ from orchestrator.prompts import (
     USER_NAME_SPEC,
     PromptSpec,
     RequiredToken,
-    load_overrides,
+    load_overrides_safe,
     render_prompt,
     resolve_prompt_text,
 )
@@ -444,6 +442,11 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
                 "作業完了時に自己付与するラベル名。無いとレビュー待ち一覧に表示されません",
             ),
             RequiredToken(
+                '"pr_number"',
+                "CI待ちマーカー本文のキー。無いとマーカーからPR番号を読み取れず、"
+                "CI完了後の自動再開が行われません",
+            ),
+            RequiredToken(
                 CI_WAIT_MARKER_PREFIX,
                 "CI完了待ちの機械可読マーカー。無いとCI完了後の自動再開が行われず"
                 "needs-human-decisionへ誤遷移します",
@@ -480,6 +483,10 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
                 "ローカルLLM活用状況の機械可読マーカー。無いと活用状況が記録・可視化されません",
             ),
             RequiredToken(
+                '"used"',
+                "活用状況マーカー本文のキー。無いと活用状況をJSONとして読み取れません",
+            ),
+            RequiredToken(
                 "$OLLAMA_BENCH_PATH",
                 "利用量を記録するollama-benchコマンドの参照。無いと利用量が記録されません",
             ),
@@ -506,7 +513,7 @@ def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | No
     起動のたびに`config/prompts.yaml`を読み直すため、保存した変更は次回の
     Agent Runner起動分から反映される（実行中のセッションには反映されない）。
     """
-    overrides = _load_prompt_overrides(prompts_path)
+    overrides = load_overrides_safe(prompts_path)
     user_name = resolve_prompt_text(USER_NAME_SPEC, overrides)
     return "\n\n".join(
         render_prompt(
@@ -517,14 +524,6 @@ def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | No
         )
         for spec in AGENT_RUNNER_PROMPT_SPECS
     )
-
-
-def _load_prompt_overrides(prompts_path: Path | None) -> dict[str, str]:
-    try:
-        return load_overrides(prompts_path)
-    except (OSError, yaml.YAMLError) as e:
-        logger.warning("config/prompts.yamlを読み込めないためデフォルトを使用します: %s", e)
-        return {}
 
 
 def build_claude_command(
