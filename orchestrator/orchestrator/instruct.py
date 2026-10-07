@@ -44,13 +44,17 @@ from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_w
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
 
-# issue #149: 承認時にmessageが空だった場合にissueコメントとして投稿される定型文。
+# issue #149: 判断待ちの承認時にmessageが空だった場合にissueコメントとして投稿される定型文。
 # Agent Runnerへの指示としてそのまま渡るため、他のプロンプトと同様ダッシュボード
 # から編集できるようにする（必須トークン・プレースホルダは無し）。
 APPROVE_DEFAULT_MESSAGE_SPEC = PromptSpec(
     key="approve_default_message",
-    title="承認時の定型コメント",
-    description="承認ボタンを押したときにissueへ投稿される、メッセージ未入力時の定型文",
+    title="判断待ち承認時の定型コメント",
+    description=(
+        "判断待ち（needs-human-decision）のissueを承認したとき、メッセージ未入力であればissueへ"
+        "投稿される定型文。レビュー待ち（status:in-review）の承認ではコメントは投稿されず、"
+        "PRのマージのみが行われるため、この文言は使われない"
+    ),
     default=APPROVE_DEFAULT_MESSAGE,
     placeholders=(),  # issueコメントとしてそのまま投稿され、展開されない
 )
