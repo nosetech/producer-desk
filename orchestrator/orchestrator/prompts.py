@@ -47,7 +47,7 @@ _PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _PROMPTS_YAML_WRITE_LOCK = threading.Lock()
 
 
-DEFAULT_USER_NAME = "人間"
+DEFAULT_USER_NAME = "ユーザー"
 
 
 @dataclass(frozen=True)
@@ -189,20 +189,28 @@ def reset_prompt_override(spec: PromptSpec, path: Path | None = None) -> None:
 def describe_prompt(spec: PromptSpec, path: Path | None = None) -> dict:
     """API応答用の1プロンプト分の情報。"""
     text = load_prompt_text(spec, path)
+    # 説明文・必須トークンの理由に含まれる{user_name}は、設定済みの呼称で展開して返す。
+    user_name = load_prompt_text(USER_NAME_SPEC, path)
+
+    def with_user_name(s: str) -> str:
+        return s.replace("{user_name}", user_name)
+
     return {
         "key": spec.key,
         "title": spec.title,
-        "description": spec.description,
+        "description": with_user_name(spec.description),
         "text": text,
         "default": spec.default,
         "is_default": text == spec.default,
-        "required_tokens": [{"token": r.token, "reason": r.reason} for r in spec.required_tokens],
+        "required_tokens": [
+            {"token": r.token, "reason": with_user_name(r.reason)} for r in spec.required_tokens
+        ],
         "placeholders": list(spec.placeholders),
         "multiline": spec.multiline,
     }
 
 
-# issue #149: 指示文・最終応答で「人間」と呼んでいる相手（ユーザー自身）の呼称。
+# issue #149: 指示文・最終応答で「ユーザー」と呼んでいる相手（ユーザー自身）の呼称。
 # プロンプト設定の1項目として編集でき、各指示文の`{user_name}`に展開される。
 USER_NAME_SPEC = PromptSpec(
     key="user_name",

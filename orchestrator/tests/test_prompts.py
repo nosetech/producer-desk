@@ -162,8 +162,8 @@ def test_validate_allows_user_name_placeholder() -> None:
     assert validate_prompt_text(SPEC, "{user_name} <!-- marker -->") == []
 
 
-def test_user_name_spec_defaults_to_ningen() -> None:
-    assert USER_NAME_SPEC.default == "人間"
+def test_user_name_spec_defaults_to_user() -> None:
+    assert USER_NAME_SPEC.default == "ユーザー"
 
 
 @pytest.mark.parametrize("text", ["山田\n太郎", "{repo}", "山田{", "}"])
@@ -178,3 +178,22 @@ def test_user_name_accepts_plain_name(tmp_path: Path) -> None:
 
     assert load_prompt_text(USER_NAME_SPEC, path) == "山田さん"
     assert describe_prompt(USER_NAME_SPEC, path)["multiline"] is False
+
+
+def test_describe_prompt_expands_user_name_in_description_and_reasons(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.yaml"
+    spec = PromptSpec(
+        key="sample",
+        title="t",
+        description="{user_name}向けの説明",
+        default="x <!-- marker -->",
+        required_tokens=(RequiredToken("<!-- marker -->", "{user_name}の判断に必要"),),
+    )
+
+    default_info = describe_prompt(spec, path)
+    save_prompt_override(USER_NAME_SPEC, "山田さん", path)
+    named_info = describe_prompt(spec, path)
+
+    assert default_info["description"] == "ユーザー向けの説明"
+    assert named_info["description"] == "山田さん向けの説明"
+    assert named_info["required_tokens"][0]["reason"] == "山田さんの判断に必要"

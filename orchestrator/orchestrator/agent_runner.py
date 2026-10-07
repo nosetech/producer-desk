@@ -437,7 +437,7 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         required_tokens=(
             RequiredToken(
                 STATUS_NEEDS_HUMAN_DECISION,
-                "人間の判断が必要な場合に自己付与するラベル名。無いと判断待ち一覧に表示されません",
+                "{user_name}の判断が必要な場合に自己付与するラベル名。無いと判断待ち一覧に表示されません",
             ),
             RequiredToken(
                 STATUS_IN_REVIEW,
@@ -458,7 +458,7 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         required_tokens=(
             RequiredToken(
                 BOT_COMMENT_MARKER,
-                "AI自身のコメントを示すマーカー。無いとAIのコメントが人間の新規指示と誤認され、"
+                "AI自身のコメントを示すマーカー。無いとAIのコメントが{user_name}の新規指示と誤認され、"
                 "同一内容が無限に再ディスパッチされます",
             ),
         ),
@@ -494,7 +494,7 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
     PromptSpec(
         key="final_message_instruction",
         title="最終応答の書き方の指示",
-        description="最終応答が人間向けのissueコメントになることを踏まえた書き方の指示",
+        description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
         default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
     ),
 )

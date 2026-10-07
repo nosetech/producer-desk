@@ -415,10 +415,10 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     flag_index = command.index("--append-system-prompt")
     instruction = command[flag_index + 1]
 
-    assert "人間が具体的に何をすればよいか" in instruction
+    assert "ユーザーが具体的に何をすればよいか" in instruction
     assert "Monitor" in instruction
     assert "ScheduleWakeup" in instruction
-    assert "実装詳細は人間向け報告に含めないでください" in instruction
+    assert "実装詳細はユーザー向け報告に含めないでください" in instruction
 
 
 def test_build_claude_command_uses_stream_json_output_format() -> None:
@@ -2220,7 +2220,7 @@ def test_build_claude_command_replaces_user_name_in_instructions(_isolated_promp
     default_prompt = _system_prompt_of(
         build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
     )
-    assert "人間の判断が必要だと自ら判断した場合" in default_prompt
+    assert "ユーザーの判断が必要だと自ら判断した場合" in default_prompt
     assert "{user_name}" not in default_prompt
 
     save_prompt_override(USER_NAME_SPEC, "山田さん")
@@ -2230,5 +2230,5 @@ def test_build_claude_command_replaces_user_name_in_instructions(_isolated_promp
 
     assert "山田さんの判断が必要だと自ら判断した場合" in prompt
     assert "山田さん向けの状況報告" in prompt
-    assert "人間" not in prompt
+    assert "ユーザー" not in prompt
     assert "{user_name}" not in prompt
