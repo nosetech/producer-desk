@@ -196,7 +196,6 @@ claude -p "<指示内容>" \
   - **CI完了待ちを誤って判断待ちにしないための追記**: PR作成後のCI完了待機中に、Agent Runnerが「CI完了を監視中」とissueコメントに書きつつ`needs-human-decision`へ遷移させてしまう事例が発生した（issue #152）。当初は`AGENT_RUNNER_LABEL_INSTRUCTION`に、CIが`PENDING`/`IN_PROGRESS`の間は`needs-human-decision`を使わず`gh pr view --json statusCheckRollup`をBashツールで`sleep`を挟みながら繰り返し確認するポーリングによりセッション内で待機を継続する旨を明記していたが、この指示手段自体がBashツールの長時間`sleep`チェーン検知でブロックされ実行不能であり、代替のMonitorツールにも20分のハードタイムアウトがあるため、CIがそれより長くかかると強制終了させられ、`run_agent_runner`側の正常終了時決定的フォールバック（後述）が意図しない`needs-human-decision`遷移を引き起こす形で同症状が再発した（issue #86実行ログでの実地確認、issue #173）。そのため「sleepポーリングで待つ」指示は撤回し、**CI完了検知・後続処理の自動再開はオーケストレータのポーリング（3-5節`orchestrator.ci_watcher`）に委ね、Agent Runner自身はCI待機のため意図的にターンを終了する際に機械可読マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX`、対象PR番号を含む）を最終応答に埋め込むだけでよい**方式に変更した。同じ理由から`.claude/skills/fix-github-issue/SKILL.md`のCI完了待機ステップにも同内容を明記している。
 - 同様に`--append-system-prompt`で、Agent Runnerが調査結果の報告等の目的で`gh issue comment`等を用いてissueに直接コメントを投稿する場合は、本文末尾に`github_client.BOT_COMMENT_MARKER`（`<!-- producer-desk:bot-comment -->`）を必ず付与するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）。オーケストレータ内部の通知処理（`github_client.post_comment`）はこのマーカーを自動付与するが、Agent Runner自身が`gh`コマンドを生で叩く経路はこの仕組みを経由しないため付与漏れが起こり得る。マーカーが無いと[2-3「共通仕様」](#共通仕様)のコメント監視処理（`comment_watcher.py`）が自分自身の投稿を人間からの新規指示と誤検知し、同一内容を無限に再ディスパッチしてしまう（ラベルも`needs-human-decision`→`status:in-progress`に巻き戻る。issue #43）。
 - 同じ指示（`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）内で、セッション終了時の最終応答は3-2の通り`run_agent_runner`が自動的に「Agent Runner実行結果:」というissueコメントとして無条件に投稿する旨も明示し、対応完了時にAgent Runner自身が重ねて完了報告コメントを投稿する必要はないことを伝える。能動的なissueコメント投稿は、長時間かかる作業の途中経過報告など、最終応答を待たずに人間へ可視化する価値がある場合に限定する。当初この案内が無かったため、AI自身の能動的な完了報告コメントと、オーケストレータによる無条件の自動投稿とがほぼ同時刻・同内容で重複して投稿される事例が複数のissueで発生した（issue #84）。
-- 同様に`--append-system-prompt`で、ダッシュボードのUI実装時はCLAUDE.md記載のClaude DesignのURL（`https://claude.ai/design/...`）の実ソースを`DesignSync` MCP（`get_project`/`list_files`/`get_file`、`projectId`はURLの`/p/<uuid>`部分）で直接取得し、配色・余白等の実際のCSS/JS値を確認してから実装するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`）。デザインURLは認証必須で`WebFetch`では取得できず（403）、テキストの設計文書にも色・アイコンの指定は無いため導入した（issue #33）。当初はブラウザ操作ツールでの目視確認のみを指示していたが、キャンバス上の要素クリックによるコード選択が自動操作から機能しない・プレビューが状態を持つインタラクション（ダイアログ表示等）を再現しない静的スナップショットである等の理由で、目視確認だけでは細部の再現性に限界があることが判明し、`DesignSync`による直接取得を主手段に切り替えた（issue #55・PR #57）。
 - `DesignSync`が権限不足等で使えない場合はフォールバックしない。ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため`DesignSync`の代替にはせず、その旨を実行結果コメントに明記してその場で作業を停止し、`needs-human-decision`として人間の確認を仰ぐ。`DesignSync`で値を取得できた場合、実装後はブラウザ操作ツール（`mcp__claude-in-chrome__*`）で完成品とデザインのプレビューを並べて最終的な見た目の一致を確認する（これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 - `--chrome` フラグにより、Claude in Chrome連携を明示的に有効化する。`claude -p`（非対話モード）はこの連携がデフォルト無効で、フラグなしでは`mcp__claude-in-chrome__*`ツール自体が存在せず、上記の実装後確認が機能しない（issue #33の追加原因調査で判明）。
   - **運用上の前提**: `DesignSync`の利用には`claude.ai`ログインへのデザインシステムアクセス権限が必要。**この権限は一度`/design-login`（または通常のclaude.aiログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名`Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の`claude` CLI呼び出し（Agent Runnerの`claude -p`を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フロー（ブラウザでのOAuth同意等、人間の操作が必要な手順）を行うことはできないし、行う必要もない。運用開始前にホスト上で一度だけ人間が`/design-login`を実行しておけば、以降のAgent Runner実行では追加の認証操作なしに`DesignSync`が使える想定（Chrome連携時の「事前にログイン状態を維持しておく」運用と同じパターン）。実行時に権限が無い場合、Agent Runnerはその旨を実行結果コメントに明記し、`needs-human-decision`として人間の確認を仰ぐ。
@@ -245,17 +244,15 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の4定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下8種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下6種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
   | `label_instruction` | 状態ラベル遷移・CI待ちマーカーの指示 | `needs-human-decision` / `status:in-review` / `"pr_number"` / `<!-- producer-desk:ci-wait` |
   | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
-  | `design_verification_instruction` | DesignSyncでのデザイン実ソース取得 | なし |
-  | `local_llm_instruction` | ローカルLLM活用方針・利用状況報告 | `<!-- producer-desk:local-llm-usage` / `"used"` / `$OLLAMA_BENCH_PATH` |
   | `pr_issue_reference_instruction` | PR本文の`Closes #<issue番号>`記法 | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
   | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
@@ -355,7 +352,7 @@ issue #185（上記）解決後も、より根深い構造的な問題が残っ�
 
 ### タスク種別ごとの推奨モデル
 
-[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。
+[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。プロジェクト側でローカルLLMの併用方針を書く際の参考情報であり、producer-deskの設定ファイルやAgent Runnerの共通指示文としては保持しない。
 
 | タスク種別 | 推奨モデル | 選定理由 |
 | --- | --- | --- |
@@ -368,9 +365,10 @@ issue #185（上記）解決後も、より根深い構造的な問題が残っ�
 
 ### 実装方針: Agent Runnerへのsystem prompt指示
 
-- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たない。既存の`AGENT_RUNNER_LABEL_INSTRUCTION`・`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`と同様に、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`定数として上記対応表を`--append-system-prompt`で毎回Agent Runnerに渡す。system prompt生成時に呼び出し元の`repo`/`issue_number`を埋め込み、後述の`ollama-bench --record`の引数として使わせる。`ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソールスクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）のPATHには存在しないため、バレのコマンド名では解決できない。解決済みの絶対パス（`_resolve_ollama_bench_path`が解決）をsystem prompt本文に埋め込む方式は、長いパスを複数回のBashツール呼び出しにまたがってAgent Runnerが書き写す必要があり写し間違いを誘発しやすいため採らず、`run_agent_runner`が子プロセス（`claude -p`本体、およびそのBashツールが起動するシェル）の環境変数`OLLAMA_BENCH_PATH`として渡す。Agent Runnerは`"$OLLAMA_BENCH_PATH"`という短い参照だけを覚えればよい。子プロセスのPATH自体は書き換えない（対象プロジェクト自身の`python`/`pytest`/`ruff`等をオーケストレータ側のものへ誤ってシャドーイングする恐れがあるため）。
-- Agent Runnerは、コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成が必要になった場面で、指示に従いローカルLLMを自身の判断で呼び出す。呼び出すか否か、結果をどう扱うかもAgent Runnerの裁量とし、オーケストレータ側での結果ハンドリングは行わない（Agent Runner内で完結する）。モデルの利用可否確認は`mcp__ollama-client__ollama_list`/`ollama_ps`等のMCPツールでよいが、実際に生成させる呼び出しは次節の`ollama-bench`コマンド（Bashツール）を使い、MCP `mcp__ollama-client__ollama_chat`は使わない。
-- 自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
+- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たず、補助用途のローカルLLM併用方針も共通のAgent Runner指示文（3-6）としては渡さない。どの作業でどのモデルを使うかはプロジェクトごとに異なるため、対象リポジトリの`CLAUDE.md`や作業指示に記載する（当初は`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`として上記対応表を毎回渡していたが、プロジェクトごとの方針であってproducer-deskが指示すべき内容ではないため廃止した）。上記の対応表は、プロジェクト側で方針を書く際の参考情報とする。
+- 利用量を記録したい場合のため、`ollama-bench`の解決済み絶対パスは引き続き子プロセス（`claude -p`本体、およびそのBashツールが起動するシェル）の環境変数`OLLAMA_BENCH_PATH`として渡す。`ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソールスクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）のPATHには存在しないため、バレのコマンド名では解決できない。絶対パスをプロンプト本文に埋め込む方式は、長いパスを複数回のBashツール呼び出しにまたがって書き写す必要があり写し間違いを誘発しやすいため採らず、環境変数経由とした（`_resolve_ollama_bench_path`が解決）。子プロセスのPATH自体は書き換えない（対象プロジェクト自身の`python`/`pytest`/`ruff`等をオーケストレータ側のものへ誤ってシャドーイングする恐れがあるため）。
+- 補助用途のローカルLLM併用でも、自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
+- MCP `ollama-client`の`ollama_chat`は利用量メトリクスを返さず記録できないため、利用量を記録したいプロジェクトは、プロジェクト側の指示で生成呼び出しを次節の`ollama-bench --record`経由にさせる。記載例は[README.md](../README.md)の「補助モデル（MCP）の使用量を記録する」参照。
 
 ### 手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）
 
@@ -381,13 +379,13 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - 接続先はOllama公式CLIと同じ環境変数`OLLAMA_HOST`（未設定時は`http://127.0.0.1:11434`）から解決する。`--host`引数で明示的に上書きもできる。
 - `--record --repo <repo> --issue-number <n>`を付けると、計測結果（`model`・`input_tokens`・`output_tokens`・`duration_seconds`）を[2-2](#2-2-データ取得仕様ポーリング)の`usage_store.py`経由で`config/usage.db`に統合して記録する。Claude Code実行分の記録では`duration_seconds`は常に`None`になる（Agent Runnerの実行結果JSONには処理時間が含まれないため）。
 - `--format json`を付けると、Ollama REST APIに構造化JSON出力を要求する（コードレビュー支援等でJSON形式のレビュー結果を受け取りたい場合に使う。任意）。
-- Agent Runner本番経路では`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`が`--record --repo {repo} --issue-number {issue_number}`付きでの呼び出しを指示する（`orchestrator/orchestrator/agent_runner.py`）。オーケストレータのポーリングループ自体からは呼び出さない（呼び出すのはあくまでAgent Runner=Claude Code CLIプロセス自身）。
+- Agent Runner本番経路でも、`--record --repo <repo> --issue-number <n>`付きで呼び出させるかどうかはプロジェクト側の指示に委ねる（共通のAgent Runner指示文には含めない）。オーケストレータのポーリングループ自体からは呼び出さない（呼び出すのはあくまでAgent Runner=Claude Code CLIプロセス自身）。
 
 ### ローカルLLM活用状況の可視化（issue #86）
 
 `ollama-bench --record`はローカルLLMの生成呼び出し自体の実測値（トークン数・処理時間）を記録するが、これはAgent Runnerが実際にローカルLLMを呼び出した場合にしか記録されない。「呼び出すかどうかをAgent Runnerが判断した結果」そのもの（使った／使わなかった、使わなかった場合はなぜか）は、issueコメントからもDBからも別途観測できるようにする。
 
-- **報告ルール**: `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`は、セッション終了時の最終応答（3-3の通りissueコメントとして投稿される）に、以下の両方を含めるようAgent Runnerへ指示する。
+- **報告ルール**: 共通のAgent Runner指示文（3-6）としては、このマーカーの出力を指示しない。ローカルLLMの併用方針と使用状況の報告は、プロジェクト側の`CLAUDE.md`や作業指示で行う（記載例は[README.md](../README.md)の「補助モデル（MCP）の使用量を記録する」参照）。報告を求める場合、セッション終了時の最終応答（3-3の通りissueコメントとして投稿される）に、以下の両方を含めさせる。
   - 人間向け: 「## ローカルLLM活用」という見出しの下に、使用した場合はタスク種別・モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載する。
   - 機械可読: 同見出しの直後にHTMLコメントとして次の形式のマーカーを埋め込む（前後を空行で区切る。[2-3共通仕様](#共通仕様)の`BOT_COMMENT_MARKER`と同様、レンダリングされない）。
 

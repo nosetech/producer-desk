@@ -1561,15 +1561,12 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
     assert list(by_key) == [
         "label_instruction",
         "comment_marker_instruction",
-        "design_verification_instruction",
-        "local_llm_instruction",
         "pr_issue_reference_instruction",
         "final_message_instruction",
         "approve_default_message",
         "user_name",
     ]
     assert all(p["is_default"] for p in by_key.values())
-    assert by_key["design_verification_instruction"]["required_tokens"] == []
     comment_tokens = [t["token"] for t in by_key["comment_marker_instruction"]["required_tokens"]]
     assert comment_tokens == ["<!-- producer-desk:bot-comment -->"]
 

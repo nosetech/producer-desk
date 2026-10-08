@@ -226,121 +226,11 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
 
-# issue #33の再発防止: ダッシュボードのUI実装がClaude Designの見た目（配色・
-# アイコン等）を反映できていなかった。原因は、CLAUDE.mdが「正」とするデザイン
-# URL（claude.ai/design/...）が認証必須でWebFetchでは403になり、テキスト指示
-# だけでは色・アイコンの詳細が伝わらないこと。当初はブラウザ操作ツール
-# （mcp__claude-in-chrome__*）での目視確認のみを指示していたが、キャンバス上の
-# 要素クリックが自動操作から機能しない・プレビューが状態を持つインタラクション
-# を再現しない静的スナップショットである等の理由で細部の再現性に限界があった
-# ため、DesignSync MCPでの実ソース直接取得を主手段に切り替えた（issue #55・
-# PR #57）。DesignSyncの認証（claude.aiログインへのデザインシステムアクセス
-# 権限）は、一度`/design-login`等で許可すればmacOSキーチェーン
-# （`Claude Code-credentials`）に永続化され、同一ホスト上の以降の`claude`CLI
-# 呼び出し（本Agent Runnerを含む）から自動的に利用できるため、Agent Runner
-# 自身が実行時に認証操作を行う必要はない（運用開始前にホスト上で一度だけ人間
-# が許可しておくことが前提）。
-AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
-    "ダッシュボード（dashboard/以下）の画面・コンポーネントを実装・修正する場合、"
-    "CLAUDE.mdの「画面デザインの実装ルール」に記載されたClaude DesignのURL"
-    "（https://claude.ai/design/...）について、まずDesignSync MCPツール"
-    "（get_project→list_files→get_file、projectIdはURLの/p/<uuid>部分）でデザインの"
-    "実ソース（ProducerDesk.dc.html）を直接取得し、対象コンポーネントのスタイル"
-    "オブジェクト定義（色・余白・border-radius・アニメーション等）をそのまま読み取った"
-    "うえで実装してください。テキストの設計文書（docs/design-prompt-dashboard.md等）"
-    "にはレイアウトの要件しか書かれておらず、色やアイコンの指定はデザインそのものにしか"
-    "ありません。DesignSyncが権限不足等で使えない場合はフォールバックしないでください。"
-    "プレビュー画面のクリック操作によるコード選択、ズームしての目視推測、"
-    "mcp__claude-in-chrome__* でのチャットへの問い合わせは不正確になりうるため代替に"
-    "せず、その旨を実行結果に明記してその場で作業を停止し、needs-human-decisionラベルで"
-    "{user_name}の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
-    "mcp__claude-in-chrome__* で実装結果とデザインのプレビューを並べて見た目が一致する"
-    "ことを確認してから完了としてください。"
-)
-
-
-# issue #59: コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった
-# 補助用途に限り、ローカルLLMを併用する（自走タスク本体は引き続きClaude Codeのみを
-# 使う。docs/requirements.md 2-5参照）。呼び出すか否か・どのモデルを使うかはAgent
-# Runner自身の裁量とするため、タスク種別ごとの推奨モデルをsystem promptで伝える
-# （docs/basic-design.md 4章参照）。
-#
-# issue #107: MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の
-# `ollama_chat`ツールはOllama REST APIレスポンスから`content`のみを取り出して返し、
-# `prompt_eval_count`/`eval_count`/`total_duration`等のメトリクスを破棄するため、
-# MCP経由の呼び出しでは利用量を`config/usage.db`に記録できない（issue #60の調査で
-# 判明、`ollama_bench.py`を手動ベンチマーク専用ツールとして追加していた）。生成本体
-# の呼び出しはOllama REST APIを直接叩き利用量を記録する`ollama-bench` CLIに一本化
-# し、本番経路でも利用量がダッシュボードに反映されるようにする。モデルの利用可否
-# 確認（メトリクス不要）はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`のままで
-# よい。
-#
-# `ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソール
-# スクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身
-# とは別リポジトリのことが多い）のPATHには存在しない。解決済みの絶対パスを
-# system prompt本文に直接埋め込みBashツール呼び出しのたびに再現させる案は、長い
-# パスをLLMが複数回のツール呼び出しにまたがって書き写す必要があり、写し間違いで
-# 同じ「command not found」に陥りやすい。代わりに`run_agent_runner`が起動する
-# 子プロセスの環境変数`OLLAMA_BENCH_PATH`に解決済みパスを設定し（`popen`の`env=`
-# 参照）、Agent Runnerには短く安定した`$OLLAMA_BENCH_PATH`という参照だけを
-# 覚えさせる。
-#
-# issue #86: 上記の指示は「呼び出すかどうか・どのモデルを使うか」の判断を
-# Agent Runnerの裁量に委ねるのみで、判断結果をどこかに報告する指示が無かった
-# ため、実際にローカルLLMが活用されているかどうかがissueコメントからもDBからも
-# 一切観測できなかった。判断も報告も両方AI自己申告に依存する以上、issue #78・
-# #82・#84と同種の「AIがsystem prompt指示の実行を忘れる」リスクは残るが、まずは
-# 自己申告ベースで可視化する。人間向け（コメント本文にそのまま表示される自然文）
-# と機械可読（DBパース用のHTMLコメントマーカー、`agent_runner._extract_
-# local_llm_usage_report`が正規表現で抽出しJSONとしてパースする）の両方を
-# 最終応答に含めるよう指示する。
+# issue #86: ローカルLLM活用状況の機械可読マーカー。Agent Runner共通の指示文としては
+# 出力を指示しない（ローカルLLMの併用方針はプロジェクト側のCLAUDE.md等に記載する）が、
+# プロジェクト側の指示でこのマーカーが出力された場合に備え、パース処理は残す。
+# 記載方法はREADME.mdの「補助モデル（MCP）の使用量を記録する」参照。
 LOCAL_LLM_USAGE_MARKER_PREFIX = "<!-- producer-desk:local-llm-usage"
-
-AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
-    "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
-    "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
-    "（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを参考に、"
-    "呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
-    "（docs/basic-design.md 4章「モデルルーター設定設計」参照）。\n"
-    "- コードレビュー支援: `deepseek-coder-v2:16b`\n"
-    "- デバッグ調査の下調べ: `deepseek-coder-v2:16b`\n"
-    "- 日本語ドキュメント生成: `gemma2`\n"
-    "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
-    "モデルの利用可否確認はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`で構い"
-    "ませんが、実際に生成させる呼び出しは必ず環境変数`$OLLAMA_BENCH_PATH`が指す"
-    "`ollama-bench`コマンド（Bashツール）経由で行い、`--record --repo {repo} "
-    "--issue-number {issue_number}`を付与してください。あなたが作業している"
-    "プロジェクトのworktreeにはこのコマンドがPATH解決できないため、バレの"
-    "コマンド名`ollama-bench`ではなく必ず`$OLLAMA_BENCH_PATH`経由で呼び出して"
-    "ください。プロンプトは一旦ファイルに書き出してから渡しますが、他プロジェクトの"
-    "並行実行と衝突しないよう`mktemp`等で毎回一意な一時ファイルパスを生成してくだ"
-    "さい（固定パス`/tmp/prompt.txt`等の使い回しは避ける）。例: "
-    '`PROMPT_FILE=$(mktemp); "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b '
-    '"$PROMPT_FILE" --system "..." --record --repo {repo} '
-    "--issue-number {issue_number}`。MCP `mcp__ollama-client__ollama_chat`は"
-    "Ollama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
-    "ため、生成呼び出しには使わないでください。\n"
-    "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
-    "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
-    "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
-    "docs/requirements.md 2-5参照）。\n"
-    "このセッションでローカルLLMを使ったか使わなかったかは、セッション終了時の"
-    "最終応答（issueコメントとして投稿されます）に必ず記載してください。\n"
-    "- {user_name}向け: 「## ローカルLLM活用」という見出しで、使用した場合はタスク種別・"
-    "モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載してください。\n"
-    "- 機械可読: 上記の見出しの直後に、以下の形式でHTMLコメントとして埋め込んで"
-    "ください（本文とマーカーの間は空行で区切る）。レンダリングされないため、"
-    "本文の内容と重複しても構いません。\n"
-    "  使用した場合:\n"
-    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {"used": true, "model": "deepseek-coder-v2:16b", '
-    '"task_type": "code_review_support", "note": "..."}\n'
-    "  -->\n"
-    "  使用しなかった場合:\n"
-    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {"used": false, "reason": "..."}\n'
-    "  -->"
-)
 
 
 # issue #43: Agent Runnerが調査結果報告等の目的で`gh issue comment`等を生で
@@ -467,32 +357,6 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         ),
     ),
     PromptSpec(
-        key="design_verification_instruction",
-        title="デザイン実ソース取得の指示",
-        description="ダッシュボード画面の実装時にDesignSync MCPで実ソースを取得させる指示",
-        default=AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION,
-    ),
-    PromptSpec(
-        key="local_llm_instruction",
-        title="ローカルLLM活用方針",
-        description="補助タスクでのローカルLLM（Ollama）併用方針とタスク種別ごとの推奨モデル",
-        default=AGENT_RUNNER_LOCAL_LLM_INSTRUCTION,
-        required_tokens=(
-            RequiredToken(
-                LOCAL_LLM_USAGE_MARKER_PREFIX,
-                "ローカルLLM活用状況の機械可読マーカー。無いと活用状況が記録・可視化されません",
-            ),
-            RequiredToken(
-                '"used"',
-                "活用状況マーカー本文のキー。無いと活用状況をJSONとして読み取れません",
-            ),
-            RequiredToken(
-                "$OLLAMA_BENCH_PATH",
-                "利用量を記録するollama-benchコマンドの参照。無いと利用量が記録されません",
-            ),
-        ),
-    ),
-    PromptSpec(
         key="pr_issue_reference_instruction",
         title="PR本文のissue参照記法の指示",
         description="PR本文に`Closes #<issue番号>`を独立した行として含めさせる指示",
@@ -552,8 +416,8 @@ def build_claude_command(
         "--verbose",
         "--dangerously-skip-permissions",
         # `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため、
-        # AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの
-        # 利用を指示するだけでは実際には使えない。明示的に有効化する。
+        # プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示するだけでは
+        # 実際には使えない。明示的に有効化する。
         "--chrome",
         "--append-system-prompt",
         system_prompt,
@@ -574,7 +438,7 @@ def build_claude_command(
 # にのみインストールされたコンソールスクリプトだが、`claude -p`はAgent Runnerが
 # 担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）を
 # cwdに起動される。オーケストレータプロセスのPATHをそのまま継承させただけでは
-# `ollama-bench`がPATH解決できず、AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONの指示が
+# `ollama-bench`がPATH解決できず、プロジェクト側の指示（README.md参照）が
 # 「command not found」で失敗し利用量が一切記録されない。解決結果は
 # `run_agent_runner`が子プロセスの環境変数`OLLAMA_BENCH_PATH`に設定する
 # （system promptへの埋め込みではなく環境変数にする理由は同定数の直前コメント参照）。
@@ -811,7 +675,7 @@ _LOCAL_LLM_USAGE_MARKER_PATTERN = re.compile(
 
 
 # issue #86: 最終応答（`result`）に埋め込まれた機械可読マーカーからローカルLLM
-# 活用状況の自己申告を抽出する。マーカー自体がAGENT_RUNNER_LOCAL_LLM_INSTRUCTION
+# 活用状況の自己申告を抽出する。マーカー自体がプロジェクト側の指示
 # による自己申告に依存するため、issue #78・#82・#84と同種の「AIが指示通りに
 # 出力しない」リスクがある。マーカーが存在しない・JSONとしてパースできない場合は
 # 例外を送出せず記録をスキップする（この機能の失敗でAgent Runnerの正常終了
@@ -1114,7 +978,7 @@ def run_agent_runner(
     )
 
     log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
-    # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
+    # issue #107: プロジェクト側の指示が参照する`$OLLAMA_BENCH_PATH`を
     # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
     # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
     #

@@ -8,7 +8,7 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）はOlla
 する必要がある（issue #60コメント参照）。
 
 当初は人間が手動でモデル比較・性能検証を行う専用ツールとして追加したが、
-issue #107でAgent Runner本番経路（`agent_runner.AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`）
+issue #107でAgent Runner本番経路（プロジェクト側の指示。README.md参照）
 のローカルLLM生成呼び出しもこのツール（`--record`付き）経由に一本化し、
 `config/usage.db`への利用量記録を本番経路でも行うようにした。
 """

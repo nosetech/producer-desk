@@ -293,89 +293,15 @@ def test_build_claude_command_instructs_not_to_duplicate_completion_report() -> 
 def test_build_claude_command_enables_chrome_integration() -> None:
     """issue #33の再発防止テスト（続報）。
 
-    AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの利用
-    を指示しても、`-p`（非対話モード）ではClaude in Chrome連携がデフォルト
-    無効なため実際には使えなかった。`--chrome`で明示的に有効化する。
+    プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示しても、
+    `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため実際には使えなかった。
+    `--chrome`で明示的に有効化する。
     """
     command = build_claude_command(
         "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     assert "--chrome" in command
-
-
-def test_build_claude_command_appends_design_verification_instruction() -> None:
-    """issue #33の再発防止テスト。
-
-    ダッシュボードのUI実装がClaude Designの配色・アイコンを反映できていな
-    かった。ブラウザ操作ツールで実際のデザインを確認するよう毎回明示的に
-    指示することを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "claude.ai/design" in instruction
-    assert "mcp__claude-in-chrome__" in instruction
-
-
-def test_build_claude_command_appends_local_llm_instruction() -> None:
-    """issue #59: 補助用途でのローカルLLM使い分け指示がsystem promptに含まれることを確認する。
-
-    自走タスク本体には使わない旨、タスク種別ごとの推奨モデルがそれぞれ
-    system promptに含まれていることを検証する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "deepseek-coder-v2:16b" in instruction
-    assert "gemma2" in instruction
-
-
-def test_build_claude_command_instructs_local_llm_usage_reporting() -> None:
-    """issue #86: 最終応答にローカルLLM活用状況の報告(人間向け・機械可読)を
-
-    含めるよう指示していることを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "## ローカルLLM活用" in instruction
-    assert agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX in instruction
-    assert '"used": true' in instruction
-    assert '"used": false' in instruction
-
-
-def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> None:
-    """issue #107の再発防止テスト。
-
-    MCP `ollama-client`経由の生成呼び出しではOllama REST APIのトークン数・
-    処理時間メトリクスが取得できず`config/usage.db`に記録できないため、生成
-    本体は`ollama-bench` CLI（`--record`）を使うようsystem promptで明示的に
-    指示し、かつ実行対象のrepo/issue番号が埋め込まれることを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "$OLLAMA_BENCH_PATH" in instruction
-    assert "--record --repo nosetech/project-a --issue-number 12" in instruction
-    assert "mcp__ollama-client__ollama_chat" in instruction
-    assert "mcp__ollama-client__ollama_list" in instruction
 
 
 def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
@@ -396,7 +322,6 @@ def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
 
     assert "Closes #<issue番号>" in instruction
     assert "issue #82" in instruction
-    assert "qwen2.5-coder:7b" in instruction
 
 
 def test_build_claude_command_instructs_human_readable_final_message() -> None:
