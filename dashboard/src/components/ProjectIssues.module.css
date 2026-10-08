@@ -68,20 +68,25 @@
   color: var(--text-tertiary);
 }
 
-.githubLink {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent-blue);
-  white-space: nowrap;
-}
-
 .tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.tabLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  font-weight: inherit;
+}
+
+.tabLink:focus-visible,
+.tabIconButton:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .tab {
@@ -145,6 +150,27 @@
 .tabSelected .tabCount {
   background: var(--accent-blue);
   color: #fff;
+}
+
+.tabIconButton {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.tabIconButton:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: var(--accent-blue-bg);
 }
 
 .orphanBanner {

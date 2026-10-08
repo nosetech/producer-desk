@@ -18,7 +18,7 @@ import { statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { useApp } from "./AppContext";
-import { ExternalLinkIcon, WarningIcon } from "./Icons";
+import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectIssues.module.css";
@@ -202,15 +202,6 @@ export default function ProjectIssues({ repo }: { repo: string }) {
       <div className={styles.projectPanel}>
         <div className={styles.projectHeader}>
           <span className={styles.projectLabel}>プロジェクト</span>
-          <a
-            className={styles.githubLink}
-            href={`https://github.com/${repo}/issues`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            GitHubで開く
-            <ExternalLinkIcon size={12} />
-          </a>
         </div>
         <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
           {repos.map((r) => {
@@ -219,31 +210,54 @@ export default function ProjectIssues({ repo }: { repo: string }) {
               statusByRepo.get(r)?.label ?? "status:todo",
             );
             return (
-              <Link
+              <div
                 key={r}
-                href={`/projects/${r}`}
-                role="tab"
-                aria-selected={selected}
                 className={`${styles.tab} ${selected ? styles.tabSelected : ""}`}
-                title={r}
               >
-                <span
-                  className={styles.tabDot}
-                  style={{ background: `var(${dot.colorVar})` }}
-                />
-                <span className={styles.tabName}>{shortRepoName(r)}</span>
-                {statusByRepo.get(r)?.is_orphaned && (
+                <Link
+                  href={`/projects/${r}`}
+                  role="tab"
+                  aria-selected={selected}
+                  className={styles.tabLink}
+                  title={r}
+                >
                   <span
-                    className={styles.tabOrphan}
-                    title="作業中ラベルですが処理が停止している可能性があります"
-                  >
-                    <WarningIcon size={12} />
+                    className={styles.tabDot}
+                    style={{ background: `var(${dot.colorVar})` }}
+                  />
+                  <span className={styles.tabName}>{shortRepoName(r)}</span>
+                  {statusByRepo.get(r)?.is_orphaned && (
+                    <span
+                      className={styles.tabOrphan}
+                      title="作業中ラベルですが処理が停止している可能性があります"
+                    >
+                      <WarningIcon size={12} />
+                    </span>
+                  )}
+                  <span className={styles.tabCount} title="未完了のissue">
+                    {openCountOf(r)}
                   </span>
-                )}
-                <span className={styles.tabCount} title="未完了のissue">
-                  {openCountOf(r)}
-                </span>
-              </Link>
+                </Link>
+                <button
+                  type="button"
+                  className={styles.tabIconButton}
+                  title="このプロジェクトに新規タスクを作成"
+                  aria-label={`${r} に新規タスクを作成`}
+                  onClick={() => openNewTask(r)}
+                >
+                  <PlusIcon size={14} strokeWidth={2.4} />
+                </button>
+                <a
+                  className={styles.tabIconButton}
+                  href={`https://github.com/${r}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="GitHubで開く"
+                  aria-label={`${r} をGitHubで開く`}
+                >
+                  <ExternalLinkIcon size={13} />
+                </a>
+              </div>
             );
           })}
         </div>

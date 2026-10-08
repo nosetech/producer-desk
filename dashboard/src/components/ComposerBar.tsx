@@ -225,7 +225,6 @@ export default function ComposerBar({
   mode,
   replyTarget,
   onClearReplyTarget,
-  onOpen,
   onClose,
   repos,
   newTaskRepo,
@@ -237,7 +236,6 @@ export default function ComposerBar({
   mode: ComposerMode;
   replyTarget: IssueRef | null;
   onClearReplyTarget: () => void;
-  onOpen: () => void;
   onClose: () => void;
   repos: string[];
   newTaskRepo: string;
@@ -386,32 +384,7 @@ export default function ComposerBar({
     ? resolveStages(activeStages, polledStage, "busy")
     : null;
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className={styles.trigger}
-        onClick={onOpen}
-        aria-label="新しい指示を送る"
-      >
-        <svg
-          width="19"
-          height="19"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.1"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={styles.triggerIcon}
-        >
-          <path d="M12 20h9" />
-          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-        </svg>
-        <span className={styles.triggerLabel}>新しい指示を送る</span>
-      </button>
-    );
-  }
+  if (!open) return null;
 
   return (
     <>
