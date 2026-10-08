@@ -56,3 +56,5 @@ dist/logs/*
 !dist/logs/.gitkeep
 dist/orchestrator/.venv/
 dist/orchestrator/dist/
+
+.serena/
