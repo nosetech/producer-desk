@@ -1561,7 +1561,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
     assert list(by_key) == [
         "label_instruction",
         "comment_marker_instruction",
-        "pr_issue_reference_instruction",
+        "pr_instruction",
         "final_message_instruction",
         "approve_default_message",
         "user_name",

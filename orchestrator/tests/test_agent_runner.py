@@ -304,7 +304,7 @@ def test_build_claude_command_enables_chrome_integration() -> None:
     assert "--chrome" in command
 
 
-def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
+def test_build_claude_command_appends_pr_instruction() -> None:
     """issue #82の再発防止テスト。
 
     PR本文で`issue #77で報告された...`のように issue番号の直後に区切り文字なく
@@ -2118,7 +2118,7 @@ def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> No
     from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
     from orchestrator.prompts import save_prompt_override
 
-    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_issue_reference_instruction")
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_instruction")
     save_prompt_override(spec, "独自ルール: {repo} #{issue_number}")
 
     command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)

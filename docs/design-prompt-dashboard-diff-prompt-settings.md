@@ -30,7 +30,7 @@ Agent Runner（AIエージェント）を起動するたびに、システムプ
 
 1. 状態ラベル遷移の指示（`label_instruction`）— 必須トークンあり
 2. コメントマーカー付与の指示（`comment_marker_instruction`）— 必須トークンあり
-3. PR本文のissue参照記法の指示（`pr_issue_reference_instruction`）
+3. PR作成時の指示（`pr_instruction`）
 4. 最終応答の書き方の指示（`final_message_instruction`）
 
 #### 編集エリア

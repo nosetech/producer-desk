@@ -273,8 +273,9 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
 # （PR #81で発生。resolve_pr_numberはフォールバックを備えたが、そもそも正しい
 # 記法で書けば発生しない問題のため、CLAUDE.mdの既存規約を`--append-system-prompt`
 # でも重ねて明示する）。
-AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
-    "プルリクエストを作成する場合、本文に対応するissue番号への参照を"
+AGENT_RUNNER_PR_INSTRUCTION = (
+    "プルリクエストを作成する場合は、以下に従ってください。\n"
+    "- 本文に対応するissue番号への参照を"
     "`Closes #<issue番号>`という形で、前後を空行で区切った独立した行として必ず"
     "含めてください。issue番号の直後に半角スペース・改行等の区切り文字を挟まず"
     "日本語（「で」「の」「を」等）を続けて書くと、GitHubの自動リンク解析が"
@@ -357,10 +358,10 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         ),
     ),
     PromptSpec(
-        key="pr_issue_reference_instruction",
-        title="PR本文のissue参照記法の指示",
-        description="PR本文に`Closes #<issue番号>`を独立した行として含めさせる指示",
-        default=AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION,
+        key="pr_instruction",
+        title="PR作成時の指示",
+        description="プルリクエスト作成時に従わせる指示（現状はPR本文のissue参照記法）",
+        default=AGENT_RUNNER_PR_INSTRUCTION,
     ),
     PromptSpec(
         key="final_message_instruction",
@@ -726,7 +727,7 @@ def _extract_local_llm_usage_report(
     )
 
 
-# issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
+# issue #144: AGENT_RUNNER_PR_INSTRUCTIONで「PR本文にCloses #<issue番号>を
 # 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
 # PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
 # 未生成のケースとは異なり、そもそも言及自体が存在しないため`resolve_pr_number`の
