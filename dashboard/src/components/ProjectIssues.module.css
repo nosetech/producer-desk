@@ -74,6 +74,21 @@
   gap: 8px;
 }
 
+.tabLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  font-weight: inherit;
+}
+
+.tabLink:focus-visible,
+.tabIconButton:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 .tab {
   display: inline-flex;
   align-items: center;

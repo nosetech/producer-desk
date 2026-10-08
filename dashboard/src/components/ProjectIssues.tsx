@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { postRefreshProject } from "@/lib/api";
 import {
@@ -104,7 +104,6 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     lookupIssues,
     storeIssues,
   } = useApp();
-  const router = useRouter();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
   const [initialCache] = useState(() => lookupIssues(repo));
@@ -213,46 +212,38 @@ export default function ProjectIssues({ repo }: { repo: string }) {
             return (
               <div
                 key={r}
-                role="tab"
-                tabIndex={0}
-                aria-selected={selected}
                 className={`${styles.tab} ${selected ? styles.tabSelected : ""}`}
-                title={r}
-                onClick={() => router.push(`/projects/${r}`)}
-                onMouseEnter={() => router.prefetch(`/projects/${r}`)}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    router.push(`/projects/${r}`);
-                  }
-                }}
               >
-                <span
-                  className={styles.tabDot}
-                  style={{ background: `var(${dot.colorVar})` }}
-                />
-                <span className={styles.tabName}>{shortRepoName(r)}</span>
-                {statusByRepo.get(r)?.is_orphaned && (
+                <Link
+                  href={`/projects/${r}`}
+                  role="tab"
+                  aria-selected={selected}
+                  className={styles.tabLink}
+                  title={r}
+                >
                   <span
-                    className={styles.tabOrphan}
-                    title="作業中ラベルですが処理が停止している可能性があります"
-                  >
-                    <WarningIcon size={12} />
+                    className={styles.tabDot}
+                    style={{ background: `var(${dot.colorVar})` }}
+                  />
+                  <span className={styles.tabName}>{shortRepoName(r)}</span>
+                  {statusByRepo.get(r)?.is_orphaned && (
+                    <span
+                      className={styles.tabOrphan}
+                      title="作業中ラベルですが処理が停止している可能性があります"
+                    >
+                      <WarningIcon size={12} />
+                    </span>
+                  )}
+                  <span className={styles.tabCount} title="未完了のissue">
+                    {openCountOf(r)}
                   </span>
-                )}
-                <span className={styles.tabCount} title="未完了のissue">
-                  {openCountOf(r)}
-                </span>
+                </Link>
                 <button
                   type="button"
                   className={styles.tabIconButton}
                   title="このプロジェクトに新規タスクを作成"
                   aria-label={`${r} に新規タスクを作成`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openNewTask(r);
-                  }}
+                  onClick={() => openNewTask(r)}
                 >
                   <PlusIcon size={14} strokeWidth={2.4} />
                 </button>
@@ -263,7 +254,6 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   rel="noreferrer"
                   title="GitHubで開く"
                   aria-label={`${r} をGitHubで開く`}
-                  onClick={(e) => e.stopPropagation()}
                 >
                   <ExternalLinkIcon size={13} />
                 </a>
