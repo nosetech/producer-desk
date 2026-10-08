@@ -296,9 +296,8 @@ AGENT_RUNNER_PR_INSTRUCTION = (
 # 自体はAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONに既にあるため重複させず、
 # ここでは「人間向け報告として何を書くべきか」の指示のみを追加する。
 AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
-    "前述の通りセッション終了時の最終応答はissueコメントとして{user_name}に投稿され"
-    "ます。{user_name}向けの状況報告であることを踏まえ、次の点を意識して書いて"
-    "ください。\n"
+    "セッション終了時の最終応答はissueコメントとして{user_name}に投稿されます。"
+    "{user_name}向けの状況報告であることを踏まえ、次の点を意識して書いてください。\n"
     "- needs-human-decisionラベルを付与した場合は、最終応答に"
     "「何について・なぜ{user_name}の判断が必要か」と「{user_name}が具体的に何をすればよいか」"
     "（例:「PR #163をレビューし、問題なければマージしてください」"
@@ -308,10 +307,10 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
 )
 
 
-# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #149: 上記4つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
-# トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視・ローカルLLM利用量記録）
+# トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
 # が依存する文字列で、編集で失われるとシステムが壊れるため保存時に検証する。
 AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
     PromptSpec(
