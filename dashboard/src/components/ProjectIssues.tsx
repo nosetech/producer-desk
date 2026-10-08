@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { postRefreshProject } from "@/lib/api";
 import {
@@ -18,7 +18,7 @@ import { statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { useApp } from "./AppContext";
-import { ExternalLinkIcon, WarningIcon } from "./Icons";
+import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectIssues.module.css";
@@ -104,6 +104,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     lookupIssues,
     storeIssues,
   } = useApp();
+  const router = useRouter();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
   const [initialCache] = useState(() => lookupIssues(repo));
@@ -202,15 +203,6 @@ export default function ProjectIssues({ repo }: { repo: string }) {
       <div className={styles.projectPanel}>
         <div className={styles.projectHeader}>
           <span className={styles.projectLabel}>プロジェクト</span>
-          <a
-            className={styles.githubLink}
-            href={`https://github.com/${repo}/issues`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            GitHubで開く
-            <ExternalLinkIcon size={12} />
-          </a>
         </div>
         <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
           {repos.map((r) => {
@@ -219,13 +211,22 @@ export default function ProjectIssues({ repo }: { repo: string }) {
               statusByRepo.get(r)?.label ?? "status:todo",
             );
             return (
-              <Link
+              <div
                 key={r}
-                href={`/projects/${r}`}
                 role="tab"
+                tabIndex={0}
                 aria-selected={selected}
                 className={`${styles.tab} ${selected ? styles.tabSelected : ""}`}
                 title={r}
+                onClick={() => router.push(`/projects/${r}`)}
+                onMouseEnter={() => router.prefetch(`/projects/${r}`)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    router.push(`/projects/${r}`);
+                  }
+                }}
               >
                 <span
                   className={styles.tabDot}
@@ -243,7 +244,30 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 <span className={styles.tabCount} title="未完了のissue">
                   {openCountOf(r)}
                 </span>
-              </Link>
+                <button
+                  type="button"
+                  className={styles.tabIconButton}
+                  title="このプロジェクトに新規タスクを作成"
+                  aria-label={`${r} に新規タスクを作成`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openNewTask(r);
+                  }}
+                >
+                  <PlusIcon size={14} strokeWidth={2.4} />
+                </button>
+                <a
+                  className={styles.tabIconButton}
+                  href={`https://github.com/${r}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="GitHubで開く"
+                  aria-label={`${r} をGitHubで開く`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <ExternalLinkIcon size={13} />
+                </a>
+              </div>
             );
           })}
         </div>

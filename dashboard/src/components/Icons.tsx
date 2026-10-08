@@ -153,13 +153,19 @@ export function CloseIcon({ size }: { size: number }) {
   );
 }
 
-export function PlusIcon({ size }: { size: number }) {
+export function PlusIcon({
+  size,
+  strokeWidth = 2.6,
+}: {
+  size: number;
+  strokeWidth?: number;
+}) {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      strokeWidth="2.6"
+      strokeWidth={strokeWidth}
       style={{ flex: "none" }}
       aria-hidden="true"
       {...BASE}

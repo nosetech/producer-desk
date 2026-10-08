@@ -182,10 +182,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               mode={composerMode}
               replyTarget={replyTarget}
               onClearReplyTarget={() => setReplyTarget(null)}
-              onOpen={() => {
-                setComposerMode("new");
-                setComposerOpen(true);
-              }}
               onClose={() => setComposerOpen(false)}
               repos={repos}
               newTaskRepo={newTaskRepo}
