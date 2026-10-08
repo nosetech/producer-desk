@@ -151,6 +151,40 @@ launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy
 
 **注意**: `./bin/litellm_proxy_start.sh` / `stop.sh`（PIDファイル方式）とlaunchd管理は併用できません（ポートの二重bind・PIDファイルの不整合が起きます）。launchd化した後は、起動・停止を`launchctl load -w` / `unload`に一本化してください。
 
+### 補助モデル（MCP）の使用量を記録する（任意）
+
+producer-deskが使用量を記録するのは、次の2経路です。
+
+| 経路                                                                 | 記録                                                              |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Agent Runner本体（Claude Code CLI直利用、またはLiteLLM Proxy経由）   | 自動で記録されます（LiteLLM Proxy経由は上記のコールバックが記録） |
+| プロジェクトの作業中にAgent Runnerが補助的に呼ぶ別モデル（Ollama等） | 呼び出し方を指示しない限り記録されません                          |
+
+後者はLiteLLM Proxyを経由せず、MCP（例: `ollama-client`）などでAgent Runnerが直接呼び出す構成です。producer-deskは、このような補助モデルの併用方針（どの作業で、どのモデルを使うか）を共通の指示文としては与えません。プロジェクトごとに、対象リポジトリの`CLAUDE.md`や作業指示に書いてください。ただしMCP `ollama-client`の`ollama_chat`ツールは、トークン数・処理時間を返さないため、そのままでは使用量を記録できません。
+
+Ollamaのモデルについて使用量を記録したい場合は、生成呼び出しを`ollama-bench`コマンドに`--record`を付けて実行させます（Ollama REST APIを直接呼び出し、`config/usage.db`の利用量記録に書き込みます）。`ollama-bench`はオーケストレータ自身のvenvにしか入っておらず、対象プロジェクトのworktreeからはPATH解決できません。そのためAgent Runnerの子プロセスには、解決済みの絶対パスが環境変数`OLLAMA_BENCH_PATH`として設定されています。`CLAUDE.md`には、コマンド名ではなくこの環境変数を使うよう書いてください。
+
+```markdown
+## ローカルLLMの併用
+
+コードレビュー支援・日本語ドキュメント生成など、コード変更を伴わない補助作業では、
+必要に応じてローカルLLM（Ollama）を併用してよい。
+
+- 生成の呼び出しは、MCP `ollama_chat`ではなく、Bashツールで環境変数`$OLLAMA_BENCH_PATH`が
+  指す`ollama-bench`コマンドを使う（`ollama-bench`というコマンド名では呼ばない）。
+- 必ず`--record --repo <owner/repo> --issue-number <issue番号>`を付ける。repoとissue番号は、
+  Agent Runner起動時のsystem promptに記載された、取り組み中のissueのものを使う。
+- プロンプトは`mktemp`で毎回一意な一時ファイルに書き出して渡す。
+- 例: `PROMPT_FILE=$(mktemp); ... > "$PROMPT_FILE"; "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b "$PROMPT_FILE" --record --repo owner/repo --issue-number 12`
+- モデルの利用可否の確認は、MCP `ollama_list` / `ollama_ps`でよい。
+```
+
+注意点:
+
+- `ollama-bench`の対象はOllamaのみです。Ollama以外のプロバイダのモデルをMCP等で補助的に呼ぶ場合、producer-deskは使用量を記録できません。使用量を記録したい場合は、そのモデルをLiteLLM Proxy経由（上記）のモデルエイリアスとして定義し、Agent Runner本体の実行手段として選択してください。
+- 記録先のissue番号は`--issue-number`で指定します。指定しなかった場合は`0`（プロジェクト単位の集計）として記録されます。
+- Agent Runnerが指示を守らない場合、記録は残りません。指示の記載は`CLAUDE.md`に書いたうえで、ダッシュボードの利用量表示を確認してください。
+
 ## 起動・停止
 
 ```bash

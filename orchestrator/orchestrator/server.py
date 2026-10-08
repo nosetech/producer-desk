@@ -18,6 +18,7 @@ import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
 from orchestrator.aggregation import (
     STATUS_COUNT_KEYS,
     AggregatedState,
@@ -46,7 +47,12 @@ from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
-from orchestrator.instruct import ReviewMergeError, handle_create_issue, handle_instruct
+from orchestrator.instruct import (
+    APPROVE_DEFAULT_MESSAGE_SPEC,
+    ReviewMergeError,
+    handle_create_issue,
+    handle_instruct,
+)
 from orchestrator.labels import (
     AddLabelFn,
     GetLabelsFn,
@@ -56,6 +62,17 @@ from orchestrator.labels import (
     gh_remove_label,
 )
 from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, poll_once
+from orchestrator.prompts import (
+    USER_NAME_SPEC,
+    PromptSpec,
+    PromptStorageError,
+    PromptValidationError,
+    describe_prompt,
+    describe_prompts,
+    load_overrides_safe,
+    reset_prompt_override,
+    save_prompt_override,
+)
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 from orchestrator.usage_store import current_limit_status as store_current_limit_status
 from orchestrator.usage_store import daily_model_usage as store_daily_model_usage
@@ -77,6 +94,19 @@ REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh
 REFRESH_ALL_PATH = "/api/refresh"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
+# Agent Runnerプロンプト設定（issue #149）。
+PROMPTS_PATH = "/api/prompts"
+PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
+
+# ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
+PROMPT_SPECS: tuple[PromptSpec, ...] = (
+    *AGENT_RUNNER_PROMPT_SPECS,
+    APPROVE_DEFAULT_MESSAGE_SPEC,
+    USER_NAME_SPEC,
+)
+PROMPT_SPECS_BY_KEY = {spec.key: spec for spec in PROMPT_SPECS}
+# プロンプト本文のPUTリクエスト上限（指示文は数KB程度。LAN内のみだが過大な入力を拒否する）。
+MAX_PROMPT_BODY_BYTES = 256 * 1024
 
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
@@ -258,6 +288,9 @@ def _make_handler(
             if self.path == "/api/usage":
                 self._handle_usage()
                 return
+            if self.path == PROMPTS_PATH:
+                self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
+                return
 
             progress_match = PROGRESS_PATH.match(self.path)
             if progress_match:
@@ -403,6 +436,74 @@ def _make_handler(
                 return
 
             self._send_json(404, {"error": "not found"})
+
+        def do_PUT(self) -> None:  # noqa: N802
+            prompt_match = PROMPT_ITEM_PATH.match(self.path)
+            if prompt_match:
+                self._handle_update_prompt(prompt_match.group("key"))
+                return
+
+            self._send_json(404, {"error": "not found"})
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            prompt_match = PROMPT_ITEM_PATH.match(self.path)
+            if prompt_match:
+                self._handle_reset_prompt(prompt_match.group("key"))
+                return
+
+            self._send_json(404, {"error": "not found"})
+
+        def _find_prompt_spec(self, key: str) -> PromptSpec | None:
+            return PROMPT_SPECS_BY_KEY.get(key)
+
+        def _handle_update_prompt(self, key: str) -> None:
+            """issue #149: プロンプト本文を検証のうえ`config/prompts.yaml`に保存する。
+
+            次回のAgent Runner起動（`build_claude_command`）から反映される。
+            """
+            spec = self._find_prompt_spec(key)
+            if spec is None:
+                self._send_json(404, {"error": f"未知のプロンプトです: {key}"})
+                return
+            if int(self.headers.get("Content-Length", 0)) > MAX_PROMPT_BODY_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます"})
+                return
+            try:
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
+                text = body["text"]
+                if not isinstance(text, str):
+                    raise ValueError("textは文字列である必要があります")
+                save_prompt_override(spec, text)
+            except PromptValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
+                return
+            except KeyError:
+                self._send_json(400, {"error": "textは必須です"})
+                return
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            except PromptStorageError as e:
+                logger.warning("プロンプトの保存に失敗しました (%s): %s", key, e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, describe_prompt(spec, load_overrides_safe()))
+
+        def _handle_reset_prompt(self, key: str) -> None:
+            """issue #149: プロンプトの上書きを削除しデフォルトに戻す。"""
+            spec = self._find_prompt_spec(key)
+            if spec is None:
+                self._send_json(404, {"error": f"未知のプロンプトです: {key}"})
+                return
+            try:
+                reset_prompt_override(spec)
+            except PromptStorageError as e:
+                logger.warning("プロンプトのリセットに失敗しました (%s): %s", key, e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, describe_prompt(spec, load_overrides_safe()))
 
         def _handle_update_project_settings(self, repo: str) -> None:
             """issue #176: プロジェクトごとの実行手段デフォルト設定を更新する。

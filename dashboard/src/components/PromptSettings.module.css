@@ -1,0 +1,1093 @@
+/* Claude Design feature/issue-149-prompt-settings.dc.html のプロンプト設定画面（issue #149）の
+   スタイル値に対応する。デザイン側の変数名との対応:
+   surface→--bg-panel / surface-2→--bg-card / bg→--bg-page / border→--border-subtle /
+   text→--text-primary / dim→--text-secondary / faint→--text-tertiary /
+   accent→--accent-blue / pending→--accent-amber / done→--accent-green / idle→--accent-gray */
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px 100px;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 13px;
+  border-radius: 12px;
+  background: var(--accent-blue-bg);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.noticeIcon {
+  margin-top: 1px;
+}
+
+.noticeText {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.loadError {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* ---- 一覧 ---- */
+
+.list {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.listHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.listHeadLabel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  color: var(--text-tertiary);
+}
+
+.listHeadCount {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.row:hover {
+  background: var(--bg-card);
+}
+
+.rowActive,
+.rowActive:hover {
+  background: var(--accent-blue-bg);
+}
+
+.rowLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.rowName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowKey {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowChevron {
+  display: none;
+  color: var(--text-tertiary);
+}
+
+.unsavedDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  flex: none;
+}
+
+.invalidIcon {
+  display: inline-flex;
+  color: var(--warn);
+}
+
+.tokBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-amber);
+}
+
+.tokBadgeNone {
+  color: var(--text-tertiary);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: none;
+  background: var(--accent-gray-bg);
+  color: var(--accent-gray);
+}
+
+.badgeEdited {
+  background: var(--review-bg);
+  color: var(--review);
+}
+
+/* ---- 編集エリア ---- */
+
+.editor {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 16px 18px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.backBtn {
+  display: none;
+  align-self: flex-start;
+  align-items: center;
+  gap: 3px;
+  min-height: 40px;
+  padding: 0 10px 0 2px;
+  margin: -8px 0 -6px -6px;
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.editorHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.editorTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.editorTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.editorTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+
+.unsavedTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent-blue);
+}
+
+.unsavedTagDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.editorKey {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.editorPurpose {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.diffBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  min-height: 32px;
+  border-radius: 9px;
+  flex: none;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.diffBtnOn {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.diffTrack {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  flex: none;
+  background: var(--border-subtle);
+  transition: background 0.15s;
+}
+
+.diffBtnOn .diffTrack {
+  background: var(--accent-blue);
+}
+
+.diffKnob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.diffBtnOn .diffKnob {
+  left: 14px;
+}
+
+/* ---- 必須トークン説明パネル ---- */
+
+.tokPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--accent-amber);
+  background: var(--accent-amber-bg);
+  transition: all 0.15s;
+}
+
+.tokPanelWarn {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.tokPanelHead {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.tokIcon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  color: var(--accent-amber);
+}
+
+.tokPanelWarn .tokIcon {
+  color: var(--warn);
+}
+
+.tokPanelText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tokPanelTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+.tokPanelDesc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.tokList {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.tokRow {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.tokChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  justify-self: start;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent-green);
+  color: var(--accent-green);
+  transition: all 0.15s;
+}
+
+.tokChipMissing {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tokChipText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tokWhy {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.tokMissingMark {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.noTokens {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ---- プレースホルダ ---- */
+
+.phBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+}
+
+.phHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.phTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.phHint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.phChips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.phChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--accent-blue);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.phChip:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+
+.phChip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.phDesc {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.phUnknown {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  min-height: 30px;
+  border-radius: 8px;
+  border: 1px dashed var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.phUnknownNote {
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.phNote {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.phNote strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ---- テキストエリア・差分 ---- */
+
+.textarea {
+  display: block;
+  width: 100%;
+  min-height: 250px;
+  resize: vertical;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  transition:
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+.textarea:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+.textareaInvalid {
+  border-color: var(--warn);
+}
+
+.textareaInvalid:focus {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-bg);
+}
+
+.diffBox {
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-page);
+  overflow: hidden;
+  min-height: 250px;
+}
+
+.diffLegend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.diffLegendTitle {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.diffLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.diffLegendSwatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.diffLegendSpacer {
+  flex: 1;
+}
+
+.diffLegendNote {
+  color: var(--text-tertiary);
+}
+
+.diffSame {
+  padding: 14px 12px 4px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.diffBody {
+  padding: 6px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+.diffLine {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  padding-right: 12px;
+}
+
+.diffAdd {
+  background: var(--accent-green-bg);
+}
+
+.diffDel {
+  background: var(--warn-bg);
+}
+
+.diffSign {
+  text-align: center;
+  font-weight: 600;
+  user-select: none;
+  color: var(--text-tertiary);
+}
+
+.diffAdd .diffSign {
+  color: var(--accent-green);
+}
+
+.diffDel .diffSign {
+  color: var(--warn);
+}
+
+.diffText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* ---- 検証メッセージ ---- */
+
+.alert {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--warn);
+  animation: fade 0.18s ease;
+}
+
+.alertIcon {
+  display: inline-flex;
+  margin-top: 1px;
+}
+
+.alertBody {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.alertLine {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.alertLine strong {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.alertLine code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.okLine {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-green);
+}
+
+/* ---- フッター（操作ボタン） ---- */
+
+.foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 -18px;
+  padding: 12px 18px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 16px 16px;
+}
+
+.footSpacer {
+  flex: 1;
+}
+
+.resetBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 8px;
+  margin-left: -8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.resetBtn:hover:not(:disabled) {
+  color: var(--warn);
+}
+
+.resetBtn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.discardBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 15px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.discardBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.discardBtn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.saveBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 20px;
+  border-radius: 9px;
+  border: none;
+  background: var(--accent-blue);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    filter 0.12s,
+    opacity 0.15s;
+}
+
+.saveBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.saveBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* ---- 「デフォルトに戻す」確認ダイアログ ---- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(6, 10, 15, 0.32);
+  animation: fade 0.18s ease;
+}
+
+.dialog {
+  width: min(420px, calc(100% - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.42);
+  animation: rise 0.2s ease;
+}
+
+.dialogHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dialogIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--warn-bg);
+  color: var(--warn);
+  flex: none;
+}
+
+.dialogTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dialogBody {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.dialogKey {
+  font-family: var(--font-mono);
+  color: var(--accent-blue);
+  word-break: break-all;
+}
+
+.dialogWarn {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.dialogWarnIcon {
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--warn);
+}
+
+.dialogWarnText {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.dialogWarnText strong {
+  color: var(--warn);
+}
+
+.dialogActions {
+  display: flex;
+  gap: 9px;
+  justify-content: flex-end;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.cancelBtn,
+.confirmBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cancelBtn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  transition: all 0.12s;
+}
+
+.cancelBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.confirmBtn {
+  border: 1px solid var(--warn);
+  background: var(--warn);
+  color: var(--warn-on);
+  transition: filter 0.12s;
+}
+
+.confirmBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.confirmBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- モバイル幅: 一覧 → 編集画面の遷移 ---- */
+
+@media (max-width: 640px) {
+  .page {
+    padding: 16px 14px 100px;
+    gap: 13px;
+  }
+
+  .grid {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .viewList .editor,
+  .viewEdit .list {
+    display: none;
+  }
+
+  .row {
+    padding: 13px 14px;
+  }
+
+  .row:hover,
+  .rowActive,
+  .rowActive:hover {
+    background: transparent;
+  }
+
+  .rowChevron {
+    display: inline-flex;
+  }
+
+  .editor {
+    padding: 14px 14px 0;
+  }
+
+  .backBtn {
+    display: inline-flex;
+  }
+
+  .diffBtn {
+    min-height: 40px;
+  }
+
+  .tokPanel {
+    padding: 12px;
+  }
+
+  .tokRow {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+
+  .phChip,
+  .phUnknown {
+    min-height: 40px;
+  }
+
+  .textarea,
+  .diffBox {
+    min-height: 230px;
+  }
+
+  .textarea {
+    font-size: 13px;
+  }
+
+  .foot {
+    margin: 0 -14px;
+    padding: 10px 14px 12px;
+  }
+
+  .footSpacer {
+    display: none;
+  }
+
+  .resetBtn {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+
+  .discardBtn,
+  .saveBtn {
+    flex: 1 1 0;
+    min-height: 44px;
+  }
+}

@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { DashboardIcon, IssuesIcon, WarningIcon } from "./Icons";
-import { ISSUES_NAV_HREF } from "./Sidebar";
+import { DashboardIcon, IssuesIcon, PromptIcon, WarningIcon } from "./Icons";
+import { ISSUES_NAV_HREF, PROMPTS_NAV_HREF } from "./Sidebar";
 import styles from "./BottomNav.module.css";
 
 /** モバイル幅のボトムナビゲーション（PC幅ではCSSで非表示、サイドバーが代わりに表示される）。 */
@@ -16,7 +16,8 @@ export default function BottomNav({
 }) {
   const pathname = usePathname();
   const onIssues = pathname.startsWith("/projects");
-  const onDashboard = !onIssues;
+  const onPrompts = pathname.startsWith(PROMPTS_NAV_HREF);
+  const onDashboard = !onIssues && !onPrompts;
 
   const itemClass = (active: boolean) =>
     `${styles.item} ${active ? styles.itemActive : ""}`;
@@ -50,6 +51,16 @@ export default function BottomNav({
           )}
         </span>
         <span>issue一覧</span>
+      </Link>
+      <Link
+        href={PROMPTS_NAV_HREF}
+        className={itemClass(onPrompts)}
+        aria-current={onPrompts ? "page" : undefined}
+      >
+        <span className={pillClass(onPrompts)}>
+          <PromptIcon size={20} />
+        </span>
+        <span>プロンプト設定</span>
       </Link>
     </nav>
   );

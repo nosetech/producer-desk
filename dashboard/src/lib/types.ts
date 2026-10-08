@@ -166,3 +166,19 @@ export interface ProjectIssuesResponse {
   repo: string;
   issues: ProjectIssue[];
 }
+
+/** GET /api/prompts の prompts 配列要素（issue #149）。 */
+export interface PromptInfo {
+  key: string;
+  title: string;
+  description: string;
+  /** 現在の本文（上書きがあれば上書き、無ければデフォルト）。 */
+  text: string;
+  default: string;
+  is_default: boolean;
+  required_tokens: { token: string; reason: string }[];
+  /** 本文中で使えるプレースホルダ名（波括弧なし）。 */
+  placeholders: string[];
+  /** falseの項目（ユーザーの呼称等）は改行・波括弧を含められない短い語句。 */
+  multiline: boolean;
+}

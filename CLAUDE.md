@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `DesignSync` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 
-Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。
+Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため、上記の指示はそのまま適用される（プロジェクトごとの指示であり、Agent Runner共通の`--append-system-prompt`では付与しない。`docs/basic-design.md` 3-6参照）。
 
 ## 確定済みの設計判断（変更時は要注意）
 

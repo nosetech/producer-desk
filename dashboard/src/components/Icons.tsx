@@ -86,3 +86,151 @@ export function ExternalLinkIcon({ size }: { size: number }) {
     </svg>
   );
 }
+
+export function PromptIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="m7.5 9.5 3 2.5-3 2.5" />
+      <path d="M13 15h4" />
+    </svg>
+  );
+}
+
+export function ShieldIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.5 7.5 9.5 4.3-1 7.5-4.9 7.5-9.5V6Z" />
+    </svg>
+  );
+}
+
+export function CheckIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.8"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+export function CloseIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.8"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.6"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function ResetIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.1"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  );
+}
+
+export function InfoIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4.5M12 8h.01" />
+    </svg>
+  );
+}
+
+export function ChevronRightIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+export function ChevronLeftIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}

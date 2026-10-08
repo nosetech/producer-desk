@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { DashboardIcon, IssuesIcon, WarningIcon } from "./Icons";
+import { DashboardIcon, IssuesIcon, PromptIcon, WarningIcon } from "./Icons";
 import styles from "./Sidebar.module.css";
 
 const DEFAULT_WIDTH = 208;
@@ -15,6 +15,7 @@ const HOVER_CLOSE_DELAY_MS = 220;
 const STORAGE_KEY = "sidebar";
 
 export const ISSUES_NAV_HREF = "/projects";
+export const PROMPTS_NAV_HREF = "/prompts";
 
 interface Props {
   attentionCount: number;
@@ -29,7 +30,8 @@ interface Props {
 export default function Sidebar({ attentionCount, anyOrphan }: Props) {
   const pathname = usePathname();
   const onIssues = pathname.startsWith("/projects");
-  const onDashboard = !onIssues;
+  const onPrompts = pathname.startsWith(PROMPTS_NAV_HREF);
+  const onDashboard = !onIssues && !onPrompts;
 
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [hover, setHover] = useState(false);
@@ -198,6 +200,17 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
               <span className={styles.orphanIconCollapsed}>
                 <WarningIcon size={11} />
               </span>
+            )}
+          </Link>
+          <Link
+            href={PROMPTS_NAV_HREF}
+            className={itemClass(onPrompts)}
+            title="プロンプト設定"
+            aria-current={onPrompts ? "page" : undefined}
+          >
+            <PromptIcon size={18} />
+            {!collapsed && (
+              <span className={styles.navLabel}>プロンプト設定</span>
             )}
           </Link>
         </nav>

@@ -293,9 +293,9 @@ def test_build_claude_command_instructs_not_to_duplicate_completion_report() -> 
 def test_build_claude_command_enables_chrome_integration() -> None:
     """issue #33の再発防止テスト（続報）。
 
-    AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの利用
-    を指示しても、`-p`（非対話モード）ではClaude in Chrome連携がデフォルト
-    無効なため実際には使えなかった。`--chrome`で明示的に有効化する。
+    プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示しても、
+    `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため実際には使えなかった。
+    `--chrome`で明示的に有効化する。
     """
     command = build_claude_command(
         "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
@@ -304,81 +304,7 @@ def test_build_claude_command_enables_chrome_integration() -> None:
     assert "--chrome" in command
 
 
-def test_build_claude_command_appends_design_verification_instruction() -> None:
-    """issue #33の再発防止テスト。
-
-    ダッシュボードのUI実装がClaude Designの配色・アイコンを反映できていな
-    かった。ブラウザ操作ツールで実際のデザインを確認するよう毎回明示的に
-    指示することを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "claude.ai/design" in instruction
-    assert "mcp__claude-in-chrome__" in instruction
-
-
-def test_build_claude_command_appends_local_llm_instruction() -> None:
-    """issue #59: 補助用途でのローカルLLM使い分け指示がsystem promptに含まれることを確認する。
-
-    自走タスク本体には使わない旨、タスク種別ごとの推奨モデルがそれぞれ
-    system promptに含まれていることを検証する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "deepseek-coder-v2:16b" in instruction
-    assert "gemma2" in instruction
-
-
-def test_build_claude_command_instructs_local_llm_usage_reporting() -> None:
-    """issue #86: 最終応答にローカルLLM活用状況の報告(人間向け・機械可読)を
-
-    含めるよう指示していることを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "## ローカルLLM活用" in instruction
-    assert agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX in instruction
-    assert '"used": true' in instruction
-    assert '"used": false' in instruction
-
-
-def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> None:
-    """issue #107の再発防止テスト。
-
-    MCP `ollama-client`経由の生成呼び出しではOllama REST APIのトークン数・
-    処理時間メトリクスが取得できず`config/usage.db`に記録できないため、生成
-    本体は`ollama-bench` CLI（`--record`）を使うようsystem promptで明示的に
-    指示し、かつ実行対象のrepo/issue番号が埋め込まれることを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "$OLLAMA_BENCH_PATH" in instruction
-    assert "--record --repo nosetech/project-a --issue-number 12" in instruction
-    assert "mcp__ollama-client__ollama_chat" in instruction
-    assert "mcp__ollama-client__ollama_list" in instruction
-
-
-def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
+def test_build_claude_command_appends_pr_instruction() -> None:
     """issue #82の再発防止テスト。
 
     PR本文で`issue #77で報告された...`のように issue番号の直後に区切り文字なく
@@ -396,7 +322,6 @@ def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
 
     assert "Closes #<issue番号>" in instruction
     assert "issue #82" in instruction
-    assert "qwen2.5-coder:7b" in instruction
 
 
 def test_build_claude_command_instructs_human_readable_final_message() -> None:
@@ -415,10 +340,10 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     flag_index = command.index("--append-system-prompt")
     instruction = command[flag_index + 1]
 
-    assert "人間が具体的に何をすればよいか" in instruction
+    assert "ユーザーが具体的に何をすればよいか" in instruction
     assert "Monitor" in instruction
     assert "ScheduleWakeup" in instruction
-    assert "実装詳細は人間向け報告に含めないでください" in instruction
+    assert "実装詳細はユーザー向け報告に含めないでください" in instruction
 
 
 def test_build_claude_command_uses_stream_json_output_format() -> None:
@@ -2180,3 +2105,55 @@ def test_build_failure_comment_falls_back_to_log_path_only(
     comment = agent_runner._build_failure_comment(payload, returncode=2, log_path=log_path)
 
     assert comment == f":warning: Agent Runnerが異常終了しました（終了コード: 2）。ログ: {log_path}"
+
+
+# issue #149: config/prompts.yamlの上書きが次回起動のsystem promptに反映されること。
+
+
+def _system_prompt_of(command: list[str]) -> str:
+    return command[command.index("--append-system-prompt") + 1]
+
+
+def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
+    from orchestrator.prompts import save_prompt_override
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_instruction")
+    save_prompt_override(spec, "独自ルール: {repo} #{issue_number}")
+
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "独自ルール: o/r #5" in prompt
+    assert spec.default not in prompt
+
+
+def test_build_claude_command_without_overrides_renders_placeholders() -> None:
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "o/r#5" in prompt
+    assert "{repo}" not in prompt
+    assert "{issue_number}" not in prompt
+    # JSON例示の波括弧は置換の影響を受けず、そのまま残る。
+    assert '{"pr_number": <PR番号（整数）>}' in prompt
+
+
+def test_build_claude_command_replaces_user_name_in_instructions(_isolated_prompts_path) -> None:
+    from orchestrator.prompts import USER_NAME_SPEC, save_prompt_override
+
+    default_prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "ユーザーの判断が必要だと自ら判断した場合" in default_prompt
+    assert "{user_name}" not in default_prompt
+
+    save_prompt_override(USER_NAME_SPEC, "山田さん")
+    prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+
+    assert "山田さんの判断が必要だと自ら判断した場合" in prompt
+    assert "山田さん向けの状況報告" in prompt
+    assert "ユーザー" not in prompt
+    assert "{user_name}" not in prompt

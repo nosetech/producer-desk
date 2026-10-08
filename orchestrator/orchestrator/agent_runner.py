@@ -70,6 +70,14 @@ from orchestrator.litellm_proxy import build_env_overrides as litellm_build_env_
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
+from orchestrator.prompts import (
+    USER_NAME_SPEC,
+    PromptSpec,
+    RequiredToken,
+    load_overrides_safe,
+    render_prompt,
+    resolve_prompt_text,
+)
 from orchestrator.session_context_guard import (
     read_latest_context_tokens,
     resolve_transcript_path,
@@ -188,9 +196,8 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "あなたはproducer-deskオーケストレータからディスパッチされたAgent Runnerとして、"
     "GitHub issue {repo}#{issue_number} に取り組んでいます。"
     "以下の状態ラベル遷移は、オーケストレータ側では自動的に行われないため、"
-    "該当する状況になったらあなた自身がghコマンドで実行してください"
-    "（docs/basic-design.md 1章「データモデル・状態遷移設計」参照）。\n"
-    "- 人間の判断が必要だと自ら判断した場合: "
+    "該当する状況になったらあなた自身がghコマンドで実行してください。\n"
+    "- {user_name}の判断が必要だと自ら判断した場合: "
     f"`gh issue edit {{issue_number}} --repo {{repo}} "
     f"--add-label {STATUS_NEEDS_HUMAN_DECISION} --remove-label {STATUS_IN_PROGRESS}`\n"
     "- プルリクエストを作成した場合: "
@@ -212,127 +219,17 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "間は空行で区切る）。CI完了の検知と後続処理の再開はオーケストレータのポーリングが"
     "自動的に行うため、あなた自身がCI結果が出るまで待ち続ける必要はありません。\n"
     f"  {CI_WAIT_MARKER_PREFIX}\n"
-    '  {{"pr_number": <PR番号（整数）>}}\n'
+    '  {"pr_number": <PR番号（整数）>}\n'
     "  -->\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
 
-# issue #33の再発防止: ダッシュボードのUI実装がClaude Designの見た目（配色・
-# アイコン等）を反映できていなかった。原因は、CLAUDE.mdが「正」とするデザイン
-# URL（claude.ai/design/...）が認証必須でWebFetchでは403になり、テキスト指示
-# だけでは色・アイコンの詳細が伝わらないこと。当初はブラウザ操作ツール
-# （mcp__claude-in-chrome__*）での目視確認のみを指示していたが、キャンバス上の
-# 要素クリックが自動操作から機能しない・プレビューが状態を持つインタラクション
-# を再現しない静的スナップショットである等の理由で細部の再現性に限界があった
-# ため、DesignSync MCPでの実ソース直接取得を主手段に切り替えた（issue #55・
-# PR #57）。DesignSyncの認証（claude.aiログインへのデザインシステムアクセス
-# 権限）は、一度`/design-login`等で許可すればmacOSキーチェーン
-# （`Claude Code-credentials`）に永続化され、同一ホスト上の以降の`claude`CLI
-# 呼び出し（本Agent Runnerを含む）から自動的に利用できるため、Agent Runner
-# 自身が実行時に認証操作を行う必要はない（運用開始前にホスト上で一度だけ人間
-# が許可しておくことが前提）。
-AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
-    "ダッシュボード（dashboard/以下）の画面・コンポーネントを実装・修正する場合、"
-    "CLAUDE.mdの「画面デザインの実装ルール」に記載されたClaude DesignのURL"
-    "（https://claude.ai/design/...）について、まずDesignSync MCPツール"
-    "（get_project→list_files→get_file、projectIdはURLの/p/<uuid>部分）でデザインの"
-    "実ソース（ProducerDesk.dc.html）を直接取得し、対象コンポーネントのスタイル"
-    "オブジェクト定義（色・余白・border-radius・アニメーション等）をそのまま読み取った"
-    "うえで実装してください。テキストの設計文書（docs/design-prompt-dashboard.md等）"
-    "にはレイアウトの要件しか書かれておらず、色やアイコンの指定はデザインそのものにしか"
-    "ありません。DesignSyncが権限不足等で使えない場合はフォールバックしないでください。"
-    "プレビュー画面のクリック操作によるコード選択、ズームしての目視推測、"
-    "mcp__claude-in-chrome__* でのチャットへの問い合わせは不正確になりうるため代替に"
-    "せず、その旨を実行結果に明記してその場で作業を停止し、needs-human-decisionラベルで"
-    "人間の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
-    "mcp__claude-in-chrome__* で実装結果とデザインのプレビューを並べて見た目が一致する"
-    "ことを確認してから完了としてください。"
-)
-
-
-# issue #59: コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった
-# 補助用途に限り、ローカルLLMを併用する（自走タスク本体は引き続きClaude Codeのみを
-# 使う。docs/requirements.md 2-5参照）。呼び出すか否か・どのモデルを使うかはAgent
-# Runner自身の裁量とするため、タスク種別ごとの推奨モデルをsystem promptで伝える
-# （docs/basic-design.md 4章参照）。
-#
-# issue #107: MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の
-# `ollama_chat`ツールはOllama REST APIレスポンスから`content`のみを取り出して返し、
-# `prompt_eval_count`/`eval_count`/`total_duration`等のメトリクスを破棄するため、
-# MCP経由の呼び出しでは利用量を`config/usage.db`に記録できない（issue #60の調査で
-# 判明、`ollama_bench.py`を手動ベンチマーク専用ツールとして追加していた）。生成本体
-# の呼び出しはOllama REST APIを直接叩き利用量を記録する`ollama-bench` CLIに一本化
-# し、本番経路でも利用量がダッシュボードに反映されるようにする。モデルの利用可否
-# 確認（メトリクス不要）はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`のままで
-# よい。
-#
-# `ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソール
-# スクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身
-# とは別リポジトリのことが多い）のPATHには存在しない。解決済みの絶対パスを
-# system prompt本文に直接埋め込みBashツール呼び出しのたびに再現させる案は、長い
-# パスをLLMが複数回のツール呼び出しにまたがって書き写す必要があり、写し間違いで
-# 同じ「command not found」に陥りやすい。代わりに`run_agent_runner`が起動する
-# 子プロセスの環境変数`OLLAMA_BENCH_PATH`に解決済みパスを設定し（`popen`の`env=`
-# 参照）、Agent Runnerには短く安定した`$OLLAMA_BENCH_PATH`という参照だけを
-# 覚えさせる。
-#
-# issue #86: 上記の指示は「呼び出すかどうか・どのモデルを使うか」の判断を
-# Agent Runnerの裁量に委ねるのみで、判断結果をどこかに報告する指示が無かった
-# ため、実際にローカルLLMが活用されているかどうかがissueコメントからもDBからも
-# 一切観測できなかった。判断も報告も両方AI自己申告に依存する以上、issue #78・
-# #82・#84と同種の「AIがsystem prompt指示の実行を忘れる」リスクは残るが、まずは
-# 自己申告ベースで可視化する。人間向け（コメント本文にそのまま表示される自然文）
-# と機械可読（DBパース用のHTMLコメントマーカー、`agent_runner._extract_
-# local_llm_usage_report`が正規表現で抽出しJSONとしてパースする）の両方を
-# 最終応答に含めるよう指示する。
+# issue #86: ローカルLLM活用状況の機械可読マーカー。Agent Runner共通の指示文としては
+# 出力を指示しない（ローカルLLMの併用方針はプロジェクト側のCLAUDE.md等に記載する）が、
+# プロジェクト側の指示でこのマーカーが出力された場合に備え、パース処理は残す。
+# 記載方法はREADME.mdの「補助モデル（MCP）の使用量を記録する」参照。
 LOCAL_LLM_USAGE_MARKER_PREFIX = "<!-- producer-desk:local-llm-usage"
-
-AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
-    "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
-    "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
-    "（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを参考に、"
-    "呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
-    "（docs/basic-design.md 4章「モデルルーター設定設計」参照）。\n"
-    "- コードレビュー支援: `deepseek-coder-v2:16b`\n"
-    "- デバッグ調査の下調べ: `deepseek-coder-v2:16b`\n"
-    "- 日本語ドキュメント生成: `gemma2`\n"
-    "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
-    "モデルの利用可否確認はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`で構い"
-    "ませんが、実際に生成させる呼び出しは必ず環境変数`$OLLAMA_BENCH_PATH`が指す"
-    "`ollama-bench`コマンド（Bashツール）経由で行い、`--record --repo {repo} "
-    "--issue-number {issue_number}`を付与してください。あなたが作業している"
-    "プロジェクトのworktreeにはこのコマンドがPATH解決できないため、バレの"
-    "コマンド名`ollama-bench`ではなく必ず`$OLLAMA_BENCH_PATH`経由で呼び出して"
-    "ください。プロンプトは一旦ファイルに書き出してから渡しますが、他プロジェクトの"
-    "並行実行と衝突しないよう`mktemp`等で毎回一意な一時ファイルパスを生成してくだ"
-    "さい（固定パス`/tmp/prompt.txt`等の使い回しは避ける）。例: "
-    '`PROMPT_FILE=$(mktemp); "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b '
-    '"$PROMPT_FILE" --system "..." --record --repo {repo} '
-    "--issue-number {issue_number}`。MCP `mcp__ollama-client__ollama_chat`は"
-    "Ollama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
-    "ため、生成呼び出しには使わないでください。\n"
-    "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
-    "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
-    "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
-    "docs/requirements.md 2-5参照）。\n"
-    "このセッションでローカルLLMを使ったか使わなかったかは、セッション終了時の"
-    "最終応答（issueコメントとして投稿されます）に必ず記載してください。\n"
-    "- 人間向け: 「## ローカルLLM活用」という見出しで、使用した場合はタスク種別・"
-    "モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載してください。\n"
-    "- 機械可読: 上記の見出しの直後に、以下の形式でHTMLコメントとして埋め込んで"
-    "ください（本文とマーカーの間は空行で区切る）。レンダリングされないため、"
-    "本文の内容と重複しても構いません。\n"
-    "  使用した場合:\n"
-    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {{"used": true, "model": "deepseek-coder-v2:16b", '
-    '"task_type": "code_review_support", "note": "..."}}\n'
-    "  -->\n"
-    "  使用しなかった場合:\n"
-    f"  {LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
-    '  {{"used": false, "reason": "..."}}\n'
-    "  -->"
-)
 
 
 # issue #43: Agent Runnerが調査結果報告等の目的で`gh issue comment`等を生で
@@ -357,15 +254,15 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     "マーカーを付与してください（本文とマーカーの間は空行で区切る）。\n"
     f"{BOT_COMMENT_MARKER}\n"
     "このマーカーが無いと、オーケストレータのコメント監視処理があなた自身の"
-    "投稿を人間からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
-    "まいます（docs/basic-design.md 2-3「共通仕様」参照）。\n"
+    "投稿を{user_name}からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
+    "まいます。\n"
     "なお、あなたのセッション終了時の最終応答（このメッセージへの最後の"
     "返信）は、オーケストレータが自動的に「Agent Runner実行結果:」という"
     "見出しを付けてissueコメントに投稿します。そのため、対応が完了した"
     "旨をあなた自身が重ねて完了報告コメントとして投稿する必要はありません"
     "（投稿すると同内容のコメントが2つ連続で並ぶ重複が発生します）。"
     "能動的なissueコメント投稿は、長時間かかる作業の途中経過など、最終応答を"
-    "待たずに人間へ可視化する価値がある場合に限定してください。"
+    "待たずに{user_name}へ可視化する価値がある場合に限定してください。"
 )
 
 
@@ -375,8 +272,9 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
 # （PR #81で発生。resolve_pr_numberはフォールバックを備えたが、そもそも正しい
 # 記法で書けば発生しない問題のため、CLAUDE.mdの既存規約を`--append-system-prompt`
 # でも重ねて明示する）。
-AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
-    "プルリクエストを作成する場合、本文に対応するissue番号への参照を"
+AGENT_RUNNER_PR_INSTRUCTION = (
+    "プルリクエストを作成する場合は、以下に従ってください。\n"
+    "- 本文に対応するissue番号への参照を"
     "`Closes #<issue番号>`という形で、前後を空行で区切った独立した行として必ず"
     "含めてください。issue番号の直後に半角スペース・改行等の区切り文字を挟まず"
     "日本語（「で」「の」「を」等）を続けて書くと、GitHubの自動リンク解析が"
@@ -398,16 +296,97 @@ AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
 # 自体はAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONに既にあるため重複させず、
 # ここでは「人間向け報告として何を書くべきか」の指示のみを追加する。
 AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
-    "前述の通りセッション終了時の最終応答はissueコメントとして人間に投稿され"
-    "ます。人間向けの状況報告であることを踏まえ、次の点を意識して書いて"
-    "ください。\n"
+    "セッション終了時の最終応答はissueコメントとして{user_name}に投稿されます。"
+    "{user_name}向けの状況報告であることを踏まえ、次の点を意識して書いてください。\n"
     "- needs-human-decisionラベルを付与した場合は、最終応答に"
-    "「何について・なぜ人間の判断が必要か」と「人間が具体的に何をすればよいか」"
+    "「何について・なぜ{user_name}の判断が必要か」と「{user_name}が具体的に何をすればよいか」"
     "（例:「PR #163をレビューし、問題なければマージしてください」"
     "「A案/B案のどちらで進めるか選んでください」）を明記してください。\n"
     "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
-    "作業手順上の実装詳細は人間向け報告に含めないでください。"
+    "作業手順上の実装詳細は{user_name}向け報告に含めないでください。"
 )
+
+
+# issue #149: 上記4つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
+# 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
+# トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
+# が依存する文字列で、編集で失われるとシステムが壊れるため保存時に検証する。
+AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
+    PromptSpec(
+        key="label_instruction",
+        title="状態ラベル遷移の指示",
+        description=(
+            "Agent Runner自身にghコマンドで状態ラベル（needs-human-decision / "
+            "status:in-review）への遷移とCI待ちマーカーの出力を行わせる指示"
+        ),
+        default=AGENT_RUNNER_LABEL_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                STATUS_NEEDS_HUMAN_DECISION,
+                "{user_name}の判断が必要な場合に自己付与するラベル名。無いと判断待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                STATUS_IN_REVIEW,
+                "作業完了時に自己付与するラベル名。無いとレビュー待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                '"pr_number"',
+                "CI待ちマーカー本文のキー。無いとマーカーからPR番号を読み取れず、"
+                "CI完了後の自動再開が行われません",
+            ),
+            RequiredToken(
+                CI_WAIT_MARKER_PREFIX,
+                "CI完了待ちの機械可読マーカー。無いとCI完了後の自動再開が行われず"
+                "needs-human-decisionへ誤遷移します",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="comment_marker_instruction",
+        title="コメントマーカー付与の指示",
+        description="issueへの自己投稿コメントにボットマーカーを付与させ、最終応答の扱いを伝える指示",
+        default=AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                BOT_COMMENT_MARKER,
+                "AI自身のコメントを示すマーカー。無いとAIのコメントが{user_name}の新規指示と誤認され、"
+                "同一内容が無限に再ディスパッチされます",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="pr_instruction",
+        title="PR作成時の指示",
+        description="プルリクエスト作成時に従わせる指示（現状はPR本文のissue参照記法）",
+        default=AGENT_RUNNER_PR_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="final_message_instruction",
+        title="最終応答の書き方の指示",
+        description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
+        default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+)
+
+
+def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | None = None) -> str:
+    """`--append-system-prompt`に渡す指示文を、現在の設定で組み立てる。
+
+    起動のたびに`config/prompts.yaml`を読み直すため、保存した変更は次回の
+    Agent Runner起動分から反映される（実行中のセッションには反映されない）。
+    """
+    overrides = load_overrides_safe(prompts_path)
+    user_name = resolve_prompt_text(USER_NAME_SPEC, overrides)
+    return "\n\n".join(
+        render_prompt(
+            resolve_prompt_text(spec, overrides),
+            repo=repo,
+            issue_number=issue_number,
+            user_name=user_name,
+        )
+        for spec in AGENT_RUNNER_PROMPT_SPECS
+    )
 
 
 def build_claude_command(
@@ -423,19 +402,7 @@ def build_claude_command(
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
     """
-    system_prompt = (
-        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION
-    )
+    system_prompt = build_system_prompt(repo, issue_number)
     command = [
         "claude",
         "-p",
@@ -448,8 +415,8 @@ def build_claude_command(
         "--verbose",
         "--dangerously-skip-permissions",
         # `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため、
-        # AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの
-        # 利用を指示するだけでは実際には使えない。明示的に有効化する。
+        # プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示するだけでは
+        # 実際には使えない。明示的に有効化する。
         "--chrome",
         "--append-system-prompt",
         system_prompt,
@@ -470,7 +437,7 @@ def build_claude_command(
 # にのみインストールされたコンソールスクリプトだが、`claude -p`はAgent Runnerが
 # 担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）を
 # cwdに起動される。オーケストレータプロセスのPATHをそのまま継承させただけでは
-# `ollama-bench`がPATH解決できず、AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONの指示が
+# `ollama-bench`がPATH解決できず、プロジェクト側の指示（README.md参照）が
 # 「command not found」で失敗し利用量が一切記録されない。解決結果は
 # `run_agent_runner`が子プロセスの環境変数`OLLAMA_BENCH_PATH`に設定する
 # （system promptへの埋め込みではなく環境変数にする理由は同定数の直前コメント参照）。
@@ -707,7 +674,7 @@ _LOCAL_LLM_USAGE_MARKER_PATTERN = re.compile(
 
 
 # issue #86: 最終応答（`result`）に埋め込まれた機械可読マーカーからローカルLLM
-# 活用状況の自己申告を抽出する。マーカー自体がAGENT_RUNNER_LOCAL_LLM_INSTRUCTION
+# 活用状況の自己申告を抽出する。マーカー自体がプロジェクト側の指示
 # による自己申告に依存するため、issue #78・#82・#84と同種の「AIが指示通りに
 # 出力しない」リスクがある。マーカーが存在しない・JSONとしてパースできない場合は
 # 例外を送出せず記録をスキップする（この機能の失敗でAgent Runnerの正常終了
@@ -758,7 +725,7 @@ def _extract_local_llm_usage_report(
     )
 
 
-# issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
+# issue #144: AGENT_RUNNER_PR_INSTRUCTIONで「PR本文にCloses #<issue番号>を
 # 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
 # PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
 # 未生成のケースとは異なり、そもそも言及自体が存在しないため`resolve_pr_number`の
@@ -1010,7 +977,7 @@ def run_agent_runner(
     )
 
     log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
-    # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
+    # issue #107: プロジェクト側の指示が参照する`$OLLAMA_BENCH_PATH`を
     # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
     # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
     #

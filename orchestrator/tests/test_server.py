@@ -9,6 +9,8 @@ import time
 import urllib.error
 import urllib.request
 
+import pytest
+
 from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
 from orchestrator.config import EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
@@ -19,6 +21,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.prompts import PromptStorageError
 from orchestrator.server import ProgressStore, StateStore, make_server
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
@@ -1511,3 +1514,220 @@ def test_post_refresh_all_returns_502_and_keeps_store_when_gh_fails() -> None:
         assert store.get() is before
     finally:
         server.shutdown()
+
+
+# --- Agent Runnerプロンプト設定API（issue #149） ---
+
+
+def _put(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _delete(server, path: str) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(f"http://{host}:{port}{path}", method="DELETE")
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _prompt_server():
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    return _run_server(StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue)[0]
+
+
+def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    by_key = {p["key"]: p for p in body["prompts"]}
+    assert list(by_key) == [
+        "label_instruction",
+        "comment_marker_instruction",
+        "pr_instruction",
+        "final_message_instruction",
+        "approve_default_message",
+        "user_name",
+    ]
+    assert all(p["is_default"] for p in by_key.values())
+    comment_tokens = [t["token"] for t in by_key["comment_marker_instruction"]["required_tokens"]]
+    assert comment_tokens == ["<!-- producer-desk:bot-comment -->"]
+
+
+def test_put_prompt_saves_and_marks_as_edited() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        _, listed = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["text"] == "新本文"
+    assert body["is_default"] is False
+    edited = {p["key"]: p for p in listed["prompts"]}["final_message_instruction"]
+    assert edited["text"] == "新本文"
+
+
+def test_put_prompt_missing_required_token_returns_400_with_errors() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/comment_marker_instruction", {"text": "無し"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert body["errors"] == ["必須トークン <!-- producer-desk:bot-comment --> が含まれていません"]
+
+
+def test_put_prompt_unknown_placeholder_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "{foo}"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "{foo}" in body["error"]
+
+
+def test_put_prompt_unknown_key_returns_404() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/nope", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 404
+
+
+def test_put_prompt_without_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_delete_prompt_resets_to_default() -> None:
+    server = _prompt_server()
+    try:
+        _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        status, body = _delete(server, "/api/prompts/final_message_instruction")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["is_default"] is True
+
+
+def test_put_user_name_saves_and_rejects_braces() -> None:
+    server = _prompt_server()
+    try:
+        ok_status, ok_body = _put(server, "/api/prompts/user_name", {"text": "山田さん"})
+        bad_status, _ = _put(server, "/api/prompts/user_name", {"text": "{repo}"})
+    finally:
+        server.shutdown()
+
+    assert ok_status == 200
+    assert ok_body["text"] == "山田さん"
+    assert ok_body["multiline"] is False
+    assert ok_body["placeholders"] == []
+    assert bad_status == 400
+
+
+def _raw_put(server, path: str, body: bytes) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"text"', b"123", b"null", b"{not json"])
+def test_put_prompt_non_object_body_returns_400(body: bytes) -> None:
+    server = _prompt_server()
+    try:
+        status, payload = _raw_put(server, "/api/prompts/final_message_instruction", body)
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "error" in payload
+
+
+def test_put_prompt_non_string_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {"text": 123})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_put_prompt_too_large_returns_413() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(
+            server, "/api/prompts/final_message_instruction", {"text": "a" * (300 * 1024)}
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 413
+
+
+def test_put_prompt_recovers_from_broken_yaml(_isolated_prompts_path) -> None:
+    _isolated_prompts_path.write_text("prompts: [unclosed", encoding="utf-8")
+    server = _prompt_server()
+    try:
+        list_status, _ = _get(server, "/api/prompts")
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "復旧"})
+    finally:
+        server.shutdown()
+
+    assert list_status == 200
+    assert status == 200
+    assert body["text"] == "復旧"
+
+
+def test_put_prompt_storage_failure_returns_500(_isolated_prompts_path, monkeypatch) -> None:
+    def boom(spec, text):  # noqa: ANN001
+        raise PromptStorageError("書き込めません")
+
+    monkeypatch.setattr("orchestrator.server.save_prompt_override", boom)
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 500
+    assert body["error"] == "書き込めません"
