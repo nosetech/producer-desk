@@ -162,13 +162,6 @@ export default function PromptSettings() {
     <div
       className={`${styles.page} ${mobileEdit ? styles.viewEdit : styles.viewList}`}
     >
-      <div className={styles.head}>
-        <h1 className={styles.title}>プロンプト設定</h1>
-        <p className={styles.lead}>
-          Agent Runner 起動時に渡す指示文（全{prompts?.length ?? "-"}
-          種）を閲覧・編集します。
-        </p>
-      </div>
       <div role="note" className={styles.notice}>
         <span className={styles.noticeIcon}>
           <InfoIcon size={16} />
@@ -240,7 +233,6 @@ export default function PromptSettings() {
                       {n ? `必須 ${n}` : "なし"}
                     </span>
                   </span>
-                  <span className={styles.rowPurpose}>{p.description}</span>
                 </button>
               );
             })}

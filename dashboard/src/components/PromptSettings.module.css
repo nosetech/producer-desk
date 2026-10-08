@@ -31,26 +31,6 @@
   padding: 22px 24px 100px;
 }
 
-.head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.title {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.3;
-}
-
-.lead {
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.55;
-  text-wrap: pretty;
-}
-
 .notice {
   display: flex;
   align-items: flex-start;
@@ -176,13 +156,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.rowPurpose {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  text-wrap: pretty;
 }
 
 .rowChevron {
@@ -1036,10 +1009,6 @@
     gap: 13px;
   }
 
-  .title {
-    font-size: 17px;
-  }
-
   .grid {
     display: flex;
     flex-direction: column;
@@ -1047,8 +1016,7 @@
   }
 
   .viewList .editor,
-  .viewEdit .list,
-  .viewEdit .head {
+  .viewEdit .list {
     display: none;
   }
 
