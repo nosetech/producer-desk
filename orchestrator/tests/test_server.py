@@ -153,6 +153,27 @@ def _patch(server, path: str, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read())
 
 
+def test_get_settings_returns_dashboard_settings() -> None:
+    settings = {
+        "issue_cache_ttl_seconds": 120.0,
+        "dashboard_poll_interval_seconds": 10.0,
+        "sync_tick_interval_seconds": 5.0,
+    }
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        dashboard_settings=settings,
+    )
+    try:
+        status, body = _get(server, "/api/settings")
+        assert status == 200
+        assert body == settings
+    finally:
+        server.shutdown()
+
+
 def test_state_store_returns_none_before_any_update() -> None:
     store = StateStore()
 

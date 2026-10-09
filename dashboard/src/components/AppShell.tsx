@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchProjects, fetchState } from "@/lib/api";
+import { fetchProjects, fetchSettings, fetchState } from "@/lib/api";
+import {
+  DEFAULT_DASHBOARD_SETTINGS,
+  type DashboardSettings,
+} from "@/lib/settings";
 import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
@@ -23,7 +27,6 @@ import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
 import Toast from "./Toast";
 import styles from "./AppShell.module.css";
 
-const POLL_INTERVAL_MS = 30_000;
 const TOAST_DURATION_MS = 4_600;
 const EMPTY_STATE: AggregatedState = {
   decisions: [],
@@ -45,6 +48,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     Record<string, ProjectExecutionSettings>
   >({});
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<DashboardSettings>(
+    DEFAULT_DASHBOARD_SETTINGS,
+  );
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
@@ -87,8 +93,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // 画面遷移・タブ切替をまたいで保持するプロジェクト別issue一覧キャッシュ（issue #198）。
   const issueCache = useRef(new Map<string, IssueCacheEntry>());
   const lookupIssues = useCallback(
-    (repo: string) => lookupIssueCache(issueCache.current, repo, Date.now()),
-    [],
+    (repo: string) =>
+      lookupIssueCache(
+        issueCache.current,
+        repo,
+        Date.now(),
+        settings.issueCacheTtlMs,
+      ),
+    [settings.issueCacheTtlMs],
   );
   const storeIssues = useCallback((repo: string, issues: ProjectIssue[]) => {
     storeIssueCache(issueCache.current, repo, issues, Date.now());
@@ -114,12 +126,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refresh();
     refreshProjects();
+    fetchSettings().then(setSettings);
+  }, [refresh, refreshProjects]);
+
+  useEffect(() => {
     const interval = setInterval(() => {
       refresh();
       refreshProjects();
-    }, POLL_INTERVAL_MS);
+    }, settings.pollIntervalMs);
     return () => clearInterval(interval);
-  }, [refresh, refreshProjects]);
+  }, [refresh, refreshProjects, settings.pollIntervalMs]);
 
   const openReply = useCallback(
     (
@@ -159,6 +175,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         repos,
         projectSettings,
         error,
+        settings,
         lockedIssue,
         refresh,
         refreshProjects,

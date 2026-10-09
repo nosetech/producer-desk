@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useApp } from "./AppContext";
 import { fetchUsage } from "@/lib/api";
 import {
   METRIC_LABEL,
@@ -15,11 +16,11 @@ import {
 import type { UsageResponse } from "@/lib/types";
 import styles from "./UsageMonitor.module.css";
 
-const POLL_INTERVAL_MS = 30_000;
 const EMPTY_USAGE: UsageResponse = { daily: [], currentLimit: null };
 const CHART_METRICS: ChartMetric[] = ["total", "in", "out"];
 
 export default function UsageMonitor() {
+  const { settings } = useApp();
   const [usage, setUsage] = useState<UsageResponse>(EMPTY_USAGE);
   const [error, setError] = useState<string | null>(null);
   const [metric, setMetric] = useState<ChartMetric>("total");
@@ -37,9 +38,12 @@ export default function UsageMonitor() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
   }, [refresh]);
+
+  useEffect(() => {
+    const interval = setInterval(refresh, settings.pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [refresh, settings.pollIntervalMs]);
 
   const { daily, currentLimit } = usage;
   const colors = assignModelColors(daily);

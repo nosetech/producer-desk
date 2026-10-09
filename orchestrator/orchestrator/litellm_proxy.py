@@ -13,7 +13,7 @@ import os
 import urllib.error
 import urllib.request
 
-from orchestrator.config import EXECUTION_MODE_LITELLM_PROXY
+from orchestrator.config import DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS, EXECUTION_MODE_LITELLM_PROXY
 from orchestrator.execution_mode import ExecutionSettings
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def resolve_api_key() -> str:
     return os.environ.get(LITELLM_PROXY_API_KEY_ENV, "")
 
 
-def is_healthy(base_url: str, *, timeout: float = 3.0) -> bool:
+def is_healthy(base_url: str, *, timeout: float = DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS) -> bool:
     """LiteLLM Proxyプロセスが応答するかを確認する。
 
     プロセスが落ちている・応答しない場合、Agent Runner側は(A) Claude Code CLI

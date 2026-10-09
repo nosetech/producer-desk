@@ -23,7 +23,6 @@ import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectIssues.module.css";
 
-const POLL_INTERVAL_MS = 30_000;
 const SKELETON_WIDTHS = [62, 48, 70, 40, 56, 44];
 
 type LoadState = "loading" | "ready" | "error";
@@ -103,6 +102,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     openNewTask,
     lookupIssues,
     storeIssues,
+    settings,
   } = useApp();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
@@ -169,15 +169,21 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     const cached = lookupIssues(repo);
     if (cached.kind === "miss") fetchIssues("initial");
     else if (cached.kind === "stale") fetchIssues("poll");
+  }, [repo, fetchIssues, lookupIssues]);
+
+  useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
     const start = () => {
       clearInterval(interval);
-      interval = setInterval(() => fetchIssues("poll"), POLL_INTERVAL_MS);
+      interval = setInterval(
+        () => fetchIssues("poll"),
+        settings.pollIntervalMs,
+      );
     };
     restartPoll.current = start;
     start();
     return () => clearInterval(interval);
-  }, [repo, fetchIssues, lookupIssues]);
+  }, [fetchIssues, settings.pollIntervalMs]);
 
   const ready = load === "ready";
   const orphans = issues.filter((i) => i.is_orphaned);

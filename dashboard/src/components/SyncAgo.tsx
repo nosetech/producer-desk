@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useApp } from "./AppContext";
 import { formatRelativeTime, formatSyncTitle } from "@/lib/time";
-
-const TICK_INTERVAL_MS = 30_000;
 
 /**
  * オーケストレータが実際にGitHubから情報を取得した時刻を相対表記（「N分前」）で表示する
@@ -20,11 +19,15 @@ export default function SyncAgo({
   /** 指定すると相対表記の代わりに表示する（取得中の「取得中…」表示用）。 */
   loadingText?: string;
 }) {
+  const { settings } = useApp();
   const [, setTick] = useState(0);
   useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), TICK_INTERVAL_MS);
+    const timer = setInterval(
+      () => setTick((t) => t + 1),
+      settings.syncTickIntervalMs,
+    );
     return () => clearInterval(timer);
-  }, []);
+  }, [settings.syncTickIntervalMs]);
 
   if (!fetchedAt && !loadingText) return null;
   return (

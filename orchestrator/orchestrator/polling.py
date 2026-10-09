@@ -10,12 +10,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from orchestrator.aggregation import AggregatedState, IsDispatchActiveFn, IssueSummary, aggregate
-from orchestrator.config import Project
+from orchestrator.config import DEFAULT_POLLING_INTERVAL_SECONDS, Project
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import STATUS_IN_REVIEW
 
-DEFAULT_INTERVAL_SECONDS = 5 * 60
+DEFAULT_INTERVAL_SECONDS = DEFAULT_POLLING_INTERVAL_SECONDS
 
 ListIssuesFn = Callable[[str], list[IssueSummary]]
 ResolvePrNumberFn = Callable[[str, int], int | None]
