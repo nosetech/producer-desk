@@ -327,6 +327,40 @@ def test_ignores_issue_not_in_progress() -> None:
     assert get_rollup.calls == []
 
 
+def test_ci_wait_timeout_is_configurable() -> None:
+    tracker = CiWaitTracker()
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    get_rollup = FakeStatusCheckRollup({172: [{"status": "IN_PROGRESS"}]})
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 173, [STATUS_IN_PROGRESS], [_ci_wait_comment(172)])
+        ],
+    }
+    start = datetime(2026, 9, 3, 0, 0, 0, tzinfo=UTC)
+
+    def run(at: datetime) -> None:
+        process_ci_waiting_issues(
+            issues_by_repo,
+            tracker,
+            get_labels=labels.get_labels,
+            add_label=labels.add_label,
+            remove_label=labels.remove_label,
+            get_pr_status_check_rollup=get_rollup,
+            dispatch_queue=dispatch_queue,
+            post_comment=comments.post_comment,
+            now=lambda: at,
+            ci_wait_timeout=timedelta(hours=1),
+        )
+
+    run(start)
+    run(start + timedelta(minutes=59))
+    assert labels.labels == {STATUS_IN_PROGRESS}
+    run(start + timedelta(hours=1))
+    assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+
+
 def test_falls_back_to_needs_human_decision_after_timeout() -> None:
     """修正方針5: 無限待機防止のフェイルセーフ。
 

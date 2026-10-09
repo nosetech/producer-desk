@@ -11,19 +11,29 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from datetime import timedelta
 
 from orchestrator.agent_runner import run_agent_runner
 from orchestrator.aggregation import AggregatedState
 from orchestrator.ci_watcher import CiWaitTracker, process_ci_waiting_issues
 from orchestrator.close_watcher import close_finished_issues
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
-from orchestrator.config import Project, load_log_retention_days, load_projects
+from orchestrator.config import (
+    Project,
+    load_ci_wait_timeout_hours,
+    load_dashboard_settings,
+    load_litellm_health_timeout_seconds,
+    load_log_retention_days,
+    load_polling_interval_seconds,
+    load_projects,
+)
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
+from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.logging_config import configure_logging
-from orchestrator.polling import DEFAULT_INTERVAL_SECONDS, run_polling_loop
+from orchestrator.polling import run_polling_loop
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
 
@@ -35,7 +45,9 @@ logger = logging.getLogger(__name__)
 PORT_ENV = "ORCHESTRATOR_PORT"
 
 
-def _make_dispatch_fn(projects: list[Project], log_retention_days: int) -> DispatchFn:
+def _make_dispatch_fn(
+    projects: list[Project], log_retention_days: int, litellm_health_timeout_seconds: float
+) -> DispatchFn:
     projects_by_repo = {project.repo: project for project in projects}
 
     def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
@@ -44,6 +56,9 @@ def _make_dispatch_fn(projects: list[Project], log_retention_days: int) -> Dispa
             issue_number,
             message,
             log_retention_days=log_retention_days,
+            check_litellm_health_fn=lambda base_url: litellm_is_healthy(
+                base_url, timeout=litellm_health_timeout_seconds
+            ),
         )
 
     return dispatch_fn
@@ -55,6 +70,20 @@ def main() -> None:
 
     projects = load_projects()
 
+    # タイミング系設定（issue #201）。不正値はここで起動時エラーにする。
+    polling_interval_seconds = load_polling_interval_seconds()
+    ci_wait_timeout_hours = load_ci_wait_timeout_hours()
+    litellm_health_timeout_seconds = load_litellm_health_timeout_seconds()
+    dashboard_settings = load_dashboard_settings()
+    logger.info(
+        "有効なタイミング設定: polling_interval_seconds=%s ci_wait_timeout_hours=%s "
+        "litellm_health_timeout_seconds=%s dashboard=%s",
+        polling_interval_seconds,
+        ci_wait_timeout_hours,
+        litellm_health_timeout_seconds,
+        dashboard_settings,
+    )
+
     if not projects:
         logger.error("config/projects.yaml にプロジェクトが登録されていません。")
         return
@@ -65,7 +94,9 @@ def main() -> None:
 
     store = StateStore()
     stop_event = threading.Event()
-    dispatch_queue = DispatchQueue(dispatch_fn=_make_dispatch_fn(projects, log_retention_days))
+    dispatch_queue = DispatchQueue(
+        dispatch_fn=_make_dispatch_fn(projects, log_retention_days, litellm_health_timeout_seconds)
+    )
     comment_tracker = CommentTracker()
     ci_wait_tracker = CiWaitTracker()
     decision_notifier = DecisionNotifier()
@@ -98,6 +129,7 @@ def main() -> None:
             get_pr_status_check_rollup=gh_get_pr_status_check_rollup,
             dispatch_queue=dispatch_queue,
             post_comment=gh_post_comment,
+            ci_wait_timeout=timedelta(hours=ci_wait_timeout_hours),
         )
 
     def on_update(state: AggregatedState) -> None:
@@ -109,7 +141,7 @@ def main() -> None:
         target=run_polling_loop,
         kwargs={
             "projects": projects,
-            "interval_seconds": DEFAULT_INTERVAL_SECONDS,
+            "interval_seconds": polling_interval_seconds,
             "on_update": on_update,
             "on_issues_fetched": on_issues_fetched,
             "is_dispatch_active": dispatch_queue.is_active,
@@ -120,7 +152,13 @@ def main() -> None:
     polling_thread.start()
 
     port = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
-    server = make_server(store, projects=projects, dispatch_queue=dispatch_queue, port=port)
+    server = make_server(
+        store,
+        projects=projects,
+        dispatch_queue=dispatch_queue,
+        port=port,
+        dashboard_settings=dashboard_settings,
+    )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",
         server.server_address[0],

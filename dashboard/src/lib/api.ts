@@ -13,6 +13,11 @@ import {
   type UpdateProjectSettingsResult,
   type UsageResponse,
 } from "./types";
+import {
+  DEFAULT_DASHBOARD_SETTINGS,
+  parseDashboardSettings,
+  type DashboardSettings,
+} from "./settings";
 
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const data = await res.json();
@@ -57,6 +62,14 @@ export function fetchUsage(): Promise<UsageResponse> {
   return fetch("/api/usage", { cache: "no-store" }).then((res) =>
     parseJsonOrThrow<UsageResponse>(res),
   );
+}
+
+/** 取得失敗・不正値は従来の固定値にフォールバックする（issue #201）。 */
+export function fetchSettings(): Promise<DashboardSettings> {
+  return fetch("/api/settings", { cache: "no-store" })
+    .then((res) => parseJsonOrThrow<unknown>(res))
+    .then(parseDashboardSettings)
+    .catch(() => DEFAULT_DASHBOARD_SETTINGS);
 }
 
 function repoPath(repo: string): string {

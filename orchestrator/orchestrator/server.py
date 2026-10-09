@@ -27,7 +27,7 @@ from orchestrator.aggregation import (
     aggregate,
     build_project_issues,
 )
-from orchestrator.config import Project
+from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
@@ -236,6 +236,7 @@ def _make_handler(
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
     sync_worktree: SyncWorktreeFn,
+    dashboard_settings: dict[str, float],
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
@@ -287,6 +288,9 @@ def _make_handler(
                 return
             if self.path == "/api/usage":
                 self._handle_usage()
+                return
+            if self.path == "/api/settings":
+                self._send_json(200, dict(dashboard_settings))
                 return
             if self.path == PROMPTS_PATH:
                 self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
@@ -677,6 +681,7 @@ def make_server(
     list_issues: ListIssuesFn = gh_list_issues,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
+    dashboard_settings: dict[str, float] | None = None,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -699,5 +704,8 @@ def make_server(
         list_issues=list_issues,
         sync_worktree=sync_worktree,
         update_execution_settings=update_execution_settings,
+        dashboard_settings=(
+            dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
+        ),
     )
     return ThreadingHTTPServer((host, port), handler)

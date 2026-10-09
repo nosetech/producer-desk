@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 
 from orchestrator.agent_runner import extract_ci_wait_marker
 from orchestrator.aggregation import IssueSummary
+from orchestrator.config import DEFAULT_CI_WAIT_TIMEOUT_HOURS
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import BOT_COMMENT_MARKER, GetPrStatusCheckRollupFn, PostCommentFn
 from orchestrator.labels import (
@@ -46,7 +47,8 @@ NowFn = Callable[[], datetime]
 
 # 無限待機の防止（修正方針5）。オーケストレータ自身のポーリングにも上限を設け、
 # それでも完了しなければ初めてneeds-human-decisionへ遷移させるフェイルセーフとする。
-CI_WAIT_TIMEOUT = timedelta(hours=6)
+# 既定値。`config/projects.yaml`の`ci_wait_timeout_hours`で変更できる（issue #201）。
+CI_WAIT_TIMEOUT = timedelta(hours=DEFAULT_CI_WAIT_TIMEOUT_HOURS)
 
 # issue #173のコードレビューで指摘: `gh pr create`直後〜GitHub Actionsが
 # check-suiteを登録するまでの短いタイムラグでは`statusCheckRollup`が一時的に
@@ -138,6 +140,7 @@ def process_ci_waiting_issues(
     dispatch_queue: DispatchQueue,
     post_comment: PostCommentFn,
     now: NowFn = lambda: datetime.now(UTC),
+    ci_wait_timeout: timedelta = CI_WAIT_TIMEOUT,
 ) -> None:
     for repo, issues in issues_by_repo.items():
         for issue in issues:
@@ -180,8 +183,8 @@ def process_ci_waiting_issues(
                 checks = None
 
             if checks is None or any(_is_check_pending(check) for check in checks):
-                if current_time - state.first_seen >= CI_WAIT_TIMEOUT:
-                    timeout_hours = int(CI_WAIT_TIMEOUT.total_seconds() // 3600)
+                if current_time - state.first_seen >= ci_wait_timeout:
+                    timeout_hours = f"{ci_wait_timeout.total_seconds() / 3600:g}"
                     post_comment(
                         repo,
                         issue.number,

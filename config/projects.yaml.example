@@ -30,3 +30,25 @@ projects:
 # が世代管理し、Agent Runner個別実行ログはこの日数（mtime基準）より古いものが
 # 実行完了のたびに削除される（docs/basic-design.md 3-2参照、issue #114）。
 # log_retention_days: 7
+
+# --- タイミング系設定（issue #201）---
+# 以下はいずれも省略可。省略時は括弧内の既定値を使う。値は正の数値のみ
+# （0以下・数値以外は起動時エラー）。変更の反映にはオーケストレータの再起動が必要。
+#
+# オーケストレータがGitHubをポーリングする間隔（秒、既定300）
+# polling_interval_seconds: 300
+# CI完了待機（status:in-progressのままCI完了を待つ状態）のタイムアウト（時間、既定6）。
+# 超過するとneeds-human-decisionへ遷移する
+# ci_wait_timeout_hours: 6
+# LiteLLM Proxyのヘルスチェックのタイムアウト（秒、既定3）
+# litellm_health_timeout_seconds: 3
+# ollama-bench（ローカルLLM生成呼び出し）のタイムアウト（秒、既定300）
+# ollama_bench_timeout_seconds: 300
+#
+# ダッシュボード向け（GET /api/settings経由で配信。ダッシュボードのリロードで反映）
+# プロジェクト別issue一覧のクライアントキャッシュTTL（秒、既定60）
+# issue_cache_ttl_seconds: 60
+# 画面のポーリング間隔（秒、既定30）
+# dashboard_poll_interval_seconds: 30
+# 「N分前」表示の更新間隔（秒、既定30）
+# sync_tick_interval_seconds: 30

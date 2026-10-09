@@ -13,12 +13,22 @@ import pytest
 
 from orchestrator.config import (
     CONFIG_PATH_ENV,
+    DEFAULT_CI_WAIT_TIMEOUT_HOURS,
+    DEFAULT_DASHBOARD_SETTINGS,
+    DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS,
     DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS,
+    DEFAULT_POLLING_INTERVAL_SECONDS,
     EXECUTION_MODE_CLAUDE_CODE,
     EXECUTION_MODE_LITELLM_PROXY,
     Project,
     _detect_repo_root,
+    load_ci_wait_timeout_hours,
+    load_dashboard_settings,
+    load_litellm_health_timeout_seconds,
     load_log_retention_days,
+    load_ollama_bench_timeout_seconds,
+    load_polling_interval_seconds,
     load_projects,
     update_project_execution_settings,
 )
@@ -344,3 +354,59 @@ def test_project_snapshot_execution_settings_never_observes_torn_write() -> None
         (EXECUTION_MODE_LITELLM_PROXY, f"model-{i}") for i in range(200)
     }
     assert all(snapshot in valid for snapshot in observed)
+
+
+def _write_config(tmp_path: Path, extra: str) -> Path:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text(f"projects: []\n{extra}", encoding="utf-8")
+    return config_path
+
+
+def test_timing_settings_default_to_previous_hardcoded_values(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path, "")
+
+    assert load_polling_interval_seconds(config_path) == DEFAULT_POLLING_INTERVAL_SECONDS == 300
+    assert load_ci_wait_timeout_hours(config_path) == DEFAULT_CI_WAIT_TIMEOUT_HOURS == 6
+    assert load_litellm_health_timeout_seconds(config_path) == (
+        DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS
+    )
+    assert load_ollama_bench_timeout_seconds(config_path) == DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS
+    assert load_dashboard_settings(config_path) == DEFAULT_DASHBOARD_SETTINGS
+
+
+def test_timing_settings_can_be_overridden(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        "polling_interval_seconds: 60\n"
+        "ci_wait_timeout_hours: 1.5\n"
+        "litellm_health_timeout_seconds: 1\n"
+        "ollama_bench_timeout_seconds: 600\n"
+        "issue_cache_ttl_seconds: 120\n"
+        "dashboard_poll_interval_seconds: 10\n"
+        "sync_tick_interval_seconds: 5\n",
+    )
+
+    assert load_polling_interval_seconds(config_path) == 60
+    assert load_ci_wait_timeout_hours(config_path) == 1.5
+    assert load_litellm_health_timeout_seconds(config_path) == 1
+    assert load_ollama_bench_timeout_seconds(config_path) == 600
+    assert load_dashboard_settings(config_path) == {
+        "issue_cache_ttl_seconds": 120,
+        "dashboard_poll_interval_seconds": 10,
+        "sync_tick_interval_seconds": 5,
+    }
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "true"])
+def test_timing_settings_reject_invalid_values(tmp_path: Path, value: str) -> None:
+    config_path = _write_config(tmp_path, f"polling_interval_seconds: {value}\n")
+
+    with pytest.raises(ValueError, match="polling_interval_seconds"):
+        load_polling_interval_seconds(config_path)
+
+
+def test_ollama_bench_timeout_falls_back_to_default_without_config_file(tmp_path: Path) -> None:
+    assert (
+        load_ollama_bench_timeout_seconds(tmp_path / "missing.yaml")
+        == DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS
+    )

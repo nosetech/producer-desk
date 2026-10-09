@@ -6,6 +6,7 @@ import type {
   IssueComment,
   ProjectExecutionSettings,
 } from "@/lib/types";
+import type { DashboardSettings } from "@/lib/settings";
 import type { IssueCacheLookup } from "@/lib/issueCache";
 import type { ProjectIssue } from "@/lib/types";
 import type { IssueRef } from "./ComposerBar";
@@ -15,6 +16,8 @@ export interface AppContextValue {
   repos: string[];
   projectSettings: Record<string, ProjectExecutionSettings>;
   error: string | null;
+  /** config/projects.yamlのタイミング系設定（issue #201）。取得前・失敗時は従来の固定値。 */
+  settings: DashboardSettings;
   lockedIssue: IssueRef | null;
   refresh: () => Promise<void>;
   refreshProjects: () => Promise<void>;

@@ -46,6 +46,22 @@ CONFIG_PATH_ENV = "PROJECTS_CONFIG_PATH"
 # （issue #114）。
 DEFAULT_LOG_RETENTION_DAYS = 7
 
+# タイミング系設定の既定値（issue #201）。いずれもconfig/projects.yamlの同名の
+# トップレベルキーで上書きでき、未指定時は従来コード内に固定していた値を使う。
+DEFAULT_POLLING_INTERVAL_SECONDS = 5 * 60
+DEFAULT_CI_WAIT_TIMEOUT_HOURS = 6.0
+DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS = 3.0
+DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS = 300.0
+DEFAULT_ISSUE_CACHE_TTL_SECONDS = 60.0
+DEFAULT_DASHBOARD_POLL_INTERVAL_SECONDS = 30.0
+DEFAULT_SYNC_TICK_INTERVAL_SECONDS = 30.0
+
+DEFAULT_DASHBOARD_SETTINGS: dict[str, float] = {
+    "issue_cache_ttl_seconds": DEFAULT_ISSUE_CACHE_TTL_SECONDS,
+    "dashboard_poll_interval_seconds": DEFAULT_DASHBOARD_POLL_INTERVAL_SECONDS,
+    "sync_tick_interval_seconds": DEFAULT_SYNC_TICK_INTERVAL_SECONDS,
+}
+
 # 自走タスク本体の実行手段（issue #148・#174・#176、docs/basic-design.md 4章）。
 # (A) Claude Code CLI直利用＋サブスクリプション（既定）と、
 # (B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金のいずれか。
@@ -132,6 +148,56 @@ def load_log_retention_days(config_path: Path | None = None) -> int:
     # backupCount管理・cleanup_old_agent_logs（agent_runner.py）のmtime判定で
     # 即座に削除されうるため、最低1日は保持する（issue #114）。
     return max(1, value)
+
+
+def _load_positive_number(key: str, default: float, config_path: Path | None) -> float:
+    """トップレベルキー`key`を正の数値として読む。未指定なら`default`。
+
+    0以下・非数値は、ポーリングの忙しループやタイムアウト即発火を招くため
+    黙って補正せず、起動時エラーとして設定ミスに気付けるようにする（issue #201）。
+    """
+    raw = _load_yaml_data(config_path).get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        raise ValueError(
+            f"config/projects.yamlの{key}は正の数値である必要があります（実際の値: {raw!r}）。"
+        )
+    return float(raw)
+
+
+def load_polling_interval_seconds(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "polling_interval_seconds", DEFAULT_POLLING_INTERVAL_SECONDS, config_path
+    )
+
+
+def load_ci_wait_timeout_hours(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "ci_wait_timeout_hours", DEFAULT_CI_WAIT_TIMEOUT_HOURS, config_path
+    )
+
+
+def load_litellm_health_timeout_seconds(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "litellm_health_timeout_seconds", DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS, config_path
+    )
+
+
+def load_ollama_bench_timeout_seconds(config_path: Path | None = None) -> float:
+    """ollama-bench CLIは設定ファイルが無い環境でも単体で動かせるよう、欠落時は既定値。"""
+    try:
+        return _load_positive_number(
+            "ollama_bench_timeout_seconds", DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS, config_path
+        )
+    except FileNotFoundError:
+        return DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS
+
+
+def load_dashboard_settings(config_path: Path | None = None) -> dict[str, float]:
+    """ダッシュボードへ配信する設定（`GET /api/settings`、単位は秒）。"""
+    return {
+        key: _load_positive_number(key, default, config_path)
+        for key, default in DEFAULT_DASHBOARD_SETTINGS.items()
+    }
 
 
 def _resolve_config_path(config_path: Path | None) -> Path:
