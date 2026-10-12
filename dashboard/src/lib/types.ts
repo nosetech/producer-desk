@@ -22,8 +22,23 @@ export interface IssueSummary {
   labels: string[];
   comments: IssueComment[];
   updated_at: string;
-  /** `status:in-review` のissueについてのみ、紐づくPR番号が入る（issue #58）。 */
+  /**
+   * `status:in-review` のissueについてのみ、対応PRを一意に特定できた場合のPR番号が入る
+   * （issue #58）。候補が0件または2件以上の場合はnull（issue #206）。
+   */
   pr_number: number | null;
+  /** `status:in-review` のissueの対応PR候補（issue #206）。 */
+  pr_candidates: PrCandidate[];
+}
+
+/** issueの対応PR候補。オーケストレータのPrCandidateに対応する（issue #206）。 */
+export interface PrCandidate {
+  number: number;
+  title: string;
+  url: string;
+  is_draft: boolean;
+  head_ref_name: string;
+  base_ref_name: string;
 }
 
 /**

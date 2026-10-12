@@ -83,11 +83,12 @@ export function postInstruct(
   action: InstructAction,
   message?: string,
   progressId?: string,
+  prNumber?: number,
 ): Promise<InstructResult> {
   return fetch(`${repoPath(repo)}/issues/${issueNumber}/instruct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, message, progressId }),
+    body: JSON.stringify({ action, message, progressId, prNumber }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
 }
 

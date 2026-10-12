@@ -11,7 +11,13 @@ import urllib.request
 
 import pytest
 
-from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
+from orchestrator.aggregation import (
+    STATUS_COUNT_KEYS,
+    AggregatedState,
+    IssueSummary,
+    PrCandidate,
+    ProjectStatus,
+)
 from orchestrator.config import EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
@@ -50,9 +56,23 @@ class FakeComments:
         self.posted.append((repo, issue_number, body))
 
 
+def _pr_candidate(number: int) -> PrCandidate:
+    return PrCandidate(number=number, title="PR", url=f"https://github.com/o/r/pull/{number}")
+
+
 class FakeReviewMerge:
-    def __init__(self, pr_number: int | None, *, branch: str = "feature/issue-1-something") -> None:
-        self.pr_number = pr_number
+    def __init__(
+        self,
+        pr_number: int | None,
+        *,
+        candidates: list[PrCandidate] | None = None,
+        branch: str = "feature/issue-1-something",
+    ) -> None:
+        self.candidates = (
+            candidates
+            if candidates is not None
+            else ([] if pr_number is None else [_pr_candidate(pr_number)])
+        )
         self.branch = branch
         self.merge_calls: list[tuple[str, int]] = []
         self.close_calls: list[tuple[str, int]] = []
@@ -60,8 +80,8 @@ class FakeReviewMerge:
         self.delete_branch_calls: list[tuple[str, str]] = []
         self.sync_worktree_calls: list[tuple[str, str]] = []
 
-    def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
-        return self.pr_number
+    def list_linked_prs(self, repo: str, issue_number: int) -> list[PrCandidate]:
+        return self.candidates
 
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
@@ -648,7 +668,7 @@ def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -756,7 +776,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -815,7 +835,7 @@ def test_instruct_concurrent_requests_to_same_issue_are_rejected_with_409() -> N
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=blocking_merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -878,7 +898,7 @@ def test_instruct_concurrent_requests_to_different_issues_are_not_blocked() -> N
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=blocking_merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -936,7 +956,7 @@ def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -973,7 +993,7 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
     )
@@ -984,6 +1004,102 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
 
         assert status == 502
         assert "error" in body
+        assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_multiple_candidates_returns_409_with_candidates() -> None:
+    """issue #206: 対応PR候補が複数ある場合は自動マージせず409で候補を返す。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 409
+        assert body["code"] == "pr_selection_required"
+        assert [c["number"] for c in body["pr_candidates"]] == [33, 40]
+        assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_pr_number_merges_selected_pr() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+    )
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues/1/instruct",
+            {"action": "approve", "prNumber": 40},
+        )
+
+        assert status == 200
+        assert review_merge.merge_calls == [("nosetech/project-a", 40)]
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_pr_number_outside_candidates_returns_400() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(pr_number=33)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+    )
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues/1/instruct",
+            {"action": "approve", "prNumber": 99},
+        )
+
+        assert status == 400
         assert review_merge.merge_calls == []
         assert review_merge.close_calls == []
     finally:
@@ -1010,7 +1126,7 @@ def test_instruct_approve_on_in_review_returns_200_even_if_branch_deletion_fails
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -1432,7 +1548,7 @@ def test_post_project_refresh_updates_only_that_repo_in_store() -> None:
         projects=[PROJECT_A, PROJECT_B],
         dispatch_queue=dispatch_queue,
         list_issues=lambda repo: [_issue_in(repo, 1, [STATUS_IN_REVIEW])],
-        resolve_pr_number=lambda repo, n: 55,
+        list_linked_prs=lambda repo, n: [_pr_candidate(55)],
     )
     try:
         status, body = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
