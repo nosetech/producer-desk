@@ -10,6 +10,8 @@
   --bg-panel: #161d27;
   --bg-card: #1e2732;
   --bg-card-hover: #24303d;
+  /* PR選択ダイアログの行背景（Claude Design ProducerDesk.dc.htmlの --surface-2、issue #206）。 */
+  --surface-2: #1e2732;
   --border-subtle: #2a3542;
   --border-strong: #3a4756;
   --text-primary: #e8eef5;
@@ -51,6 +53,7 @@
   --bg-panel: #ffffff;
   --bg-card: #ffffff;
   --bg-card-hover: #f5f7fa;
+  --surface-2: #f4f7fa;
   --border-subtle: #dde3ea;
   --border-strong: #c7d0da;
   --text-primary: #1a2430;
@@ -86,6 +89,7 @@
     --bg-panel: #ffffff;
     --bg-card: #ffffff;
     --bg-card-hover: #f5f7fa;
+    --surface-2: #f4f7fa;
     --border-subtle: #dde3ea;
     --border-strong: #c7d0da;
     --text-primary: #1a2430;

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from orchestrator.aggregation import IssueSummary
+from orchestrator.aggregation import IssueSummary, PrCandidate
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     close_issue,
@@ -13,6 +13,7 @@ from orchestrator.github_client import (
     get_pr_branch,
     get_pr_status_check_rollup,
     list_issues,
+    list_linked_prs,
     merge_pr,
     post_comment,
     resolve_pr_number,
@@ -132,98 +133,26 @@ def test_post_comment_appends_bot_marker() -> None:
     assert BOT_COMMENT_MARKER in posted_body
 
 
-def test_resolve_pr_number_finds_cross_referenced_pull_request() -> None:
-    fake_run = _fake_run_raw(
-        [
-            {"event": "labeled"},
-            {
-                "event": "cross-referenced",
-                "source": {"issue": {"number": 33, "pull_request": {"url": "..."}}},
-            },
-        ]
-    )
-
-    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) == 33
-    [cmd] = fake_run.calls  # type: ignore[attr-defined]
-    assert cmd == ["gh", "api", "repos/nosetech/project-a/issues/30/timeline"]
+def _pr(number: int, *, body: str = "", closing: list[int] | None = None, **extra: object) -> dict:
+    return {
+        "number": number,
+        "title": f"PR {number}",
+        "url": f"https://github.com/nosetech/project-a/pull/{number}",
+        "isDraft": False,
+        "headRefName": f"feature/{number}",
+        "baseRefName": "develop",
+        "body": body,
+        "closingIssuesReferences": [{"number": n} for n in (closing or [])],
+        **extra,
+    }
 
 
-def test_resolve_pr_number_ignores_cross_referenced_issues_without_pull_request() -> None:
-    fake_run = _fake_run_raw(
-        [
-            {
-                "event": "cross-referenced",
-                "source": {"issue": {"number": 40, "pull_request": None}},
-            },
-        ]
-    )
-
-    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) is None
-
-
-def test_resolve_pr_number_returns_latest_when_multiple_linked() -> None:
-    fake_run = _fake_run_raw(
-        [
-            {
-                "event": "cross-referenced",
-                "source": {"issue": {"number": 33, "pull_request": {"url": "..."}}},
-            },
-            {
-                "event": "cross-referenced",
-                "source": {"issue": {"number": 40, "pull_request": {"url": "..."}}},
-            },
-        ]
-    )
-
-    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) == 40
-
-
-def test_resolve_pr_number_returns_none_when_no_events() -> None:
+def test_list_linked_prs_calls_gh_pr_list_for_open_prs() -> None:
     fake_run = _fake_run_raw([])
 
-    assert resolve_pr_number("nosetech/project-a", 30, run=fake_run) is None
-
-
-def _fake_run_dispatch(responses: dict[str, object]) -> object:
-    """呼び出すgh subcommand（`timeline`/`pr list`）に応じて異なるレスポンスを返すフェイク。"""
-    calls: list[list[str]] = []
-
-    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        key = "timeline" if "timeline" in cmd[2] else "pr_list"
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout=json.dumps(responses[key]), stderr=""
-        )
-
-    run.calls = calls  # type: ignore[attr-defined]
-    return run
-
-
-def test_resolve_pr_number_falls_back_to_open_pr_search_when_no_cross_reference() -> None:
-    """issue #82の再発防止テスト。
-
-    issue番号の直後にCJK文字が続く（`#77で`のような）記法だとGitHub側の自動
-    リンク解析がissue参照として認識せず、cross-referenceイベントが生成されない
-    ことがある。その場合でもOPEN PR本文検索でPRを解決できることを確認する。
-    """
-    fake_run = _fake_run_dispatch(
-        {
-            "timeline": [],
-            "pr_list": [
-                {
-                    "number": 81,
-                    "title": "fix: 判断待ちの不具合を修正する",
-                    "body": "issue #77で報告された不具合を修正しました。",
-                    "updatedAt": "2026-08-10T00:00:00Z",
-                }
-            ],
-        }
-    )
-
-    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) == 81
-    [timeline_cmd, pr_list_cmd] = fake_run.calls  # type: ignore[attr-defined]
-    assert timeline_cmd == ["gh", "api", "repos/nosetech/project-a/issues/77/timeline"]
-    assert pr_list_cmd == [
+    assert list_linked_prs("nosetech/project-a", 30, run=fake_run) == []
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == [
         "gh",
         "pr",
         "list",
@@ -232,57 +161,71 @@ def test_resolve_pr_number_falls_back_to_open_pr_search_when_no_cross_reference(
         "--state",
         "open",
         "--json",
-        "number,title,body,updatedAt",
+        "number,title,url,isDraft,headRefName,baseRefName,body,closingIssuesReferences",
+        "--limit",
+        "100",
     ]
 
 
-def test_resolve_pr_number_fallback_avoids_matching_longer_issue_numbers() -> None:
-    """`#770`のような別issue番号への誤マッチを避けることを確認する。"""
-    fake_run = _fake_run_dispatch(
-        {
-            "timeline": [],
-            "pr_list": [
-                {
-                    "number": 90,
-                    "title": "無関係な変更",
-                    "body": "issue #770について対応",
-                    "updatedAt": "2026-08-10T00:00:00Z",
-                }
-            ],
-        }
+def test_list_linked_prs_selects_closing_pr_over_mention_only_pr() -> None:
+    """issue #206: `Closes #N`のPRは対応PR、言及だけのPRは候補にしない。"""
+    fake_run = _fake_run_raw(
+        [
+            _pr(40, body="#30 の後続の修正です（言及のみ）"),
+            _pr(33, body="対応しました\n\nCloses #30"),
+        ]
     )
 
-    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) is None
+    candidates = list_linked_prs("nosetech/project-a", 30, run=fake_run)
 
-
-def test_resolve_pr_number_fallback_returns_none_when_no_match() -> None:
-    fake_run = _fake_run_dispatch({"timeline": [], "pr_list": []})
-
-    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) is None
-
-
-def test_resolve_pr_number_fallback_returns_most_recently_updated_when_multiple_match() -> None:
-    fake_run = _fake_run_dispatch(
-        {
-            "timeline": [],
-            "pr_list": [
-                {
-                    "number": 81,
-                    "title": "古い方の対応",
-                    "body": "issue #77で報告された不具合を修正",
-                    "updatedAt": "2026-08-08T00:00:00Z",
-                },
-                {
-                    "number": 85,
-                    "title": "新しい方の対応",
-                    "body": "issue #77で報告された不具合を再修正",
-                    "updatedAt": "2026-08-10T00:00:00Z",
-                },
-            ],
-        }
+    assert [c.number for c in candidates] == [33]
+    assert candidates[0] == PrCandidate(
+        number=33,
+        title="PR 33",
+        url="https://github.com/nosetech/project-a/pull/33",
+        is_draft=False,
+        head_ref_name="feature/33",
+        base_ref_name="develop",
     )
 
-    assert resolve_pr_number("nosetech/project-a", 77, run=fake_run) == 85
+
+def test_list_linked_prs_uses_closing_issues_references() -> None:
+    fake_run = _fake_run_raw([_pr(33, closing=[30]), _pr(34, closing=[31])])
+
+    candidates = list_linked_prs("nosetech/project-a", 30, run=fake_run)
+
+    assert [c.number for c in candidates] == [33]
+
+
+def test_list_linked_prs_matches_closing_keyword_followed_by_cjk() -> None:
+    """issue #82: `#77で`のようにCJK文字が直後に続いても本文検索で検出できる。"""
+    fake_run = _fake_run_raw([_pr(81, body="Closes #77で報告された不具合の修正")])
+
+    assert [c.number for c in list_linked_prs("nosetech/project-a", 77, run=fake_run)] == [81]
+
+
+def test_list_linked_prs_avoids_matching_longer_issue_numbers() -> None:
+    fake_run = _fake_run_raw([_pr(90, body="Closes #770")])
+
+    assert list_linked_prs("nosetech/project-a", 77, run=fake_run) == []
+
+
+def test_list_linked_prs_returns_all_closing_prs_when_multiple() -> None:
+    fake_run = _fake_run_raw([_pr(85, body="Fixes #77"), _pr(81, body="closes #77")])
+
+    candidates = list_linked_prs("nosetech/project-a", 77, run=fake_run)
+
+    assert [c.number for c in candidates] == [85, 81]
+
+
+def test_resolve_pr_number_returns_number_only_when_unique() -> None:
+    assert (
+        resolve_pr_number("nosetech/project-a", 30, run=_fake_run_raw([_pr(33, body="Closes #30")]))
+        == 33
+    )
+    ambiguous = _fake_run_raw([_pr(33, body="Closes #30"), _pr(40, body="Closes #30")])
+    assert resolve_pr_number("nosetech/project-a", 30, run=ambiguous) is None
+    assert resolve_pr_number("nosetech/project-a", 30, run=_fake_run_raw([])) is None
 
 
 def test_merge_pr_calls_gh_pr_merge_squash() -> None:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { postInstruct } from "@/lib/api";
+import { PrSelectionRequiredError, postInstruct } from "@/lib/api";
 import {
   resolveStages,
   useStageProgress,
@@ -9,7 +9,7 @@ import {
 } from "@/lib/stageProgress";
 import { commentSummary, latestComment } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
-import type { IssueComment, IssueSummary } from "@/lib/types";
+import type { IssueComment, IssueSummary, PrCandidate } from "@/lib/types";
 import { SpinnerIcon, StageList } from "./StageProgress";
 import CommentViewer from "./CommentViewer";
 import styles from "./ReviewCard.module.css";
@@ -82,6 +82,85 @@ function PrIcon() {
   );
 }
 
+function PrCandidateIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <path d="M6 9v6M18 9v1a2 2 0 0 1-2 2H8" />
+    </svg>
+  );
+}
+
+function PrNoneIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v4M12 16h.01" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <path d="M15 3h6v6M10 14 21 3" />
+    </svg>
+  );
+}
+
+function PrEmptyIcon() {
+  return (
+    <svg
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M6 9v6" />
+      <path d="m15 15 6 6M21 15l-6 6" />
+    </svg>
+  );
+}
+
 function WarningIcon() {
   return (
     <svg
@@ -123,6 +202,12 @@ export default function ReviewCard({
   const [viewerOpen, setViewerOpen] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 承認時に409（pr_selection_required）で返された最新の候補。ポーリング後に候補が
+  // 変わった場合に、カードの`review.pr_candidates`より優先して選択UIに使う（issue #206）。
+  const [candidatesOverride, setCandidatesOverride] = useState<
+    PrCandidate[] | null
+  >(null);
+  const [pickedPr, setPickedPr] = useState<number | null>(null);
   const stageProgress = useStageProgress();
 
   const busy = approving || locked;
@@ -137,9 +222,32 @@ export default function ReviewCard({
       : null;
   const repoName = review.repo.split("/")[1];
 
+  // 対応PRが一意に特定できている（候補ちょうど1件）場合のみ従来の確認ダイアログ。
+  // 複数・0件の場合はマージするPRを選ぶダイアログを開く（issue #206）。
+  const candidates = candidatesOverride ?? review.pr_candidates ?? [];
+  const isSinglePr = candidatesOverride
+    ? candidatesOverride.length === 1
+    : review.pr_number != null;
+  const isPicker = !isSinglePr;
+  const isEmpty = isPicker && candidates.length === 0;
+  const pickedCandidate = candidates.find((c) => c.number === pickedPr) ?? null;
+  const approveBlocked = isPicker && pickedCandidate === null;
+  const prCountLabel = `PR候補 ${candidates.length}件`;
+  const mergeTargetText = pickedCandidate
+    ? `PR #${pickedCandidate.number} のマージと該当issueのクローズ`
+    : isPicker
+      ? "選択したPRのマージと該当issueのクローズ"
+      : "対象PRのマージと該当issueのクローズ";
+  const confirmHeading = isSinglePr
+    ? "このレビューを承認しますか？"
+    : isEmpty
+      ? "対応PRを特定できません"
+      : "マージするPRを選択";
+
   function openConfirm() {
     if (busy) return;
     setError(null);
+    setPickedPr(null);
     setConfirmOpen(true);
   }
 
@@ -147,22 +255,41 @@ export default function ReviewCard({
     if (busy) return;
     setConfirmOpen(false);
     setError(null);
+    setCandidatesOverride(null);
+    setPickedPr(null);
     stageProgress.reset();
   }
 
   function handleConfirmApprove() {
+    if (approveBlocked) return;
     setApproving(true);
     setError(null);
     const progressId = stageProgress.start();
-    postInstruct(review.repo, review.number, "approve", undefined, progressId)
+    postInstruct(
+      review.repo,
+      review.number,
+      "approve",
+      undefined,
+      progressId,
+      isPicker ? (pickedPr ?? undefined) : undefined,
+    )
       .then(() => {
         stageProgress.reset();
         setConfirmOpen(false);
+        setCandidatesOverride(null);
+        setPickedPr(null);
         onToast(`${repoName} #${review.number} をマージ & クローズしました。`);
         return onApproved();
       })
       .catch((e) => {
         stageProgress.stop();
+        if (e instanceof PrSelectionRequiredError) {
+          // 候補が変わっていた（または特定できなかった）場合。自動マージはされて
+          // いないため、返された最新の候補で選び直させる。
+          setCandidatesOverride(e.candidates);
+          setPickedPr(null);
+          return;
+        }
         setError(e instanceof Error ? e.message : "承認に失敗しました");
       })
       .finally(() => setApproving(false));
@@ -219,7 +346,7 @@ export default function ReviewCard({
             <path d="M15 3h6v6M10 14 21 3" />
           </svg>
         </a>
-        {prUrl && (
+        {prUrl ? (
           <a
             href={prUrl}
             target="_blank"
@@ -229,6 +356,22 @@ export default function ReviewCard({
             <PrIcon />
             PR #{review.pr_number}
           </a>
+        ) : (review.pr_candidates ?? []).length > 1 ? (
+          <span
+            className={styles.prCandidateChip}
+            title="対応PRの候補が複数あります。承認時にマージするPRを選択します"
+          >
+            <PrCandidateIcon />
+            PR候補 {(review.pr_candidates ?? []).length}件
+          </span>
+        ) : (
+          <span
+            className={styles.prNoneChip}
+            title="このissueに対応するPRを特定できませんでした"
+          >
+            <PrNoneIcon />
+            PR未特定
+          </span>
         )}
       </div>
       {summary && (
@@ -301,7 +444,7 @@ export default function ReviewCard({
       {confirmOpen && (
         <div className={styles.confirmOverlay} onClick={closeConfirm}>
           <div
-            className={styles.confirmDialog}
+            className={`${styles.confirmDialog} ${isSinglePr ? "" : styles.confirmDialogWide}`}
             role="alertdialog"
             aria-modal="true"
             aria-labelledby={`confirm-review-${review.repo}-${review.number}`}
@@ -315,7 +458,7 @@ export default function ReviewCard({
                 id={`confirm-review-${review.repo}-${review.number}`}
                 className={styles.confirmMessage}
               >
-                このレビューを承認しますか？
+                {confirmHeading}
               </span>
             </div>
             <p className={styles.confirmDetail}>
@@ -324,12 +467,124 @@ export default function ReviewCard({
               </span>{" "}
               — {review.title}
             </p>
-            {!approving && !error && (
+            {isPicker && candidates.length > 0 && (
+              <div className={styles.prPicker}>
+                <div className={styles.prPickerHeader}>
+                  <span className={styles.prPickerCount}>{prCountLabel}</span>
+                  <span className={styles.prPickerHint}>
+                    {pickedCandidate
+                      ? `#${pickedCandidate.number} をマージします`
+                      : "1件選択してください"}
+                  </span>
+                </div>
+                <div
+                  className={styles.prRadioGroup}
+                  role="radiogroup"
+                  aria-label="マージするPR"
+                >
+                  {candidates.map((c) => {
+                    const selected = c.number === pickedPr;
+                    const pick = () => {
+                      if (!approving) setPickedPr(c.number);
+                    };
+                    return (
+                      <div
+                        key={c.number}
+                        role="radio"
+                        tabIndex={0}
+                        aria-checked={selected}
+                        className={`${styles.prRow} ${selected ? styles.prRowSelected : ""} ${approving ? styles.prRowDisabled : ""}`}
+                        onClick={pick}
+                        onKeyDown={(e) => {
+                          if (
+                            (e.key === "Enter" || e.key === " ") &&
+                            e.target === e.currentTarget
+                          ) {
+                            e.preventDefault();
+                            pick();
+                          }
+                        }}
+                      >
+                        <span className={styles.prRadioRing}>
+                          <span className={styles.prRadioDot} />
+                        </span>
+                        <div className={styles.prRowBody}>
+                          <div className={styles.prRowTitleLine}>
+                            <span className={styles.prRowTitle}>{c.title}</span>
+                            {c.is_draft && (
+                              <span className={styles.prDraftBadge}>DRAFT</span>
+                            )}
+                          </div>
+                          <div className={styles.prRowMeta}>
+                            <span className={styles.prRowNumber}>
+                              #{c.number}
+                            </span>
+                            <span className={styles.prRowBranches}>
+                              {c.head_ref_name}{" "}
+                              <span className={styles.prRowBranchArrow}>→</span>{" "}
+                              {c.base_ref_name}
+                            </span>
+                          </div>
+                        </div>
+                        <a
+                          href={c.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={styles.prRowLink}
+                          title="GitHubで開く"
+                          aria-label={`PR #${c.number} をGitHubで開く`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <ExternalLinkIcon />
+                        </a>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {isPicker && pickedCandidate?.is_draft && (
+              <div
+                className={`${styles.warningBanner} ${styles.confirmDraftWarning}`}
+                role="alert"
+              >
+                <WarningIcon />
+                <div className={styles.warningText}>
+                  <strong>このPRはDraftです。</strong>
+                  Draft
+                  PRはマージできないため、承認が失敗する可能性があります。Ready
+                  for reviewにしてから承認することを推奨します。
+                </div>
+              </div>
+            )}
+            {isEmpty && (
+              <div className={styles.prEmpty}>
+                <span className={styles.prEmptyIcon}>
+                  <PrEmptyIcon />
+                </span>
+                <div className={styles.prEmptyTitle}>
+                  対応PRが見つかりません
+                </div>
+                <p className={styles.prEmptyText}>
+                  GitHub上でPRを確認してください。
+                </p>
+                <a
+                  href={`https://github.com/${review.repo}/pulls`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.prLink}
+                >
+                  <ExternalLinkIcon size={12} />
+                  GitHubでPR一覧を開く
+                </a>
+              </div>
+            )}
+            {!isEmpty && !approving && !error && (
               <div className={styles.warningBanner}>
                 <WarningIcon />
                 <div className={styles.warningText}>
                   承認すると、
-                  <strong>対象PRのマージと該当issueのクローズ</strong>
+                  <strong>{mergeTargetText}</strong>
                   まで自動で実行されます。この操作は元に戻せません。
                 </div>
               </div>
@@ -370,9 +625,9 @@ export default function ReviewCard({
               </button>
               <button
                 type="button"
-                className={styles.confirmApproveBtn}
+                className={`${styles.confirmApproveBtn} ${approveBlocked && !approving ? styles.confirmApproveBtnBlocked : ""}`}
                 onClick={handleConfirmApprove}
-                disabled={busy}
+                disabled={busy || approveBlocked}
               >
                 {approving ? (
                   <SpinnerIcon trackOpacity={0.34} />

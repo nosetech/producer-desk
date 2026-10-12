@@ -11,9 +11,12 @@ import threading
 
 import pytest
 
+from orchestrator.aggregation import PrCandidate
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE,
+    InvalidPrSelectionError,
+    PrSelectionRequiredError,
     ReviewMergeError,
     handle_create_issue,
     handle_instruct,
@@ -226,16 +229,25 @@ def test_handle_instruct_reject_action_no_longer_supported() -> None:
         )
 
 
+def _pr_candidate(number: int, *, title: str = "PR") -> PrCandidate:
+    return PrCandidate(number=number, title=title, url=f"https://github.com/o/r/pull/{number}")
+
+
 class FakeReviewMerge:
     def __init__(
         self,
         pr_number: int | None,
         *,
+        candidates: list[PrCandidate] | None = None,
         branch: str = "feature/issue-30-something",
         fail_get_pr_branch: bool = False,
         fail_delete_branch: bool = False,
     ) -> None:
-        self.pr_number = pr_number
+        self.candidates = (
+            candidates
+            if candidates is not None
+            else ([] if pr_number is None else [_pr_candidate(pr_number)])
+        )
         self.branch = branch
         self.fail_get_pr_branch = fail_get_pr_branch
         self.fail_delete_branch = fail_delete_branch
@@ -245,9 +257,9 @@ class FakeReviewMerge:
         self.get_pr_branch_calls: list[tuple[str, int]] = []
         self.delete_branch_calls: list[tuple[str, str]] = []
 
-    def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
+    def list_linked_prs(self, repo: str, issue_number: int) -> list[PrCandidate]:
         self.resolve_calls.append((repo, issue_number))
-        return self.pr_number
+        return self.candidates
 
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
@@ -291,7 +303,7 @@ def test_handle_instruct_approve_on_in_review_merges_pr_and_closes_issue() -> No
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -330,7 +342,7 @@ def test_handle_instruct_approve_on_in_review_swallows_get_pr_branch_failure() -
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -365,7 +377,7 @@ def test_handle_instruct_approve_on_in_review_swallows_delete_branch_failure() -
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -402,7 +414,7 @@ def test_handle_instruct_approve_on_in_review_syncs_worktree_after_branch_delete
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -432,7 +444,7 @@ def test_handle_instruct_approve_on_in_review_reports_on_stage_in_order() -> Non
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -467,7 +479,7 @@ def test_handle_instruct_approve_on_in_review_reports_skipped_stages_when_delete
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -517,7 +529,7 @@ def test_handle_instruct_approve_on_in_review_reports_worktree_skip_when_dispatc
             remove_label=labels.remove_label,
             post_comment=comments.post_comment,
             dispatch_queue=dispatch_queue,
-            resolve_pr_number=review_merge.resolve_pr_number,
+            list_linked_prs=review_merge.list_linked_prs,
             merge_pr=review_merge.merge_pr,
             close_issue=review_merge.close_issue,
             get_pr_branch=review_merge.get_pr_branch,
@@ -553,7 +565,7 @@ def test_handle_instruct_approve_on_in_review_skips_worktree_sync_without_worktr
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -587,7 +599,7 @@ def test_handle_instruct_approve_on_in_review_skips_worktree_sync_when_delete_br
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
         dispatch_queue=dispatch_queue,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -636,7 +648,7 @@ def test_handle_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_
             remove_label=labels.remove_label,
             post_comment=comments.post_comment,
             dispatch_queue=dispatch_queue,
-            resolve_pr_number=review_merge.resolve_pr_number,
+            list_linked_prs=review_merge.list_linked_prs,
             merge_pr=review_merge.merge_pr,
             close_issue=review_merge.close_issue,
             get_pr_branch=review_merge.get_pr_branch,
@@ -670,7 +682,7 @@ def test_handle_instruct_approve_on_in_review_without_linked_pr_raises() -> None
             remove_label=labels.remove_label,
             post_comment=comments.post_comment,
             dispatch_queue=dispatch_queue,
-            resolve_pr_number=review_merge.resolve_pr_number,
+            list_linked_prs=review_merge.list_linked_prs,
             merge_pr=review_merge.merge_pr,
             close_issue=review_merge.close_issue,
         )
@@ -822,3 +834,63 @@ def test_handle_create_issue_invalid_dispatch_raises() -> None:
             remove_label=labels.remove_label,
             dispatch_queue=dispatch_queue,
         )
+
+
+def _approve_in_review(review_merge: FakeReviewMerge, labels: FakeLabels, **kwargs):
+    comments = FakeComments()
+    dispatch_queue, _ = _synchronous_dispatch_queue()
+    return handle_instruct(
+        "nosetech/project-a",
+        30,
+        "approve",
+        None,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        dispatch_queue=dispatch_queue,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        **kwargs,
+    )
+
+
+def test_handle_instruct_approve_with_multiple_candidates_requires_selection() -> None:
+    """issue #206: 対応PR候補が複数ある場合は自動マージせず選択を求める。"""
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+
+    with pytest.raises(PrSelectionRequiredError) as exc_info:
+        _approve_in_review(review_merge, labels)
+
+    assert [c.number for c in exc_info.value.candidates] == [33, 40]
+    assert review_merge.merge_calls == []
+    assert review_merge.close_calls == []
+
+
+def test_handle_instruct_approve_merges_selected_candidate() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+
+    _approve_in_review(review_merge, labels, pr_number=40)
+
+    assert review_merge.merge_calls == [("nosetech/project-a", 40)]
+    assert review_merge.close_calls == [("nosetech/project-a", 30)]
+
+
+def test_handle_instruct_approve_rejects_pr_number_outside_candidates() -> None:
+    labels = FakeLabels({STATUS_IN_REVIEW})
+    review_merge = FakeReviewMerge(pr_number=33)
+
+    with pytest.raises(InvalidPrSelectionError):
+        _approve_in_review(review_merge, labels, pr_number=99)
+
+    assert review_merge.merge_calls == []
+    assert review_merge.close_calls == []

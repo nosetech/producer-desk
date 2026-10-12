@@ -35,20 +35,21 @@ from orchestrator.github_client import (
     CreateIssueFn,
     DeleteBranchFn,
     GetPrBranchFn,
+    ListLinkedPrsFn,
     MergePrFn,
     PostCommentFn,
-    ResolvePrNumberFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import create_issue as gh_create_issue
 from orchestrator.github_client import delete_branch as gh_delete_branch
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_issues as gh_list_issues
+from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
-from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE_SPEC,
+    PrSelectionRequiredError,
     ReviewMergeError,
     handle_create_issue,
     handle_instruct,
@@ -229,7 +230,7 @@ def _make_handler(
     create_issue: CreateIssueFn,
     daily_model_usage: DailyModelUsageFn,
     current_limit_status: CurrentLimitStatusFn,
-    resolve_pr_number: ResolvePrNumberFn,
+    list_linked_prs: ListLinkedPrsFn,
     merge_pr: MergePrFn,
     close_issue: CloseIssueFn,
     get_pr_branch: GetPrBranchFn,
@@ -273,7 +274,7 @@ def _make_handler(
                 state = poll_once(
                     projects,
                     list_issues=list_issues,
-                    resolve_pr_number=resolve_pr_number,
+                    list_linked_prs=list_linked_prs,
                     is_dispatch_active=dispatch_queue.is_active,
                 )
             except subprocess.CalledProcessError as e:
@@ -361,7 +362,7 @@ def _make_handler(
                 issues = fetch_project_issues(
                     projects_by_repo[repo],
                     list_issues=list_issues,
-                    resolve_pr_number=resolve_pr_number,
+                    list_linked_prs=list_linked_prs,
                 )
             except subprocess.CalledProcessError as e:
                 logger.warning("プロジェクト再取得に失敗しました (%s): %s", repo, e)
@@ -568,6 +569,11 @@ def _make_handler(
                             if progress_id
                             else (lambda _stage: None)
                         )
+                        pr_number = payload.get("prNumber")
+                        if pr_number is not None and (
+                            not isinstance(pr_number, int) or isinstance(pr_number, bool)
+                        ):
+                            raise ValueError("prNumberは整数で指定してください")
                         result = handle_instruct(
                             repo,
                             issue_number,
@@ -578,7 +584,7 @@ def _make_handler(
                             remove_label=remove_label,
                             post_comment=post_comment,
                             dispatch_queue=dispatch_queue,
-                            resolve_pr_number=resolve_pr_number,
+                            list_linked_prs=list_linked_prs,
                             merge_pr=merge_pr,
                             close_issue=close_issue,
                             get_pr_branch=get_pr_branch,
@@ -586,9 +592,22 @@ def _make_handler(
                             worktree_path=projects_by_repo[repo].worktree_path,
                             sync_worktree=sync_worktree,
                             on_stage=on_stage,
+                            pr_number=pr_number,
                         )
                     except (KeyError, ValueError) as e:
                         self._send_json(400, {"error": str(e)})
+                        return
+                    except PrSelectionRequiredError as e:
+                        # 対応PRを一意に特定できない場合は自動マージせず、候補を返して
+                        # ダッシュボードにPR選択UIを開かせる（issue #206）。
+                        self._send_json(
+                            409,
+                            {
+                                "error": str(e),
+                                "code": "pr_selection_required",
+                                "pr_candidates": [dataclasses.asdict(c) for c in e.candidates],
+                            },
+                        )
                         return
                     except ReviewMergeError as e:
                         self._send_json(502, {"error": str(e)})
@@ -673,7 +692,7 @@ def make_server(
     create_issue: CreateIssueFn = gh_create_issue,
     daily_model_usage: DailyModelUsageFn = store_daily_model_usage,
     current_limit_status: CurrentLimitStatusFn = store_current_limit_status,
-    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
     merge_pr: MergePrFn = gh_merge_pr,
     close_issue: CloseIssueFn = gh_close_issue,
     get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
@@ -696,7 +715,7 @@ def make_server(
         create_issue=create_issue,
         daily_model_usage=daily_model_usage,
         current_limit_status=current_limit_status,
-        resolve_pr_number=resolve_pr_number,
+        list_linked_prs=list_linked_prs,
         merge_pr=merge_pr,
         close_issue=close_issue,
         get_pr_branch=get_pr_branch,

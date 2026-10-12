@@ -6,6 +6,7 @@ import {
   type ExecutionMode,
   type InstructAction,
   type InstructResult,
+  type PrCandidate,
   type ProgressResponse,
   type ProjectIssuesResponse,
   type ProjectSettingsResponse,
@@ -19,11 +20,32 @@ import {
   type DashboardSettings,
 } from "./settings";
 
+/**
+ * 承認時に対応PRを一意に特定できなかった場合のエラー（409 `pr_selection_required`、
+ * issue #206）。ポーリング後に候補が変わった場合等に、返された最新の候補で
+ * PR選択UIを開くために使う。
+ */
+export class PrSelectionRequiredError extends Error {
+  readonly candidates: PrCandidate[];
+
+  constructor(message: string, candidates: PrCandidate[]) {
+    super(message);
+    this.name = "PrSelectionRequiredError";
+    this.candidates = candidates;
+  }
+}
+
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const data = await res.json();
   if (!res.ok) {
     const message =
       typeof data?.error === "string" ? data.error : `HTTP ${res.status}`;
+    if (res.status === 409 && data?.code === "pr_selection_required") {
+      throw new PrSelectionRequiredError(
+        message,
+        Array.isArray(data.pr_candidates) ? data.pr_candidates : [],
+      );
+    }
     throw new Error(message);
   }
   return data as T;
@@ -39,7 +61,10 @@ export function fetchState(): Promise<AggregatedState> {
       // 欠けているフィールドは空配列にフォールバックし、両プロセスの
       // 再起動タイミングがずれても画面がクラッシュしないようにする。
       decisions: data.decisions ?? [],
-      reviews: data.reviews ?? [],
+      reviews: (data.reviews ?? []).map((r) => ({
+        ...r,
+        pr_candidates: r.pr_candidates ?? [],
+      })),
       project_status: (data.project_status ?? []).map((p) => ({
         ...p,
         fetched_at: p.fetched_at ?? null,
@@ -83,11 +108,12 @@ export function postInstruct(
   action: InstructAction,
   message?: string,
   progressId?: string,
+  prNumber?: number,
 ): Promise<InstructResult> {
   return fetch(`${repoPath(repo)}/issues/${issueNumber}/instruct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, message, progressId }),
+    body: JSON.stringify({ action, message, progressId, prNumber }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
 }
 

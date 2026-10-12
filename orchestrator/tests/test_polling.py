@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from orchestrator.aggregation import IssueSummary
+from orchestrator.aggregation import IssueSummary, PrCandidate
 from orchestrator.config import Project
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
@@ -55,11 +55,11 @@ def test_poll_once_resolves_pr_number_only_for_in_review_issues() -> None:
     def list_issues(repo: str) -> list[IssueSummary]:
         return fixtures[repo]
 
-    def resolve_pr_number(repo: str, issue_number: int) -> int | None:
+    def list_linked_prs(repo: str, issue_number: int) -> list[PrCandidate]:
         resolved_calls.append((repo, issue_number))
-        return 33
+        return [PrCandidate(number=33, title="PR", url="u")]
 
-    state = poll_once([PROJECT_A], list_issues=list_issues, resolve_pr_number=resolve_pr_number)
+    state = poll_once([PROJECT_A], list_issues=list_issues, list_linked_prs=list_linked_prs)
 
     assert resolved_calls == [("nosetech/project-a", 1)]
     assert state.reviews[0].pr_number == 33
@@ -164,7 +164,9 @@ def test_fetch_project_issues_resolves_pr_number_only_for_in_review() -> None:
     ]
 
     result = fetch_project_issues(
-        PROJECT_A, list_issues=lambda repo: issues, resolve_pr_number=lambda repo, n: 100 + n
+        PROJECT_A,
+        list_issues=lambda repo: issues,
+        list_linked_prs=lambda repo, n: [PrCandidate(number=100 + n, title="PR", url="u")],
     )
 
     assert [(i.number, i.pr_number) for i in result] == [(1, 101), (2, None)]
@@ -175,3 +177,29 @@ def test_poll_once_records_fetch_and_poll_timestamps() -> None:
 
     assert state.last_polled_at is not None
     assert [p.fetched_at is not None for p in state.project_status] == [True, True]
+
+
+def test_poll_once_leaves_pr_number_unset_when_candidates_are_ambiguous() -> None:
+    """issue #206: 対応PR候補が複数（または0件）なら`pr_number`は特定せず候補のみ保持する。"""
+    fixtures = {
+        "nosetech/project-a": [
+            _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW]),
+            _issue("nosetech/project-a", 2, [STATUS_IN_REVIEW]),
+        ],
+    }
+    candidates = {
+        1: [PrCandidate(number=33, title="a", url="u"), PrCandidate(number=40, title="b", url="u")],
+        2: [],
+    }
+
+    state = poll_once(
+        [PROJECT_A],
+        list_issues=lambda repo: fixtures[repo],
+        list_linked_prs=lambda repo, n: candidates[n],
+    )
+
+    by_number = {i.number: i for i in state.reviews}
+    assert by_number[1].pr_number is None
+    assert [c.number for c in by_number[1].pr_candidates] == [33, 40]
+    assert by_number[2].pr_number is None
+    assert by_number[2].pr_candidates == []

@@ -9,30 +9,39 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from orchestrator.aggregation import AggregatedState, IsDispatchActiveFn, IssueSummary, aggregate
+from orchestrator.aggregation import (
+    AggregatedState,
+    IsDispatchActiveFn,
+    IssueSummary,
+    PrCandidate,
+    aggregate,
+)
 from orchestrator.config import DEFAULT_POLLING_INTERVAL_SECONDS, Project
 from orchestrator.github_client import list_issues as gh_list_issues
-from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
+from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.labels import STATUS_IN_REVIEW
 
 DEFAULT_INTERVAL_SECONDS = DEFAULT_POLLING_INTERVAL_SECONDS
 
 ListIssuesFn = Callable[[str], list[IssueSummary]]
-ResolvePrNumberFn = Callable[[str, int], int | None]
+ListLinkedPrsFn = Callable[[str, int], list[PrCandidate]]
 OnIssuesFetchedFn = Callable[[dict[str, list[IssueSummary]]], None]
 
 
 def _resolve_review_pr_numbers(
-    issues_by_repo: dict[str, list[IssueSummary]], resolve_pr_number: ResolvePrNumberFn
+    issues_by_repo: dict[str, list[IssueSummary]], list_linked_prs: ListLinkedPrsFn
 ) -> None:
-    """`status:in-review` のissueについてのみ紐づくPR番号を解決する（issue #58）。
+    """`status:in-review` のissueについてのみ対応PRの候補を解決する（issue #58, #206）。
 
-    全issueに対して毎回Timeline APIを叩くとポーリング負荷が増えるため、対象を絞る。
+    全issueに対して毎回PR一覧を取得するとポーリング負荷が増えるため、対象を絞る。
+    `pr_number`は候補がちょうど1件で一意に特定できた場合のみセットする。
     """
     for issues in issues_by_repo.values():
         for issue in issues:
             if STATUS_IN_REVIEW in issue.labels:
-                issue.pr_number = resolve_pr_number(issue.repo, issue.number)
+                candidates = list_linked_prs(issue.repo, issue.number)
+                issue.pr_candidates = candidates
+                issue.pr_number = candidates[0].number if len(candidates) == 1 else None
 
 
 def now_iso() -> str:
@@ -44,7 +53,7 @@ def fetch_project_issues(
     project: Project,
     *,
     list_issues: ListIssuesFn = gh_list_issues,
-    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
 ) -> list[IssueSummary]:
     """1プロジェクト分のissueを取得し、`status:in-review` のPR番号を解決して返す（issue #197）。
 
@@ -52,7 +61,7 @@ def fetch_project_issues(
     使う共通の取得ロジック。
     """
     issues = list_issues(project.repo)
-    _resolve_review_pr_numbers({project.repo: issues}, resolve_pr_number)
+    _resolve_review_pr_numbers({project.repo: issues}, list_linked_prs)
     return issues
 
 
@@ -60,7 +69,7 @@ def poll_once(
     projects: list[Project],
     *,
     list_issues: ListIssuesFn = gh_list_issues,
-    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     is_dispatch_active: IsDispatchActiveFn | None = None,
 ) -> AggregatedState:
@@ -88,7 +97,7 @@ def poll_once(
         fetched_at_by_repo: dict[str, str] = {}
         for project in projects:
             issues_by_repo[project.repo] = fetch_project_issues(
-                project, list_issues=list_issues, resolve_pr_number=resolve_pr_number
+                project, list_issues=list_issues, list_linked_prs=list_linked_prs
             )
             fetched_at_by_repo[project.repo] = now_iso()
         return issues_by_repo, fetched_at_by_repo
@@ -111,7 +120,7 @@ def run_polling_loop(
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     on_update: Callable[[AggregatedState], None],
     list_issues: ListIssuesFn = gh_list_issues,
-    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     is_dispatch_active: IsDispatchActiveFn | None = None,
     stop_event: threading.Event | None = None,
@@ -128,7 +137,7 @@ def run_polling_loop(
         state = poll_once(
             projects,
             list_issues=list_issues,
-            resolve_pr_number=resolve_pr_number,
+            list_linked_prs=list_linked_prs,
             on_issues_fetched=on_issues_fetched,
             is_dispatch_active=is_dispatch_active,
         )
