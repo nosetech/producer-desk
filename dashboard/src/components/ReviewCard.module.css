@@ -124,6 +124,34 @@
   text-decoration: none;
 }
 
+.prCandidateChip,
+.prNoneChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 7px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.prCandidateChip {
+  border: 1px solid var(--review);
+  background: var(--review-bg);
+  color: var(--review);
+}
+
+.prNoneChip {
+  border: 1px dashed var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
 .summary {
   display: flex;
   gap: 7px;
@@ -240,7 +268,9 @@
     gap: 7px;
   }
 
-  .prLink {
+  .prLink,
+  .prCandidateChip,
+  .prNoneChip {
     align-self: flex-end;
   }
 
@@ -263,6 +293,9 @@
 
 .confirmDialog {
   width: min(420px, calc(100% - 40px));
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -421,4 +454,237 @@
 
 .confirmApproveBtn:disabled {
   opacity: 0.82;
+}
+
+.confirmDialogWide {
+  width: min(520px, calc(100% - 32px));
+}
+
+.prPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prPickerHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.prPickerCount {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  color: var(--text-tertiary);
+}
+
+.prPickerHint {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.prRadioGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.prRow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 10px 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.prRow:hover:not(.prRowSelected):not(.prRowDisabled),
+.prRow:focus-visible:not(.prRowSelected) {
+  border-color: var(--accent-blue);
+}
+
+.prRowSelected {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.prRowDisabled {
+  cursor: default;
+}
+
+.prRowDisabled:not(.prRowSelected) {
+  opacity: 0.5;
+}
+
+.prRadioRing {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--text-tertiary);
+  background: var(--bg-panel);
+  transition: border-color 0.12s;
+}
+
+.prRowSelected .prRadioRing {
+  border: 2px solid var(--accent-blue);
+}
+
+.prRadioDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  transform: scale(0);
+  transition: transform 0.14s ease;
+}
+
+.prRowSelected .prRadioDot {
+  transform: scale(1);
+}
+
+.prRowBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.prRowTitleLine {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.prRowTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+  text-wrap: pretty;
+  min-width: 0;
+}
+
+.prDraftBadge {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.prRowMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  min-width: 0;
+}
+
+.prRowNumber {
+  color: var(--accent-blue);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.prRowBranches {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.prRowBranchArrow {
+  color: var(--text-tertiary);
+}
+
+.prRowLink {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.prRowLink:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.prEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  text-align: center;
+  background: var(--surface-2);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 12px;
+  padding: 20px 16px;
+}
+
+.prEmptyIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.prEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prEmptyText {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.confirmDraftWarning {
+  animation: confirmBackdropFade 0.2s ease;
+}
+
+.confirmApproveBtn.confirmApproveBtnBlocked:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
