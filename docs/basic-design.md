@@ -85,10 +85,11 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
 
 - プロジェクト追加時は、このファイルにエントリを追加し、対象リポジトリのworktreeを用意した上でオーケストレータを再起動する（[要件定義書 2-4](./requirements.md#2-4-agent-runnerの起動停止プロジェクト追加時の運用フロー)の「手動起動・停止」＝このファイルへの登録とオーケストレータの認識、と読み替える）。この一連の作業（対象リポジトリへの5つの状態ラベル作成・ベースcloneとworktreeの用意・このファイルへの追記）は`dist/scripts/add_project.sh <owner/repo> <worktree-path> [base-branch] [--projects-config-path=<path>] [--base-clone-root=<path>]`で1コマンドにまとめて行える（issue #128）。`--projects-config-path`・`--base-clone-root`はいずれも省略可能で、省略時は本節既定の`config/projects.yaml`・`~/.producer-desk/repos`が使われる（`--projects-config-path`未指定時は従来通り環境変数`PROJECTS_CONFIG_PATH`もフォールバック先として使える）。このファイルはリリース時にtarball展開先ルートの`scripts/add_project.sh`として同梱される。`bin/start.sh`等（開発用ソースビルドとtarball配布用ビルド済み資産とで実際に処理内容が異なるため`bin/`・`dist/bin/`双方に別内容を持つ）とは異なり、add_project.shは開発環境・配布パッケージのどちらで動かしても処理内容が同一のため、二重管理を避けて`dist/scripts/`配下にのみ配置する。ラベル作成は`gh label create`が未作成のラベルに対する`gh issue edit --add-label`の失敗要因になりやすく見落としやすいため、特にこのツールでの一括対応を推奨する。冪等に実装されているため、既にラベル・worktree・エントリが存在する場合はそれぞれスキップされ、何度実行しても安全。オーケストレータの自動再起動は行わないため、実行完了後は案内に従って手動で再起動すること。詳細は`dist/scripts/add_project.sh`冒頭のコメントを参照。
 - トップレベルの`log_retention_days`（プロジェクト単位ではなくファイル全体に1つ、既定値7）で、`logs/orchestrator.log`のローテーション世代数・`logs/<repo>/*.log`（Agent Runner個別実行ログ）の保持日数の両方を制御する（[3-2](#3-2-監視方法)参照。issue #114）。
+- **タイミング系設定（issue #201）**: 動作に影響する時間系の値は、`log_retention_days`と同様に`config/projects.yaml`のトップレベルキーで変更できる（未指定時は括弧内の既定値、正の数値のみ・不正値は起動時エラー、反映にはオーケストレータの再起動が必要。コメント付きの例は`config/projects.yaml.example`）。オーケストレータ側: `polling_interval_seconds`（300）、`ci_wait_timeout_hours`（6、[3-5](#3-5-ci完了待機中の自動再開issue-173)のCI待機タイムアウト）、`litellm_health_timeout_seconds`（3）、`ollama_bench_timeout_seconds`（300）。ダッシュボード側: `issue_cache_ttl_seconds`（60）、`dashboard_poll_interval_seconds`（30）、`sync_tick_interval_seconds`（30）。ダッシュボード側の値はブラウザから`config/projects.yaml`を直接読めないため、内部API `GET /api/settings`（`/api/state`と同じサーバー、レスポンスは上記3キーを秒単位の数値で返す）で配信し、ダッシュボードのRoute Handler（`/api/settings`）経由で`AppShell`が起動時に1回取得する。取得失敗・不正値の場合は括弧内の既定値で動作する。
 
 ### 2-2. データ取得仕様（ポーリング）
 
-- **ポーリング間隔**: 5分。
+- **ポーリング間隔**: 既定5分。`config/projects.yaml`の`polling_interval_seconds`で変更できる（再起動後に反映、[2-1](#2-1-対象リポジトリ一覧の管理)のタイミング系設定参照、issue #201）。
 - 各対象リポジトリに対し `gh issue list --repo <repo> --state all --json number,title,labels,comments,updatedAt,state --limit 100` 相当のAPI呼び出しで、issue一覧（Open・Closed双方）とラベル・コメント・更新日時・クローズ状態を取得する。
   - クローズ済みissueを「プロジェクトの並行状況」ウィジェットの状態表示に「完了」として反映するには、クローズ済みissueも取得対象に含める必要がある（[1章「完了」](#状態一覧遷移条件ラベル操作)参照）。`--state open` のみの取得では、issueがクローズされた瞬間に取得結果から消えてしまい、クローズをイベントとして検知できない（[issue #45](https://github.com/nosetech/producer-desk/issues/45)で判明）。
   - `--limit 100` はプロデューサー1名・3〜5プロジェクト同時進行というMVPの利用規模を踏まえた簡易的な上限であり、厳密なページングは行わない（1リポジトリあたり直近100件のissueに含まれない古いクローズ済みissueはプロジェクト状況の直近状態算出に現れなくなるが、実用上問題にならない想定。プロジェクト規模が想定を超えて増えた場合は別途見直す）。
@@ -98,10 +99,17 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
   - **プロジェクト状況（並行状況ウィジェット）**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態ラベルと状態別のOPEN issue件数（`status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review` の4ラベルと`untagged`の5種、`status:closed`は含まない）を集計する（`orchestrator/orchestrator/aggregation.py`の`ProjectStatus`、issue #115）。全プロジェクト横断の合計値も`AggregatedState.status_counts`として別途保持する。管理対象外issue（5つの状態ラベルいずれも無し）は直近更新状態の算出対象からは除外するが、状態別件数には`untagged`として計上する（ラベル付け漏れの検知用途。付与ラベルが無い＝完了、という誤った表示をしていた旧・活動ログ（タイムライン）の不具合[issue #45](https://github.com/nosetech/producer-desk/issues/45)の教訓を踏襲）。かつてはこの情報を全プロジェクト横断の時系列「活動ログ（タイムライン）」として提供していたが、issue #121で当該UI（`ActivityEvent`・`ActivityTimeline.tsx`）ごと廃止し、プロジェクト単位の集計（`ProjectStatus`／ダッシュボードの`ProjectStatusRow`）に一本化した。
   - **孤立したin-progress検知**: `status:in-progress` ラベルが付与されたissueは、本来[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)（`DispatchQueue`）上で実行中または待機中のはずである。しかし`gh issue edit --add-label status:in-progress`等でラベルのみを直接付与した場合（コメント投稿を伴わない操作）、`DispatchQueue.enqueue()`が一度も呼ばれずAgent Runnerが実際には起動しないまま、ダッシュボード上は「着手した」ように見え続ける不整合が発生し得ることが確認された（実例: `nosetech/stock-is#103`、[issue #50](https://github.com/nosetech/producer-desk/issues/50)）。この不整合は運用者側から`ps`やworktreeの更新時刻を手動確認する以外に検知する手段が無かった。そのため`DispatchQueue`に`is_active(repo, issue_number)`（指定issueが現在実行中または待機中かどうかを返す）を追加し、`orchestrator/orchestrator/polling.py`の`poll_once`/`run_polling_loop`から`orchestrator/orchestrator/aggregation.py`の`aggregate()`へ`is_dispatch_active`として注入する。`aggregate()`は`status:in-progress`のissueについて`is_dispatch_active(repo, number)`が偽の場合、そのプロジェクトの直近更新issueがそれであれば`ProjectStatus.is_orphaned`に異常フラグを立てる。`is_dispatch_active`を渡さない呼び出し（判定不能な文脈）では常に`False`（異常なし）を返し誤検知を避ける。
     - **ダッシュボード表示**: 当初はタイムライン項目のドット色を警告色（`--warn`/`--warn-bg`、ダーク`#ff6a5b`・ライト`#d23a2c`）に切り替え、項目直下に▲アイコン＋「実行中プロセスが見つかりません」の警告ボックスを表示する実装だった（`ActivityTimeline.tsx`、issue #50）。issue #121でのタイムライン廃止に伴い、この警告表示は`ProjectStatusRow`のチップ側（プロジェクトの並行状況ウィジェット）に移設した。`is_orphaned`が真のプロジェクトは、チップ内のリポジトリ名の隣に▲警告アイコン（`--accent-red`、タイトル属性に「作業中ラベルですが、対応するAgent Runnerが実行されていません」の説明文）を表示するのみの最小限のインジケータとし、詳細（どのissueが孤立in-progress状態か）はプロジェクト単位のissue一覧を表示する専用ページ（issue #116、未実装）に譲る方針とした。旧実装にあった「正常時（実行中）」の補足表示（`--accent-blue`系ボックス）は、チップの粒度では対応する項目が無いため廃止した。既存の`--accent-red`/`--accent-red-bg`トークンを使用（ダーク値はClaude Designの`--warn`と完全一致、ライト値はデザインの`#d23a2c`に対し既存トークンが`#d9392a`とわずかに異なるが、視覚的な差異はほぼ無いため既存トークンをそのまま流用した）。
-  - **同一ポーリングサイクル内のラベル遷移の即時反映**: `poll_once`が`on_issues_fetched`（`comment_watcher.py`の`process_new_comments`・`close_watcher.py`の`close_finished_issues`、いずれもGitHub issueへの直接コメント経由の指示検知・issueクローズ検知）を呼び出す際、これらの内部で`transition_label`によりGitHub側のラベルが書き換わることがある。この変更は`on_issues_fetched`呼び出し前に取得済みの`issues_by_repo`スナップショットには反映されないため、そのまま`aggregate()`に渡すと同一サイクルのプロジェクト状況に遷移前の古いラベルとして反映され、次回ポーリング（最大5分後）まで意図した新しい状態が表示されない不具合があった（issue #97）。そのため`poll_once`は`on_issues_fetched`呼び出し後に`issues_by_repo`を`list_issues`で再取得し直し（`status:in-review`のPR番号解決も再実行）、`aggregate()`にはこの最新スナップショットを渡す。これによりポーリング1サイクルあたりのGitHub API呼び出し回数が増える（issue一覧取得が最大2回）が、ダッシュボードの操作反映と同水準の即時性を得るためのトレードオフとして許容する。`on_issues_fetched`を渡さない呼び出し（`server._refresh_store`等、オーケストレータ自身によるラベル遷移が起きない経路）ではこの再取得は行わない。なお、ユーザーがGitHub UI/`gh`コマンドで直接ラベルを編集した場合は、オーケストレータがその変更を能動的に把握できないため、従来通り次回ポーリングでの検知に委ねる（[issue #50](https://github.com/nosetech/producer-desk/issues/50)の設計と同様）。
+  - **同一ポーリングサイクル内のラベル遷移の即時反映**: `poll_once`が`on_issues_fetched`（`comment_watcher.py`の`process_new_comments`・`close_watcher.py`の`close_finished_issues`、いずれもGitHub issueへの直接コメント経由の指示検知・issueクローズ検知）を呼び出す際、これらの内部で`transition_label`によりGitHub側のラベルが書き換わることがある。この変更は`on_issues_fetched`呼び出し前に取得済みの`issues_by_repo`スナップショットには反映されないため、そのまま`aggregate()`に渡すと同一サイクルのプロジェクト状況に遷移前の古いラベルとして反映され、次回ポーリング（既定では最大5分後）まで意図した新しい状態が表示されない不具合があった（issue #97）。そのため`poll_once`は`on_issues_fetched`呼び出し後に`issues_by_repo`を`list_issues`で再取得し直し（`status:in-review`のPR番号解決も再実行）、`aggregate()`にはこの最新スナップショットを渡す。これによりポーリング1サイクルあたりのGitHub API呼び出し回数が増える（issue一覧取得が最大2回）が、ダッシュボードの操作反映と同水準の即時性を得るためのトレードオフとして許容する。`on_issues_fetched`を渡さない呼び出し（`server._refresh_store`等、オーケストレータ自身によるラベル遷移が起きない経路）ではこの再取得は行わない。なお、ユーザーがGitHub UI/`gh`コマンドで直接ラベルを編集した場合は、オーケストレータがその変更を能動的に把握できないため、従来通り次回ポーリングでの検知に委ねる（[issue #50](https://github.com/nosetech/producer-desk/issues/50)の設計と同様）。
   - **利用量・リミットモニター**（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）: Agent Runnerの実行結果（`claude -p ... --output-format stream-json --verbose`のNDJSON出力から取り出した最後の`"type":"result"`イベント。[3-1](#3-1-起動パラメータ)参照）から`total_cost_usd`・`usage.*`・`modelUsage.*`（モデルごとのinput/outputトークン数・コスト）を取得し、`orchestrator/orchestrator/usage_store.py`でSQLite（`config/usage.db`、.gitignore対象）に記録する。Anthropicアカウント側が内部管理するセッション5時間枠・週間上限に対する正確な消費率(%)はこの経路では取得できないため、過去7日分の「日単位・モデル別の使用量」を集計して表示する方式に転換した（issue #60）。リミット到達時（`is_error: true`かつ`api_error_status: 429`）は、`result`の自由文から解除予定時刻の記述を正規表現で抽出し、パース失敗時は生の文字列をそのまま保持するフォールバックを用意した。集計結果とリミット到達状況は内部API `GET /api/usage`（[2-2](#2-2-データ取得仕様ポーリング)直下、`/api/state`と同じサーバー）で提供する。issue #59（タスク種別に応じたローカルLLM併用）を見据え、記録スキーマは`model`をモデル名の文字列として保持しており、ローカルLLM分の実データもそのまま同じ経路で記録できる。ダッシュボード側のUI（折れ線グラフ等の表示）実装は別issue（#64）に切り出した。**「日単位」の集計はJST（Asia/Tokyo）基準の日付で行う。** `usage_records.recorded_at`自体はUTCで保存するが（絶対時刻として一意に扱うため変更しない）、`daily_model_usage()`の「本日」判定・日付グルーピングはJSTへ変換してから行う。ダッシュボード側の「本日の使用量」カードが表示する日付も、集計結果の末尾要素に依存せずクライアント側でJST基準の実日付を独立に算出する（`todayJst()`、`Intl.DateTimeFormat`の`Asia/Tokyo`タイムゾーン指定を使用）。UTC基準のままだとJSTで日付が変わってから午前9時になるまでの間、「本日の使用量」が前日のまま表示され続ける不具合があった（issue #71）
-- **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "reviews": [...], "project_status": [...], "status_counts": {...}}` 形式のJSONで返す。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
+- **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "reviews": [...], "project_status": [...], "status_counts": {...}, "last_polled_at": "..."}` 形式のJSONで返す。`last_polled_at`はオーケストレータが全プロジェクトを最後にポーリングした時刻、`project_status[].fetched_at`は各リポジトリを実際にGitHubから取得した時刻（いずれもISO 8601・UTC、未取得は`null`。issue #197）で、ダッシュボードの「N分前」表示の元になる（ブラウザ側で`GET /api/state`に成功した時刻ではない）。`StateStore`は集約の元になったリポジトリ別issue一覧も内部的に保持するが、APIレスポンスには含めない。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
 - **指示出し操作直後の同期更新**: [2-3](#2-3-指示出しapi内部api)の`POST /api/projects/{repo}/issues/{issue_number}/instruct`・`POST /api/projects/{repo}/issues`がGitHub側の変更（ラベル・コメント・PRマージ等）に成功した直後、レスポンスを返す前に本節のポーリング1回分（`orchestrator/orchestrator/polling.py`の`poll_once`）を同期的に実行し、その結果でこのキャッシュを更新する。上記5分間隔の背景ポーリングだけに頼ると、ダッシュボードが操作直後に`GET /api/state`を再取得しても最大5分間は古いスナップショットが返り続け、操作対象のissueがまだ一覧に残っているように見えて二重操作できてしまう不具合があった（issue #70）。この同期更新自体が失敗しても、既に成功している指示操作のレスポンスは成功のまま返し、最新化は次回の背景ポーリングに委ねる。
+
+- **プロジェクト別issue一覧の取得（issue #116）**: `GET /api/projects/{repo}/issues`（`/api/state`と同じサーバー、新規issue作成の`POST`と同一パス・別メソッド）。ダッシュボードのissue一覧画面（`/projects/{owner}/{name}`）向けに、対象リポジトリのissue（`gh issue list --state all`、最大100件）を`{"repo": ..., "issues": [{"number", "title", "label", "state", "comments_count", "updated_at", "is_orphaned"}]}`で更新が新しい順に返す。詳細画面を開く操作は低頻度のため`StateStore`にはキャッシュせず、リクエスト都度`list_issues`を呼ぶ。`label`は表示に採用する状態ラベル（OPENで状態ラベル無しは`null`＝タグなし、クローズ済みで状態ラベル無しは`status:closed`）。`is_orphaned`は`/api/state`の`project_status`と同じ孤立in-progress判定（`aggregation._is_orphaned_in_progress`）をissue単位で適用した結果。未登録リポジトリは404、`gh`の失敗は502。
+- **プロジェクト単位・全体の再取得（issue #197）**:
+  - `POST /api/projects/{repo}/refresh`: 当該リポジトリ1件分のみ`polling.fetch_project_issues`（`poll_once`と共通の取得ロジック。`gh issue list`＋`status:in-review`のPR番号解決）で取得し、`StateStore.replace_repo`で当該リポジトリ分のissueと取得時刻（`fetched_at`）だけ差し替えて再集約する（他プロジェクトは前回ポーリング値のまま、`last_polled_at`も変更しない）。`{"repo", "fetched_at", "issues": [...(GET .../issuesと同形式)], "state": {...(GET /api/stateと同形式)}}`を返す。未登録リポジトリは404、`gh`の失敗は502（`StateStore`は前回値のまま維持）。全プロジェクトを走査する`poll_once`より軽い。
+  - `POST /api/refresh`: 全プロジェクトを対象に`poll_once`を1回同期実行して`StateStore`を更新し、`GET /api/state`と同形式を返す（`gh`の失敗は502）。ダッシュボード画面の全体再取得ボタン向け。
+  - ダッシュボードのissue一覧画面は、再取得ボタン・30秒間隔の定期更新・（キャッシュなし／TTL超過時の）初期表示とプロジェクト切替のいずれも`POST /api/projects/{repo}/refresh`を使い、完了後に`GET /api/state`を再取得する。これにより一覧・ラベル別件数・タブの未完了件数・更新時刻が同時に最新化され食い違わない（`GET .../issues`はダッシュボードからは使わなくなったが、API互換のため残す）。
+  - **ダッシュボード側のクライアントキャッシュ（issue #198）**: 上記のオーケストレータ側が「`StateStore`にはキャッシュせず都度取得」である点は変えず、ダッシュボード（`AppShell`が`useRef`で保持、ロジックは`dashboard/src/lib/issueCache.ts`）がリポジトリごとの`{issues, fetchedAt}`を持つ。初期表示・プロジェクト切替時、TTL（`ISSUE_CACHE_TTL_MS`＝60秒）以内なら取得せずキャッシュを即時表示（スケルトンなし）、TTL超過ならキャッシュを即時表示しつつバックグラウンド（`silent`）で再取得して差し替え（stale-while-revalidate）、キャッシュなしなら従来通りスケルトン表示で取得する。取得成功のたびに（30秒ポーリング・手動再取得含む）キャッシュを更新する。**手動再取得（再取得ボタン）は常にキャッシュを無視して取得する**。指示操作・承認・新規issue作成が成功した場合は`refreshAfterAction`で全リポジトリ分のキャッシュを破棄する（操作元が対象リポジトリを特定できないため保守的に全件破棄、#70と同趣旨）。バックグラウンド再取得の失敗はキャッシュ表示を残して握りつぶす。
 
 ### 2-3. 指示出しAPI（内部API）
 
@@ -121,10 +129,10 @@ Content-Type: application/json
 
 - `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。
 - `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。issueクローズに続けて、ラベルも`status:in-review`から`status:closed`へ即時遷移させる（`transition_label`）。これを省き背景ポーリング（`close_watcher.py`、5分間隔）でのラベル更新のみに委ねると、承認直後の[2-2「指示出し操作直後の同期更新」](#2-2-データ取得仕様ポーリング)時点ではまだ`status:in-review`のままのため、レビュー待ち一覧の判定（ラベルのみを見る）からカードが即座には消えない不具合になる（issue #70フォローアップ）。ラベル遷移に続けて、マージ済みPRのheadブランチ（`feature/*`）も`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`で削除する（issue #72）。ブランチ削除はマージ・issueクローズ成功後の後始末に過ぎないため、`gh pr merge --squash --delete-branch`のようにマージと同一コマンドには含めず分離したステップとし、削除の失敗（保護ブランチ設定・既に削除済み等）は握りつぶしてログ出力のみに留める（マージ・issueクローズが既に成功している以上、承認レスポンスとしては成功を返す。`--delete-branch`を同一コマンドに含めた場合、ブランチ削除だけの失敗でコマンド全体が非0終了扱いとなり後続の`close_issue`が実行されなくなる、というissue #58と同種の不具合を再発させるリスクがあるため）。
-  - **紐づくPRの解決方法**: `gh api repos/{repo}/issues/{issue_number}/timeline`のタイムラインイベントから`event == "cross-referenced"`かつPRであるものを収集し、**最後（最新）にcross-referenceされた1件だけ**を対象とする（`github_client.resolve_pr_number`）。同一issueに複数のPRが紐づいている場合、承認操作はその最後の1件のみをマージ・クローズ・ブランチ削除対象とし、**それ以外のPRには一切処理を行わない**（マージもされず、エラーや警告も出ない）。この判定は`Closes #`等のクローズキーワードの有無を見ておらず単なる`#<issue番号>`への言及でもcross-referenceイベントは発生するため、無関係な参照用PRが「最新」として誤って選ばれる可能性がある。ダッシュボードのレビュー待ちカードに表示されるPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）も同じ関数の解決結果を使うため、表示されているPRと実際に承認時にマージされるPRは常に一致する。
-    - **既知の注意点（cross-referenceイベントが生成されないケース）**: issue番号の直後に半角スペース・改行・句読点等の区切り文字を挟まず日本語テキストが続く形（`#77で`、`#77の`、`#77を`等）だと、GitHub側の自動リンク解析がissue参照として認識せず、cross-referenceイベントが生成されないことを実例で確認している（issue #82、PR #81本文の`issue #77で報告された...`）。Agent Runnerが日本語でPR本文を書く際に助詞が数字の直後へ続くのはごく自然な書き方であり、構造的に再発しやすい。そのためAgent Runner起動時、`--append-system-prompt`でPR本文に`Closes #<issue番号>`を独立行として書くよう明示的に指示している（`orchestrator/orchestrator/agent_runner.py`の`AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION`）。
-    - **フォールバック（OPEN PR本文検索）**: 上記の理由等でcross-referenceイベントが1件も見つからない場合、`resolve_pr_number`は対象リポジトリのOPEN PR一覧（`gh pr list --repo {repo} --state open --json number,title,body,updatedAt`）を取得し、タイトル・本文中に`#{issue_number}`が**直後に別の数字が続かない**形（`#770`等の別issue番号との誤マッチを避ける）で含まれるPRを検索する（`github_client._resolve_pr_number_from_open_prs`）。複数件ヒットする場合はcross-reference方式と同じ方針で最も更新が新しいものを採用する。この方式はGitHub側のissue参照パーサーのCJK境界問題に依存せず、Unicode文字列として素直に`#<issue番号>`を探すため、日本語直後の参照でも検出できる。ただし、無関係な参照用PRを誤検出し得る限界はcross-reference方式と同水準で残る。
-    - **既知の注意点（issue参照自体が皆無なケース）**: `AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION`はAgent Runnerの自己申告に委ねる運用のため、指示自体が守られずPR本文にissue番号への言及が一切含まれないケースが実例で発生した（issue #144、issue #136 / PR #143）。この場合cross-reference方式・OPEN PR本文検索のどちらでも救えない。そのため`agent_runner.run_agent_runner`の正常終了処理側（[3章](#3-agent-runner連携設計)）に、issue #78のラベル遷移漏れ検知と同様の決定的フォールバックを追加している。正常終了時点でissueが`status:in-review`に到達しているにもかかわらず`resolve_pr_number`が`None`を返す場合、Agent Runnerセッション終了時点のworktreeのカレントブランチ（`git -C {worktree_path} rev-parse --abbrev-ref HEAD`）をheadとするOPEN PRを`gh pr list --head {branch} --state open`で検索し（`github_client.find_open_pr_by_branch`）、1件に特定できればそのPR本文へ`Closes #<issue番号>`を追記する（`github_client.append_pr_issue_reference`、本文は上書きではなく既存本文への追記）。これによりGitHub側のcross-referenceイベントが新たに生成され、以降のポーリングでは通常の解決経路でも解決できるようになる。ブランチからも一意にPRを特定できない場合はログ警告に留め、`needs-human-decision`への強制遷移は行わない（PR自体は既に作成されておりissueの状態遷移自体は正しく、PRリンク表示のみが欠けるにとどまるため）。
+  - **対応PRの解決方法（issue #206）**: 対象リポジトリのOPEN PR一覧（`gh pr list --repo {repo} --state open --json number,title,url,isDraft,headRefName,baseRefName,body,closingIssuesReferences`）から、**issueをcloseする意図の「対応PR」だけ**を候補とする（`github_client.list_linked_prs`）。対応PRの判定条件は、(a) GraphQLの`closingIssuesReferences`に当該issueが含まれる、または (b) PR本文に`Closes|Fixes|Resolves #<issue番号>`（直後が数字でない。`#770`等の誤マッチ回避。大文字小文字不問）が含まれる、のいずれか。(b)の本文検索は、issue番号の直後に日本語が続く記法（`#77で`等）でGitHub側の参照解析が効かないCJK境界問題（issue #82）の補完を兼ねる。`Closes`等を伴わない単なる`#<issue番号>`への言及（`Refs #N`・後続の修正PR・フォローアップPR）のみのPR、およびマージ済み・クローズ済みPRは候補に含めない（従来の「timelineの`cross-referenced`の最後の1件を採用」「`updatedAt`最新を採用」は廃止）。
+    - **候補数ごとの挙動**: 候補が**ちょうど1件**ならそのPRを自動で対象とする（`IssueSummary.pr_number`にセット、`github_client.resolve_pr_number`も同条件）。**0件**なら承認は`ReviewMergeError`（502、「対応PRが見つかりません」）。**2件以上**なら自動マージせず、承認リクエストは409・`code: "pr_selection_required"`・`pr_candidates`（候補一覧）を返し、ユーザーにマージするPRを選択させる。ダッシュボードのレビュー待ちカードのPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）は`pr_number`が特定できた場合のみ表示する。`IssueSummary.pr_candidates`（`number`/`title`/`url`/`is_draft`/`head_ref_name`/`base_ref_name`）は`status:in-review`のissueについて常に候補一覧を保持する。候補が1件でもDraftの場合の自動マージ可否は設けない（`gh pr merge`自体がDraft PRのマージを拒否し、その場合は502になるため）。
+    - **ユーザー選択の再検証**: 承認リクエスト`POST /api/projects/{owner}/{name}/issues/{number}/instruct`の`action: "approve"`は任意の`prNumber`（整数）を受け付ける。指定された場合、承認時点の候補を再取得し、`prNumber`が含まれなければ400でマージしない（古い画面・なりすましによる誤マージ防止）。含まれればそのPRのみをマージ・クローズ・ブランチ削除対象とする。`prNumber`未指定で候補が複数の場合は上記409。ダッシュボードのレビュー待ちカード（`ReviewCard`）は、候補1件なら従来の確認ダイアログ、複数なら「マージするPRを選択」ダイアログ（候補をラジオ選択。タイトル・#番号・head→base・Draftバッジ・GitHubリンクを表示し、未選択の間は「マージして承認」を無効化）、0件なら「対応PRが見つかりません」の空状態（承認不可、GitHubのPR一覧リンク付き）を表示する。Draft PRを選択した場合は承認を妨げず警告バナーのみ表示する（`gh pr merge`がDraftを拒否するため失敗しうる旨を伝える）。承認時に409 `pr_selection_required`を受けた場合は、返された最新の候補で同じ選択UIを開き直す。カード上のPRチップは、一意なら`PR #N`リンク、複数なら「PR候補 N件」、0件なら「PR未特定」（いずれもリンクなし）を表示する。デザインはClaude Design `ProducerDesk.dc.html`（issue #206）。
+    - **既知の注意点（issue参照自体が皆無なケース）**: `AGENT_RUNNER_PR_INSTRUCTION`（PR作成時の指示）の「PR本文にissue参照を含める」指示はAgent Runnerの自己申告に委ねる運用のため、指示自体が守られずPR本文にissue番号への言及が一切含まれないケースが実例で発生した（issue #144、issue #136 / PR #143）。この場合cross-reference方式・OPEN PR本文検索のどちらでも救えない。そのため`agent_runner.run_agent_runner`の正常終了処理側（[3章](#3-agent-runner連携設計)）に、issue #78のラベル遷移漏れ検知と同様の決定的フォールバックを追加している。正常終了時点でissueが`status:in-review`に到達しているにもかかわらず`resolve_pr_number`が`None`を返す場合、Agent Runnerセッション終了時点のworktreeのカレントブランチ（`git -C {worktree_path} rev-parse --abbrev-ref HEAD`）をheadとするOPEN PRを`gh pr list --head {branch} --state open`で検索し（`github_client.find_open_pr_by_branch`）、1件に特定できればそのPR本文へ`Closes #<issue番号>`を追記する（`github_client.append_pr_issue_reference`、本文は上書きではなく既存本文への追記）。これによりGitHub側のcross-referenceイベントが新たに生成され、以降のポーリングでは通常の解決経路でも解決できるようになる。ブランチからも一意にPRを特定できない場合はログ警告に留め、`needs-human-decision`への強制遷移は行わない（PR自体は既に作成されておりissueの状態遷移自体は正しく、PRリンク表示のみが欠けるにとどまるため）。
   - **削除対象ブランチの制約**: 削除するのはPRのhead（マージされる側の`feature/*`ブランチ）であり、マージ先の`develop`が誤って削除されることはない。ただし同一ブランチから複数のPRが作られている場合（通常のAgent Runner運用では発生しない想定）、削除すると他のPRが壊れる可能性がある点は既知の制約として残る。
   - **ローカルworktreeの同期**: 上記のブランチ削除はGitHub側（リモート）のみに対する操作であり、そのままではAgent Runner実行用のローカルgit worktree（[2-1](#2-1-対象リポジトリ一覧の管理)の`worktree_path`）が削除済みブランチをチェックアウトしたまま残ってしまう（issue #80）。そのためブランチ削除が成功した場合に限り、`orchestrator/orchestrator/worktree.py`の`sync_worktree_after_branch_delete`を呼び出し、対象worktreeを`git fetch origin develop` → `git checkout --detach origin/develop`（**ブランチ名`develop`ではなくdetached HEAD**で最新の内容に合わせる） → 削除済みブランチの`git branch -D`の順に同期する。detached HEADにしているのは、Agent Runner用worktreeとオーケストレータ自身のソースディレクトリが同一リポジトリのlinked worktreeであり、オーケストレータ側が常時`develop`ブランチをチェックアウト済みのため、Agent Runner用worktree側で`develop`という**ブランチ名**をチェックアウトしようとするとgitの「同じブランチを複数worktreeで同時チェックアウトできない」制約に必ず抵触して失敗するためである（issue #88、当初`git checkout develop`としていたところ本番環境で常に失敗することが判明し修正）。`fetch`・`checkout`が失敗する場合（ネットワーク不調・未コミットの変更が残っている等）はそれ以降の処理を行わずログ警告のみに留め、この処理自体の失敗は承認レスポンスの成功に影響しない（ブランチ削除失敗時と同様の握りつぶし方針）。また、[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)の`DispatchQueue.is_running(repo)`が真の間（＝同一プロジェクトの別issueでAgent Runnerが実行中の間）は、実行中セッションの作業ディレクトリを横から書き換えないようこの同期処理自体をスキップする。
 - `instruct`: ダッシュボードのテキストボックスから入力した**自由記述のメッセージ**をコメント投稿する。issueの状態を問わず送信可能（作業中issueへの割り込み指示を含む）。
@@ -165,7 +173,7 @@ Content-Type: application/json
 
 ### 2-4. ダッシュボードの画面設計
 
-視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
 
 ## 3. Agent Runner連携設計
 
@@ -180,15 +188,15 @@ claude -p "<指示内容>" \
   (--session-id <new-uuid> | --resume <session-id>)
 ```
 
+- **実行手段の切り替え（issue #174、[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)・[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)参照）**: 対象プロジェクトの実行手段設定が(B) LiteLLM Proxy経由の場合、`subprocess.Popen`に渡す環境変数へ`ANTHROPIC_BASE_URL`（LiteLLM Proxyのエンドポイント、例: `http://127.0.0.1:4000`）・`ANTHROPIC_AUTH_TOKEN`（LiteLLM Proxy側で発行した仮想キー）を追加する。(A) Claude Code CLI直利用の場合（LiteLLM Proxy疎通不能時のフォールバックを含む）はこれらの環境変数を設定しないだけでなく、`os.environ`（オーケストレータ自身のプロセス環境）に手動検証の残骸等でたまたま設定されていたとしても子プロセスへは明示的に除去して渡す（`run_agent_runner`）。素通しさせると、LiteLLM Proxy疎通不能時の自動フォールバック処理が実質無効化されうるため（issue #176コードレビューで指摘）。この場合はサブスクリプションOAuth認証のまま起動する（既存の起動方式のまま変更なし）。いずれの場合も子プロセスの他の環境変数（`PATH`等）は書き換えない。実行手段の解決方法（プロジェクト設定のデフォルト値・issueコメントでの都度上書き）は[4章](#4-モデルルーター設定設計)参照。
 - worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.Popen(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
 - `<session-id>` は `config/sessions.json`（`.gitignore`対象、コミットしない）に**issueごと**に保存する（`"{repo}#{issue_number}": "<session-id>"`、`orchestrator/orchestrator/session_store.py`）。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/sessions.json` に書き込み、同一issueへの以降の指示では `--resume <session-id>` で再開する。
   - **プロジェクト単位ではなくissue単位である理由**: 当初はプロジェクト（リポジトリ）単位で1つのセッションIDのみを`config/projects.yaml`に保存していたが、この場合同一プロジェクト内の全issueが1本のClaude Code会話を共有してしまう。あるissueが`needs-human-decision`で停止している間に別issueが同じセッションで進行・完了すると、後から前者issueを`--resume`で再開した際、セッションの直近の会話文脈（別issueの完了報告）を引きずってしまい、再開したissue本来の内容に取り組まれない不具合が発生した（issue #32）。issueごとに独立したセッションを持つことで、他issueの進行状況に文脈が左右されないようにする。
 - `--output-format stream-json --verbose` により、実行結果をツール呼び出し・メッセージ単位のNDJSON（1行1JSON）として逐次標準出力に取得する。`--verbose` は `-p`（非対話モード）で `stream-json` を使う場合にCLIが必須とするフラグ。ストリームの最後に出力される `"type":"result"` のイベント（`result` フィールド等を含む）を3-2のissueコメント要約に利用する。当初は `--output-format json`（完了後に最終結果のみを一括出力）を使っていたが、この形式ではプロセス終了まで標準出力に一切何も書き出されず、実行時間の長いタスク（数十分〜）では「ログファイルが更新されない状態」が続き、実行中の進捗を外部から確認する手段が無かったため変更した（issue #49）。
 - `--append-system-prompt` により、[1章](#1-データモデル状態遷移設計)でAgent Runner自身の責務とした`needs-human-decision`・`status:in-review`へのラベル自己付与（対象issue番号・リポジトリ名・具体的な`gh issue edit`コマンドを含む）を、指示内容の文面によらず毎回明示する（`agent_runner.py`の`AGENT_RUNNER_LABEL_INSTRUCTION`）。当初この指示が無く、PR作成後もラベルが`status:in-progress`のまま遷移しない事例が発生したため導入した（issue #33）。
-  - **CI完了待ちを誤って判断待ちにしないための追記**: PR作成後のCI完了待機中に、Agent Runnerが「CI完了を監視中」とissueコメントに書きつつ`needs-human-decision`へ遷移させてしまう事例が発生した（issue #152）。CI実行中であること自体は時間経過を待つだけの状況であり人間の判断を要さないため、`AGENT_RUNNER_LABEL_INSTRUCTION`に、CIが`PENDING`/`IN_PROGRESS`の間は`needs-human-decision`を使わず、`gh pr view --json statusCheckRollup`をBashツールで`sleep`を挟みながら繰り返し確認するポーリングによりセッション内で待機を継続する旨を明記した。同じ理由から`.claude/skills/fix-github-issue/SKILL.md`のCI完了待機ステップにも同内容を明記している。
+  - **CI完了待ちを誤って判断待ちにしないための追記**: PR作成後のCI完了待機中に、Agent Runnerが「CI完了を監視中」とissueコメントに書きつつ`needs-human-decision`へ遷移させてしまう事例が発生した（issue #152）。当初は`AGENT_RUNNER_LABEL_INSTRUCTION`に、CIが`PENDING`/`IN_PROGRESS`の間は`needs-human-decision`を使わず`gh pr view --json statusCheckRollup`をBashツールで`sleep`を挟みながら繰り返し確認するポーリングによりセッション内で待機を継続する旨を明記していたが、この指示手段自体がBashツールの長時間`sleep`チェーン検知でブロックされ実行不能であり、代替のMonitorツールにも20分のハードタイムアウトがあるため、CIがそれより長くかかると強制終了させられ、`run_agent_runner`側の正常終了時決定的フォールバック（後述）が意図しない`needs-human-decision`遷移を引き起こす形で同症状が再発した（issue #86実行ログでの実地確認、issue #173）。そのため「sleepポーリングで待つ」指示は撤回し、**CI完了検知・後続処理の自動再開はオーケストレータのポーリング（3-5節`orchestrator.ci_watcher`）に委ね、Agent Runner自身はCI待機のため意図的にターンを終了する際に機械可読マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX`、対象PR番号を含む）を最終応答に埋め込むだけでよい**方式に変更した。同じ理由から`.claude/skills/fix-github-issue/SKILL.md`のCI完了待機ステップにも同内容を明記している。
 - 同様に`--append-system-prompt`で、Agent Runnerが調査結果の報告等の目的で`gh issue comment`等を用いてissueに直接コメントを投稿する場合は、本文末尾に`github_client.BOT_COMMENT_MARKER`（`<!-- producer-desk:bot-comment -->`）を必ず付与するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）。オーケストレータ内部の通知処理（`github_client.post_comment`）はこのマーカーを自動付与するが、Agent Runner自身が`gh`コマンドを生で叩く経路はこの仕組みを経由しないため付与漏れが起こり得る。マーカーが無いと[2-3「共通仕様」](#共通仕様)のコメント監視処理（`comment_watcher.py`）が自分自身の投稿を人間からの新規指示と誤検知し、同一内容を無限に再ディスパッチしてしまう（ラベルも`needs-human-decision`→`status:in-progress`に巻き戻る。issue #43）。
 - 同じ指示（`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）内で、セッション終了時の最終応答は3-2の通り`run_agent_runner`が自動的に「Agent Runner実行結果:」というissueコメントとして無条件に投稿する旨も明示し、対応完了時にAgent Runner自身が重ねて完了報告コメントを投稿する必要はないことを伝える。能動的なissueコメント投稿は、長時間かかる作業の途中経過報告など、最終応答を待たずに人間へ可視化する価値がある場合に限定する。当初この案内が無かったため、AI自身の能動的な完了報告コメントと、オーケストレータによる無条件の自動投稿とがほぼ同時刻・同内容で重複して投稿される事例が複数のissueで発生した（issue #84）。
-- 同様に`--append-system-prompt`で、ダッシュボードのUI実装時はCLAUDE.md記載のClaude DesignのURL（`https://claude.ai/design/...`）の実ソースを`DesignSync` MCP（`get_project`/`list_files`/`get_file`、`projectId`はURLの`/p/<uuid>`部分）で直接取得し、配色・余白等の実際のCSS/JS値を確認してから実装するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`）。デザインURLは認証必須で`WebFetch`では取得できず（403）、テキストの設計文書にも色・アイコンの指定は無いため導入した（issue #33）。当初はブラウザ操作ツールでの目視確認のみを指示していたが、キャンバス上の要素クリックによるコード選択が自動操作から機能しない・プレビューが状態を持つインタラクション（ダイアログ表示等）を再現しない静的スナップショットである等の理由で、目視確認だけでは細部の再現性に限界があることが判明し、`DesignSync`による直接取得を主手段に切り替えた（issue #55・PR #57）。
 - `DesignSync`が権限不足等で使えない場合はフォールバックしない。ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため`DesignSync`の代替にはせず、その旨を実行結果コメントに明記してその場で作業を停止し、`needs-human-decision`として人間の確認を仰ぐ。`DesignSync`で値を取得できた場合、実装後はブラウザ操作ツール（`mcp__claude-in-chrome__*`）で完成品とデザインのプレビューを並べて最終的な見た目の一致を確認する（これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 - `--chrome` フラグにより、Claude in Chrome連携を明示的に有効化する。`claude -p`（非対話モード）はこの連携がデフォルト無効で、フラグなしでは`mcp__claude-in-chrome__*`ツール自体が存在せず、上記の実装後確認が機能しない（issue #33の追加原因調査で判明）。
   - **運用上の前提**: `DesignSync`の利用には`claude.ai`ログインへのデザインシステムアクセス権限が必要。**この権限は一度`/design-login`（または通常のclaude.aiログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名`Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の`claude` CLI呼び出し（Agent Runnerの`claude -p`を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フロー（ブラウザでのOAuth同意等、人間の操作が必要な手順）を行うことはできないし、行う必要もない。運用開始前にホスト上で一度だけ人間が`/design-login`を実行しておけば、以降のAgent Runner実行では追加の認証操作なしに`DesignSync`が使える想定（Chrome連携時の「事前にログイン状態を維持しておく」運用と同じパターン）。実行時に権限が無い場合、Agent Runnerはその旨を実行結果コメントに明記し、`needs-human-decision`として人間の確認を仰ぐ。
@@ -197,8 +205,9 @@ claude -p "<指示内容>" \
 ### 3-2. 監視方法
 
 - **ヘルスチェック**: ワンショット実行のため常時稼働のプロセス監視（ヘルスチェックエンドポイント等）は設けない。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueにコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与を第一とする。[1章](#1-データモデル状態遷移設計)参照）。**実行中の進捗確認は、プロセス監視ではなく後述のログ収集（`tail -f`によるリアルタイム追跡）で行う（issue #49）。**
-  - **異常終了時のコメント文面**: 異常終了は大抵の場合APIリミット到達（429）が原因であり、その場合は終了コード・ログパスを提示しても人間が読むべき情報にならない（issue #146）。`run_agent_runner`はNDJSON出力の最後の`"type":"result"`イベント（`_parse_result_payload`、利用量記録用の`_extract_usage_records`と共通の抽出処理`_classify_run_error`（issue #60）を経由）から`is_error`/`api_error_status`を参照し、`api_error_status == 429`かつ`usage_store.parse_limit_reset_text()`で`result`の自由文から解除予定時刻（例: `resets 1pm (Asia/Tokyo)`）を抜き出せた場合に限り、「Claude CodeのAPI利用リミットに達したため停止しました」という趣旨のメッセージ（解除予定時刻付き）に切り替える（`agent_runner.py`の`_build_failure_comment`）。**429到達時でも`result`が空・非文字列で解除予定時刻等の情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り終了コード・ログパスを含むメッセージにフォールバックする**（429以外の異常終了・予期しない例外等も同様）。いずれの場合も`needs-human-decision`へのラベル遷移自体は変わらない。
+  - **異常終了時のコメント文面**: 異常終了は大抵の場合APIリミット到達（429）が原因であり、その場合は終了コード・ログパスを提示しても人間が読むべき情報にならない（issue #146）。`run_agent_runner`はNDJSON出力の最後の`"type":"result"`イベント（`_parse_result_payload`、利用量記録用の`_extract_usage_records`と共通の抽出処理`_classify_run_error`（issue #60）を経由）から`is_error`/`api_error_status`を参照し、`api_error_status == 429`かつ`usage_store.parse_limit_reset_text()`で`result`の自由文から解除予定時刻（例: `resets 1pm (Asia/Tokyo)`）を抜き出せた場合に限り、「Claude CodeのAPI利用リミットに達したため停止しました」という趣旨のメッセージ（解除予定時刻付き）に切り替える（`agent_runner.py`の`_build_failure_comment`）。**429到達時でも`result`が空・非文字列で解除予定時刻等の情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り終了コード・ログパスを含むメッセージにフォールバックする**（予期しない例外等も同様）。**429以外の異常終了では、`result`が非空の文字列として得られていればコメント本文に「エラー内容: <result>」として含め（2000文字を超える場合は切り詰めて「…（省略、詳細はログを参照）」を付す）、ログパスも詳細調査用に併記する。`payload`が`None`（NDJSON出力が壊れている・`result`イベントが無い）または`result`が空/非文字列の場合は従来通りログパスのみのメッセージにフォールバックする（issue #190）**。いずれの場合も`needs-human-decision`へのラベル遷移自体は変わらない。
 - **正常終了時の決定的フォールバック**: プロセスが正常終了（exit 0）しても、Agent Runnerが上記の自己申告ラベル遷移（`AGENT_RUNNER_LABEL_INSTRUCTION`）を実行し忘れることがある（issue #70）。正常終了時、issueは必ず「PR作成済み（`status:in-review`）」「人間への確認が必要（`needs-human-decision`）」のいずれかに到達している設計であるため、オーケストレータは`run_agent_runner`の成功分岐でissueコメント投稿後に現在のラベルを再取得し、`status:in-progress`のまま変化していなければ（＝`needs-human-decision`・`status:in-review`いずれにも自己遷移していなければ）常に異常とみなし、`needs-human-decision`へ強制的に遷移させる（`result`テキストの自然文判定は行わない。既存の「異常終了時は`needs-human-decision`に強制遷移」ロジックと対称的な構造。issue #78）。Agent Runnerが既に自己遷移済みの場合、`transition_label`の冪等性によりこのフォールバックは何も行わない。
+  - **CI完了待ちとの区別（issue #173）**: 上記フォールバックは当初「`status:in-progress`のまま正常終了＝常にラベル遷移漏れ」と一律に扱っており、CI完了待ちのため意図的に（`AGENT_RUNNER_LABEL_INSTRUCTION`の指示通りに）ターンを終了したケースも区別できずに`needs-human-decision`へ落としてしまっていた。`run_agent_runner`は現在、最終応答（`result`）から`agent_runner.extract_ci_wait_marker`でCI待機マーカーの有無を確認し、マーカーが検出された場合のみこのフォールバックをスキップして`status:in-progress`を維持する。CI完了の検知・後続処理の自動再開は3-5節の`orchestrator.ci_watcher`が担う。
 - **ログ収集**: ログファイル（`logs/<repo>/<timestamp>.log`、`<timestamp>`はJST基準の`%Y%m%dT%H%M%S`。UTC基準・末尾`Z`表記だった旧形式から、`usage_store.py`の`_JST`と同じ前例に合わせて変更した。issue #114）はディスパッチ開始時点で作成し、以降は `claude` CLIの標準出力（NDJSON、3-1参照）を1行読むたびに都度ファイルへappendする（`agent_runner.py`の`_stream_process_output`。`subprocess.Popen`でプロセスを起動し、完了を待たずに読み取りを進める）。標準エラー出力は `stderr=subprocess.STDOUT` で標準出力ストリームに合流させ、取りこぼしを防ぐ（別スレッドでの並行読み取りは実装が複雑になる割に効果が変わらないため採用しなかった）。この方式により、実行中に `tail -f logs/<repo>/<timestamp>.log` でリアルタイムに進捗を追える（issue #49。旧方式では `subprocess.run(capture_output=True)` でプロセス終了まで標準出力・標準エラーをメモリにバッファし、終了後に一度だけログファイルへ書き出していたため、実行時間の長いタスクでは終了までログファイルが一切更新されなかった）。加えて、プロセス終了後にNDJSON全体から最後の `"type":"result"` イベントを取り出し（`_parse_result_payload`）、その `result` フィールドを要約としてissueコメントに投稿し、ダッシュボードのプロジェクト状況表示と連動させる。
 - **個別実行ログの保持クリーンアップ**: 「1実行＝1ファイル、実行完了まで同一ファイルへ追記」という書き込み方式自体は変更しない（NDJSONの一貫性・`tail -f`の継続性を壊さないため）。`run_agent_runner`の実行完了直後（正常終了・異常終了・worktree不在による早期リターンいずれの場合も）に、`agent_runner.py`の`cleanup_old_agent_logs`が当該リポジトリの`logs/<repo>/`配下を走査し、**更新日時（mtime）**が`log_retention_days`（2-1の`config/projects.yaml`設定値、既定7日）より古い`*.log`ファイルのみを削除する。ファイル名に埋め込まれた実行開始時刻ではなくmtimeで判定するのは、`_stream_process_output`が1行書くたびに`flush()`するため実行中のファイルは常にmtimeが「今」に近く、実行中は経過日数のカウントが始まらないため（`DispatchQueue.is_active()`等の別途のフラグ管理は不要。issue #114）。
 
@@ -216,13 +225,135 @@ claude -p "<指示内容>" \
 - **ローテーション**: `logging.handlers.TimedRotatingFileHandler(log_path, when="midnight", backupCount=log_retention_days)`で`logs/orchestrator.log`に直接書き込む（`log_retention_days`は2-1の`config/projects.yaml`設定値、既定7日。自前でのファイル走査・削除は実装せず標準機能に委譲する）。二重書き込みを避けるため、コンソール向けの`StreamHandler`は追加しない。`bin/start.sh`側の`nohup ... >>"${ORCHESTRATOR_FALLBACK_LOG}" 2>&1`という生リダイレクトは、ロガーを経由しない出力（`configure_logging()`呼び出し前のクラッシュ・未捕捉例外のトレースバック等）を取りこぼさないための最終フォールバックとして残すが、書き込み先は`logs/orchestrator.stderr.log`という別ファイルに分離する。`TimedRotatingFileHandler`はローテーション時に`orchestrator.log`を`orchestrator.log.YYYY-MM-DD`へ**rename**した上で新規に`orchestrator.log`を開き直すため、シェル側の`nohup`が同じパスに`>>`で開いたファイルディスクリプタを共有すると、rename後もシェル側は旧inode（rename後の名前）へ書き込み続けてしまう。この状態でPython側がbackupCount超過分のバックアップファイルを`unlink`しても、シェル側のfdが開いたままならディスク上の実体は解放されず、ディレクトリ上は見えないまま際限なく肥大化する（issue #114が解消しようとした問題を別の場所で再発させる）。この競合を避けるため、両者の書き込み先パスを分離した。
 - **`main.py`の`print()`置き換え**: 起動時メッセージ（読み込んだプロジェクト一覧・APIサーバーのURL等）はすべて`logger`経由に置き換え、上記4ファイル・`agent_runner.py`と同一の出力系統・フォーマットに統一する。
 
+### 3-5. CI完了待機中の自動再開（issue #173）
+
+issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision`と誤判断する」経路のみを塞いだ修正だったが、issue #86の実行ログから、以下3点の構造的要因により同症状（CI待ち中に判断待ちへ落ちる）が別経路で再発することが判明した。
+
+1. 当初指示していた「Bashツールで`sleep`を挟んだポーリング」は、Bashツールの長時間`sleep`チェーン検知でブロックされ、そもそも実行できない。
+2. ブロック時に案内される代替手段のMonitorツールにも20分のハードタイムアウトがあり、CIがそれより長くかかると実際の完了を待たずに強制終了させられる。
+3. Monitorの強制終了を受けてAgent Runnerが（能動的に`needs-human-decision`を選ぶのではなく）ただターンを終了すると、3-2節の「正常終了時の決定的フォールバック」（issue #78由来、`status:in-progress`のまま正常終了＝ラベル遷移漏れとみなす設計）が、CI待ちでの意図的な終了もラベル遷移漏れと区別できず無条件に`needs-human-decision`へ遷移させてしまう。
+
+このため、CI待ちの待機手段自体をAgent Runnerのセッション内ポーリングからオーケストレータ側のポーリングへ切り出した。
+
+- **Agent Runner側**: CIが`PENDING`/`IN_PROGRESS`の間、`sleep`ポーリングは行わず、`status:in-progress`のままターンを終了してよい。その際、最終応答に機械可読マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX` = `<!-- producer-desk:ci-wait`、本文は`{"pr_number": <PR番号>}`）を埋め込むよう`AGENT_RUNNER_LABEL_INSTRUCTION`で指示する（3-1節）。この最終応答は`run_agent_runner`によって`BOT_COMMENT_MARKER`付きでissueコメントとしてそのまま投稿されるため、マーカーはissueコメント上にも残る。
+- **`run_agent_runner`側**: 正常終了時、最終応答から`agent_runner.extract_ci_wait_marker`でこのマーカーを検出した場合に限り、3-2節の決定的フォールバックをスキップして`status:in-progress`を維持する（マーカーが無ければ従来通り`needs-human-decision`へ強制遷移する。issue #78の安全網自体は維持）。
+- **オーケストレータ側（`orchestrator/orchestrator/ci_watcher.py`）**: 5分間隔のポーリングサイクル（`main.py`の`on_issues_fetched`、`close_watcher`・`comment_watcher`と並ぶ処理）のたびに、`status:in-progress`のissueの最新コメントを確認し、CI待機マーカーが付いていれば`process_ci_waiting_issues`が対象PRのCIステータス（`github_client.get_pr_status_check_rollup`、`gh pr view --json statusCheckRollup`）を確認する。
+  - CIが完了していれば、`DispatchQueue.enqueue`でAgent Runnerをresumeし（既存セッションがあるため自動的に`--resume`となる）、後続処理（レビュー結果の確認・PRコメント投稿・ラベル遷移判断）の継続を促すメッセージを渡す。
+  - CIが未完了なら次回ポーリングまで待つ。
+  - 既にディスパッチ中（前回ポーリングでのresumeが進行中等）のissueは`DispatchQueue.is_active`で判定しスキップし、二重ディスパッチを避ける。
+- **無限待機の防止**: `CiWaitTracker`がissueごとにCI待機マーカーを最初に検出した時刻を記録し、`CI_WAIT_TIMEOUT`（既定6時間、`config/projects.yaml`の`ci_wait_timeout_hours`で変更可）を超えてもCIが完了しない場合は、オーケストレータが直接`needs-human-decision`へ遷移させ、その旨をissueコメントで通知するフェイルセーフを備える。
+
+### 3-6. Agent Runnerプロンプト設定管理（issue #149）
+
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の4定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+
+- **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
+- **編集対象**: AIの動作に影響する以下6種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+
+  | キー | 内容 | 必須トークン |
+  | --- | --- | --- |
+  | `label_instruction` | 状態ラベル遷移・CI待ちマーカーの指示 | `needs-human-decision` / `status:in-review` / `"pr_number"` / `<!-- producer-desk:ci-wait` |
+  | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
+  | `pr_instruction` | PR作成時の指示（現状はPR本文の`Closes #<issue番号>`記法） | なし |
+  | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
+  | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
+  | `user_name` | ユーザーの呼称（既定「ユーザー」） | なし |
+
+  `user_name`は指示文ではなく、各指示文中でユーザーを指す語を差し替えるための設定で、他の指示文から`{user_name}`として参照される。必須トークンの理由文・項目説明に含まれる`{user_name}`も、APIが設定済みの呼称で展開して返すため、ダッシュボードの表示にも反映される。改行・波括弧を含まない短い語句のみ許可する。変更前に保存済みの指示文が「人間」等と直書きしている場合はそのまま残る（デフォルトに戻すか手動で`{user_name}`へ書き換える）。
+
+- **検証（保存時）**: 以下に違反する本文は保存を拒否する（HTTP 400、`errors`に理由を列挙）。
+  - プレースホルダは`{repo}`・`{issue_number}`・`{user_name}`のみ許可する（展開されない`approve_default_message`・`user_name`自身は不可）。それ以外の`{xxx}`は拒否する。JSON例示の`{"used": true}`のような波括弧は識別子形式でないためそのまま使える。展開は`str.format`ではなく単純な文字列置換で行うため、`{{ }}`のエスケープは不要。
+  - 上表の必須トークン（オーケストレータが依存する状態ラベル名・機械可読マーカー等）が欠けている本文は拒否する。削除すると、判断待ち・レビュー待ち一覧への表示、CI待ち後の自動再開、無限再ディスパッチ防止、ローカルLLM利用量の記録がそれぞれ壊れるため。ダッシュボードはこの必須トークンと理由を編集画面に常時表示する。
+  - 空文字は拒否する。
+- **必須トークン検証の限界**: 文字列の**部分一致のみ**を確認する。トークンの前後の書式（マーカーの閉じ`-->`、JSON本文の形等）が正しいか、トークンが指示として意味のある位置にあるかは確認しない。このためダッシュボードの必須トークン説明パネルにも、その旨の注意文を表示する。マーカー本文のJSONキー（`"pr_number"`・`"used"`）は、オーケストレータがパースに使うため必須トークンに含めている。
+- **フォールバック**: `config/prompts.yaml`が手編集等で検証に通らない上書きを含む・YAMLとして壊れている場合も、Agent Runnerの起動自体は止めず、警告ログを出してデフォルト値を使う。
+- **書き込みの安全性**: `config/prompts.yaml`は`prompts`キーのみを持つ。書き込みは同一ディレクトリの一時ファイルへ書いてから`os.replace`で差し替える（Agent Runner起動・一覧取得が書き込み途中の内容を読まないようにするため）。保存・リセット時にYAMLが壊れていれば、`prompts.yaml.broken-<時刻>`へ退避したうえで上書きし、UIから復旧できるようにする。書き込み自体に失敗した場合はHTTP 500を返す。
+- **反映タイミング**: `build_system_prompt`が`build_claude_command`の呼び出し（＝Agent Runner起動）のたびに設定を読み直すため、再起動不要で**次回起動分から**反映される。実行中のセッションには反映されない（ダッシュボードの編集画面上部に常時注記する）。
+- **内部API**（`server.py`）:
+  - `GET /api/prompts` — 全プロンプトの一覧（`key`/`title`/`description`/`text`/`default`/`is_default`/`required_tokens`/`placeholders`）
+  - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
+  - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
+- **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
+- **将来拡張**: issue #148（モデルルーティング層）でモデルごとにプロンプトを出し分ける場合は、`prompts.yaml`のキー体系を拡張する（例: `models.<alias>.<key>`）。現状の`PromptSpec`・解決処理はキー単位のため拡張を妨げない。
+
 ## 4. モデルルーター設定設計
 
-[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、自走タスク本体はLiteLLM Proxy等のモデルルーティング層を導入せず、Claude Code CLIを直接利用する。ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）についても、モデルルーティング層は追加せず、Agent Runner（Claude Code CLI）が起動時に受け取る指示に従って自身で呼び出す構成とする。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは後述の「手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）」節で説明する`ollama-bench`コマンド経由でOllama REST APIを直接呼び出す（issue #107、詳細は後述）。
+[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通り、自走タスク本体の実行手段（(A) Claude Code CLI直利用＋サブスクリプション／(B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金）はプロジェクトごとにユーザーが選択できる（issue #148・#174）。一方、ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は本節の実行手段選択とは独立しており、引き続きLiteLLM Proxyを経由せずAgent Runner（Claude Code CLI）が起動時に受け取る指示に従って自身で直接呼び出す構成のままとする。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは後述の「手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）」節で説明する`ollama-bench`コマンド経由でOllama REST APIを直接呼び出す（issue #107、詳細は後述）。
+
+### 実行手段の選択（自走タスク本体、issue #174）
+
+- **プロジェクトごとのデフォルト設定**: [2-1](#2-1-対象リポジトリ一覧の管理)の`config/projects.yaml`に、プロジェクトエントリごとの実行手段設定（`execution_mode`: 既定は`claude_code`、`litellm_proxy`選択時はあわせて`litellm_model`にLiteLLM Proxy側のモデルエイリアス指定が必須。`orchestrator/orchestrator/config.py`の`Project`）を追加する（issue #176）。
+  - **永続化API（issue #176、#175が依存）**: `PATCH /api/projects/{repo}/settings`（[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)と同じ内部APIサーバー）。リクエストボディ`{"execution_mode": "claude_code" | "litellm_proxy", "litellm_model": "string（litellm_proxy時のみ必須。claude_code時に送られても無視する）"}`を受け取り、`config.update_project_execution_settings`で`config/projects.yaml`の対象エントリを書き換えたのち、レスポンスとして更新後の設定を`{"repo": ..., "execution_mode": ..., "litellm_model": ...}`で返す（200）。未登録リポジトリは404、バリデーションエラー（不正な`execution_mode`・`litellm_proxy`時の`litellm_model`欠落）は400。オーケストレータ再起動を待たず次回ディスパッチから反映されるよう、`server.py`はサーバー起動時に読み込み済みの`Project`インスタンス自体を書き換える（`projects`/`projects_by_repo`と`main.py`の`_make_dispatch_fn`が参照するインスタンスは同一オブジェクトのため、この変更は両方に反映される）。ダッシュボードのプロジェクト設定UI（issue #175）はこのAPIを呼び出す想定。
+    - **並行更新時の一貫性**: `ThreadingHTTPServer`はリクエストごとに別スレッドで動くため、`execution_mode`・`litellm_model`の2フィールドを別々に代入すると、`DispatchQueue`のワーカースレッドが`run_agent_runner`経由で読む際に「新execution_mode・旧litellm_model」のような一時的に不整合な組み合わせを観測しうる。そのため`Project.replace_execution_settings`（書き込み）・`Project.snapshot_execution_settings`（読み込み）という2つのメソッドで両フィールドを常に`Project.execution_lock`（インスタンスごとの`threading.Lock`）配下で一組として読み書きする。また、`config.update_project_execution_settings`自体（`config/projects.yaml`全体を読み込んでから対象エントリのみ書き換えて丸ごと書き戻すread-modify-write）もモジュール内の`_PROJECTS_YAML_WRITE_LOCK`で直列化し、同時に届いた複数の`PATCH`リクエストが互いの変更を上書きして消す（lost update）事態を防ぐ。
+- **issueコメントでの都度指示（構文確定、issue #176）**: ダッシュボードの自由記述指示（[2-3](#2-3-指示出しapi内部api)の`instruct`）またはGitHub issueへの直接コメントで、当該issueへの以降のディスパッチに限り実行手段をプロジェクトのデフォルトから一時的に変更できる。メッセージ本文中に独立した行として`/model claude_code`（(A)へ戻す）または`/model litellm:<LiteLLM Proxyのモデルエイリアス>`（(B)へ切り替える。例: `/model litellm:project-a-ollama-qwen`）を書く（`orchestrator/orchestrator/execution_mode.py`の`parse_override_directive`が`re.MULTILINE`で行頭一致を見るため、本文中の他の説明文とは干渉しない）。検出した都度上書き指定は`config/execution_overrides.json`（`.gitignore`対象、`session_store.py`の`config/sessions.json`と同様issue単位で保存する`execution_override_store.py`）に永続化され、以降のディスパッチ（`--resume`によるセッション再開を含む）でも同じ指定が使われ続ける。ディレクティブ行自体はAgent Runnerへ渡すプロンプト本文からは取り除く（`strip_override_directive`）。実行手段は「メッセージ中の都度指定 → issueに保存済みの都度上書き → プロジェクトのデフォルト設定」の優先順位で解決する（`resolve_execution_settings`）。
+- **環境変数への反映**: 上記いずれの経路で決定された実行手段も、`run_agent_runner`が最終的に[3-1](#3-1-起動パラメータ)の`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`設定有無（`orchestrator/orchestrator/litellm_proxy.py`の`build_env_overrides`）に変換し、サブプロセス起動時の環境変数に適用する。(B)選択時はあわせて`claude -p --model <litellm_model>`でモデルエイリアスを明示する（LiteLLM Proxy側の`model_list`がこのエイリアス名でどのプロバイダ・モデルへ中継するかを解決する）。
+- **LiteLLM Proxy疎通不能時のフォールバック（issue #176で確定）**: `run_agent_runner`はLiteLLM Proxyへディスパッチする前に軽量な死活確認（`GET /health/liveliness`、`litellm_proxy.is_healthy`）を行う。応答が無い場合は(A) Claude Code CLI直利用へ**自動フォールバック**し、その旨をissueコメントで通知したうえでそのまま実行を続行する（`needs-human-decision`へは倒さない）。LiteLLM Proxyは実行手段の選択肢の一つに過ぎずAgent Runnerの正しさを左右する要素ではないため、プロセスの一時的な不調で自走タスクの進行自体を止めない方針とする（CI完了待ちの自動再開・孤立in-progress検知等、インフラ的な不整合は極力自動復旧を優先する既存の設計思想を踏襲）。永続化済みの都度上書き・プロジェクト設定自体は変更しないため、次回ディスパッチでは改めてLiteLLM Proxyへの接続を試みる。
+
+### LiteLLM Proxyの利用量計測（`usage_store.py`統合、issue #174）
+
+- LiteLLM Proxyは[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)の通りネイティブ構成・DBなし運用とし、PostgreSQLは導入しない。
+- カスタムコールバック（`orchestrator/orchestrator/litellm_callback.py`の`UsageStoreLogger`。`litellm.integrations.custom_logger.CustomLogger`を継承し、`config/litellm_config.yaml`の`litellm_settings.callbacks`に`orchestrator.litellm_callback.usage_store_logger`として登録する）がリクエスト完了イベントごとに呼び出され、モデル名・input/outputトークン数・コストを取得し、既存の`orchestrator/orchestrator/usage_store.py`の`record_usage`を直接呼び出して[2-2](#2-2-データ取得仕様ポーリング)の`usage_records`テーブル（`config/usage.db`）に記録する。これにより、実行手段(A)(B)いずれで実行されたAgent Runnerの利用量も同一テーブル・同一のダッシュボード表示（[要件定義書 2-1](./requirements.md#2-1-ダッシュボード表示項目)）に統合される。
+- 予算上限のハード制限（到達時の自動ブロック）はDBなし運用のLiteLLM Proxyでは機能しない（起動時警告のみで素通りする）ため導入しない。[要件定義書 3-4](./requirements.md#3-4-コスト制約)の通り可視化のみを目的とする。
+- **repo単位の利用量帰属方法（issue #176で確定）**: LiteLLM ProxyはDBなし運用のため、プロジェクトごとの仮想キー発行機能（`/key/generate`、LiteLLM側のDB依存機能）は使わない。単一の共有トークン（同一LAN内アクセスのみという既存のネットワーク境界に認証を委ね、`config/litellm_config.yaml`に`master_key`を設定しない運用。[6-2](#6-2-ネットワークアクセスの認証設計)と同じ考え方）ではAPIキー単位での「どのプロジェクトからのリクエストか」の区別ができないため、代わりに`config/litellm_config.yaml`の`model_list`エントリをプロジェクトごとに分け、各エントリの`model_info.repo`にリポジトリ名を埋め込む。`Project.litellm_model`にはこの`model_name`（プロジェクト固有のエイリアス）を設定し、`claude -p --model <litellm_model>`として渡すことで、コールバック側は`kwargs["litellm_params"]["model_info"]["repo"]`からrepoを解決できる。issue番号単位の帰属はこの仕組みでは得られない（1プロジェクトにつき1エイリアスのため、Claude Code CLIが`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`経由の接続でissue番号等の追加メタデータをリクエストに含める手段を持たない）。そのため`usage_records.issue_number`には実在しないissue番号`0`をセンチネル値として記録する（「プロジェクト単位で集計されたLiteLLM Proxy経由の利用量」であることを示す。列のNOT NULL制約は変更しないため、スキーマ移行は不要）。ダッシュボードの日次・モデル別集計（`usage_store.daily_model_usage`）はissue_numberを見ないため表示に影響しない。`model_info.repo`が解決できない場合（設定漏れ等）は`"unknown"`として記録する。
+- **LiteLLM Proxy自体のネイティブ導入・常駐化（issue #176）**: `bin/litellm_proxy_start.sh`/`bin/litellm_proxy_stop.sh`で、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）に`pip install 'litellm[proxy]'`する（`litellm[proxy]`は依存が重く、オーケストレータ本体の`pyproject.toml`には追加しない。両者は別プロセス・別venvで動くネイティブ構成として分離する）。カスタムコールバックが`usage_store.py`をインポートできるよう、この専用venvへ`orchestrator`パッケージも`pip install -e`する。設定ファイルは`config/litellm_config.yaml`（`config/litellm_config.yaml.example`参照、`.gitignore`対象）。常時起動が必要なプロセスのため、オーケストレータ本体（`bin/start.sh`）と同様に`launchd`のper-user LaunchAgentとして常駐化できる（`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`、`RunAtLoad`+`KeepAlive`。日次バックアップ等の定期実行タスク向け`StartCalendarInterval`とは異なる用途のため別ファイルとする）。配布パッケージ（[7章](#7-配布パッケージ化設計)、issue #110）へのtarball同梱・`dist/bin/`向けの起動スクリプト整備は本issueのスコープ外とし、将来必要になった時点で改めて対応する。
+
+### compaction時のthinkingパラメータ非互換対策（issue #185）
+
+execution_mode: litellm_proxyでOllamaのローカルモデルを実行手段として使っている場合、Agent Runnerのセッションが長くなりClaude Code CLIが自動コンテキスト圧縮（compaction）を行おうとすると、以下のエラーで即座に異常終了する不具合があった。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"\"<model>\" does not support thinking"}.
+```
+
+**原因**: Claude Code CLIは`ANTHROPIC_BASE_URL`経由でLiteLLM Proxyの`/v1/messages`（Anthropic Messages API互換）エンドポイントを叩く。compaction実行時、CLIはこのリクエストに必ず拡張思考（`thinking`）パラメータを付与する。ところが`think`機能を持たないOllamaモデル（現状productor-deskで利用している`deepseek-coder-v2:16b`等はすべて該当）へこれをそのまま中継すると、Ollama自体（LiteLLMではなく）が上記400エラーを返す。compaction自体が失敗するとセッション全体が続行不能になり、実作業を行わないまま異常終了する。
+
+**`litellm_settings.drop_params: true`では解決しない（実機検証済み）**: 対応方針の検討当初は`drop_params: true`が最有力候補だったが、実際にLiteLLM Proxyを起動し`/v1/messages`へ`thinking`付きリクエストを送って検証したところ、`drop_params: true`を設定しても同じ400エラーが再現した。理由は、`drop_params`が効くのは通常のchat/completions系リクエストが通る`litellm.utils.get_optional_params`のOpenAI形式パラメータ検証・ドロップ経路のみであり、`/v1/messages`エンドポイントの実装（LiteLLM側の`llms/anthropic/experimental_pass_through/messages/`、Anthropic Messages APIをそのまま他プロバイダへ中継する実験的機能）はこの経路を通らず、`thinking`パラメータを検証なしにOllamaへそのまま転送するため。
+
+**実装した対策**: `orchestrator/orchestrator/litellm_callback.py`の`UsageStoreLogger`（既存の利用量記録コールバックと同一クラス。`config/litellm_config.yaml`の`litellm_settings.callbacks`への登録も既存のまま変更不要）に`async_pre_call_hook`（LiteLLM ProxyのCustomLoggerが提供する、モデル呼び出し前にリクエストデータを書き換えられるフック）を追加した。`call_type == "anthropic_messages"`（`/v1/messages`宛リクエスト）かつ、宛先モデルがOllama系プロバイダ（LiteLLM Proxyの`llm_router.get_model_list()`で解決した`litellm_params.model`が`ollama/`または`ollama_chat/`で始まる）の場合に限り、リクエストボディから`thinking`パラメータ自体を送信前に除去する（`_is_ollama_backed_model`）。OpenAI等、拡張思考に対応しうる他プロバイダ宛のリクエストは対象外とし、既存の拡張思考機能を損なわない。
+
+**受け入れ条件の検証結果**: `litellm_proxy/.venv`の実LiteLLM Proxyを一時的な別ポート（4099）で起動し、本番と同じOllamaホスト（`http://192.168.10.121:11434`）・`deepseek-coder-v2:16b`に対して`thinking`付きの`/v1/messages`リクエストを送信する実機検証を行った。対策前は上記400エラーが再現し、`async_pre_call_hook`導入後は200 OKで応答することを確認した（Claude Code CLI自体を使ったcompaction再現ではなく、CLIがcompaction時に送るリクエストと同じ形のリクエストを直接送る形での検証）。
+
+### compaction時のコンテキスト長超過エラーへの注意（`num_ctx`要設定）
+
+上記の`thinking`パラメータ対策後も、Ollamaのローカルモデルでは以下のエラーでcompactionが失敗しセッションが異常終了する場合がある。
+
+```
+API Error: 400 litellm.BadRequestError: OllamaException -
+{"error":"the prompt is longer than the context length currently available to the model;
+shorten the prompt, adjust the context length in settings, or use a model with a longer context length"}
+```
+
+**原因**: LiteLLM経由でOllamaへ送るリクエストに`num_ctx`（コンテキストウィンドウサイズ）を明示指定しない場合、Ollama自体のデフォルト値**2048トークン**が使われる（`litellm.llms.ollama.chat.transformation.OllamaChatConfig`のフィールド定義・docstring参照）。Claude Code CLIのcompaction時プロンプトは会話履歴全体を含むため、モデル自体が対応する最大コンテキスト長に関わらず、この2048トークンの上限を容易に超過する。
+
+**対策**: `config/litellm_config.yaml`の対象モデルの`litellm_params`に`num_ctx`を明示指定する（LiteLLM Routerは`litellm_params`配下の未知キーをそのまま完了APIへの追加パラメータとして転送するため、`OllamaChatConfig`が認識する`num_ctx`をyamlに書くだけで反映される）。
+
+```yaml
+litellm_params:
+  model: ollama/deepseek-coder-v2:16b
+  api_base: http://192.168.10.121:11434
+  num_ctx: 32768  # 例。実機のVRAM/RAM容量に収まる範囲で要検証（大きすぎるとOOMの恐れ）
+```
+
+適切な値はOllamaホストのメモリ容量に依存するため、実機での動作検証（大きめの`num_ctx`でOOMが起きないか、実際にcompactionが成功するか）が必要。本節はconfig例・注意点のドキュメント化までにとどめ、実際の値決定・実機検証は別途行う。
+
+### オーケストレータ側での会話量・ターン数上限によるセッションリセット（issue #189）
+
+issue #185（上記）解決後も、より根深い構造的な問題が残っていることが実機調査で判明した。Claude Code CLIは`execution_mode: litellm_proxy`で使う未知のカスタムモデルのコンテキスト長を認識できず、セッションログに`[claude-code:unrecognized_model]`が出力される場合、auto-compaction（自動コンテキスト圧縮）の発火判断を実際のモデル容量ではなく既定の大容量モデル相当（約200Kトークン）を前提に行っているとみられる。一方、`--autocompact`（auto-compactionの閾値）はCLIの仕様上100k〜1Mトークンの範囲でしか設定できず、「モデルの実容量より手前でauto-compactionを発火させる」対策はドキュメント化されたCLIの仕組みでは実現不可能である（実機で`--autocompact 10000`を指定すると起動時に即エラーで拒否されることを確認済み）。
+
+実際に異常終了した本番セッションは、compactionを試みた時点で既に約211,336トークン（Claude Code CLI自身の累計トークンカウント、セッションtranscriptの`cache_read_input_tokens`推移から確認）まで会話が伸びており、これはモデル自体のハード上限（`deepseek-coder-v2:16b`で163,840トークン、`ollama show`の`model_info["deepseek2.context_length"]`より確認）すら超えていた。つまり`num_ctx`（前節参照）をいくらに設定しても——たとえモデルのハード上限いっぱいにしても——このクラスの異常終了は防げない。CLIが「そろそろ圧縮しよう」と判断する頃には、モデルの絶対的な限界をとうに超えてしまっているためである。
+
+**対応方針**: Claude Code CLI自身のauto-compactionに頼らず、オーケストレータ側でAgent Runner呼び出し1回ごとに会話量・ターン数を評価し、閾値を超えたら次回ディスパッチから新規セッションへ切り替える。
+
+- **測定方法**: Claude Code CLIはセッションの会話全体を`~/.claude/projects/<cwdの`/`を`-`に置換したディレクトリ名>/<session-id>.jsonl`にNDJSON形式で保存している（issue #189の実機調査で実際に使った方法と同一）。`orchestrator/orchestrator/session_context_guard.py`の`read_latest_context_tokens`が、このファイルの最後のassistantメッセージの`usage`（`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`）を読み、その時点でモデルへ送られている実際の文脈サイズを取得する。Agent Runner自身が返す最終`result`イベントの`usage`/`modelUsage`は当該invocation内で消費したトークンの累計（コスト計算用）であり、「今の会話サイズ」の直接測定にはならないため使わない。
+  - これはClaude Code CLIの非公式な内部実装（ファイル形式・保存先パスの規則）に依存する連携であり、CLIのアップデートで変わりうる。ファイルの探索・パースに失敗した場合は例外を送出せず`None`を返し、トークンベースの判定はスキップしてターン数ベースの判定にフォールバックする（機能停止させない）。
+- **ターン数**: `orchestrator/orchestrator/session_store.py`の`SessionState`が`session_id`と併せて`turn_count`（そのissueに対してAgent Runnerを呼び出した回数）を保持する。トークン測定に依存しない、モデル非依存のシンプルなフォールバック上限として使う。
+- **設定**: `max_session_tokens`/`max_session_turns`（いずれも省略時は無制限）は、プロジェクト単位の`config/projects.yaml`ではなく、`num_ctx`と同じ`config/litellm_config.yaml`の`model_list[].model_info`に定義する（`config/litellm_config.yaml.example`参照）。「そのモデルがどれだけの会話量を扱えるか」という関心事は`num_ctx`と同一であり、1箇所にまとめることで両者の食い違いを防ぐ（`orchestrator/orchestrator/litellm_model_config.py`の`resolve_session_guard_settings`が、Agent Runnerに渡す`litellm_model`（model_listの`model_name`）をキーに`model_info`から読む。`model_info.repo`と同様、LiteLLM自体には転送されないオーケストレータ側の付加メタデータ）。`max_session_tokens`は`num_ctx`より余裕を持って小さい値にする（目安: num_ctxの7〜8割）。
+- **リセットの実施方法**: 閾値超過を検知した回の完了処理（コメント投稿・ラベル遷移）は通常通り実行した上で、追加でリセットする旨を知らせるコメントを投稿し、`orchestrator/orchestrator/session_store.py`の`clear_session_state`で当該issueのセッション状態を削除する。次回ディスパッチは`get_session_state_fn`が`None`を返すため`resume=False`となり、Claude Code CLIは新規セッションとして起動する。会話履歴そのものは失われるが、直前の完了報告・リセット通知コメントがissueのコメント履歴として残るため、新規セッションはこれを読むことである程度の引き継ぎができる（「GitHub Issuesが正のデータストア」という既存方針、[CLAUDE.md「確定済みの設計判断」](../CLAUDE.md)とも整合する）。
 
 ### タスク種別ごとの推奨モデル
 
-[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。設定ファイルとしては永続化せず、後述のsystem prompt文字列にハードコードする（利用モデル数が少なく、対応表の変更頻度も低いため設定ファイル化のコストに見合わないと判断）。
+[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の調査結果（`research-log` [`local-llm-benchmark`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md) / [`local-llm-benchmark-additional`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)）に基づき、以下を論理的な対応表とする。プロジェクト側でローカルLLMの併用方針を書く際の参考情報であり、producer-deskの設定ファイルやAgent Runnerの共通指示文としては保持しない。
 
 | タスク種別 | 推奨モデル | 選定理由 |
 | --- | --- | --- |
@@ -235,9 +366,10 @@ claude -p "<指示内容>" \
 
 ### 実装方針: Agent Runnerへのsystem prompt指示
 
-- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たない。既存の`AGENT_RUNNER_LABEL_INSTRUCTION`・`AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`と同様に、`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`定数として上記対応表を`--append-system-prompt`で毎回Agent Runnerに渡す。system prompt生成時に呼び出し元の`repo`/`issue_number`を埋め込み、後述の`ollama-bench --record`の引数として使わせる。`ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソールスクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）のPATHには存在しないため、バレのコマンド名では解決できない。解決済みの絶対パス（`_resolve_ollama_bench_path`が解決）をsystem prompt本文に埋め込む方式は、長いパスを複数回のBashツール呼び出しにまたがってAgent Runnerが書き写す必要があり写し間違いを誘発しやすいため採らず、`run_agent_runner`が子プロセス（`claude -p`本体、およびそのBashツールが起動するシェル）の環境変数`OLLAMA_BENCH_PATH`として渡す。Agent Runnerは`"$OLLAMA_BENCH_PATH"`という短い参照だけを覚えればよい。子プロセスのPATH自体は書き換えない（対象プロジェクト自身の`python`/`pytest`/`ruff`等をオーケストレータ側のものへ誤ってシャドーイングする恐れがあるため）。
-- Agent Runnerは、コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成が必要になった場面で、指示に従いローカルLLMを自身の判断で呼び出す。呼び出すか否か、結果をどう扱うかもAgent Runnerの裁量とし、オーケストレータ側での結果ハンドリングは行わない（Agent Runner内で完結する）。モデルの利用可否確認は`mcp__ollama-client__ollama_list`/`ollama_ps`等のMCPツールでよいが、実際に生成させる呼び出しは次節の`ollama-bench`コマンド（Bashツール）を使い、MCP `mcp__ollama-client__ollama_chat`は使わない。
-- 自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
+- オーケストレータ（`orchestrator/orchestrator/agent_runner.py`）はモデル選択ロジックを持たず、補助用途のローカルLLM併用方針も共通のAgent Runner指示文（3-6）としては渡さない。どの作業でどのモデルを使うかはプロジェクトごとに異なるため、対象リポジトリの`CLAUDE.md`や作業指示に記載する（当初は`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`として上記対応表を毎回渡していたが、プロジェクトごとの方針であってproducer-deskが指示すべき内容ではないため廃止した）。上記の対応表は、プロジェクト側で方針を書く際の参考情報とする。
+- 利用量を記録したい場合のため、`ollama-bench`の解決済み絶対パスは引き続き子プロセス（`claude -p`本体、およびそのBashツールが起動するシェル）の環境変数`OLLAMA_BENCH_PATH`として渡す。`ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソールスクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）のPATHには存在しないため、バレのコマンド名では解決できない。絶対パスをプロンプト本文に埋め込む方式は、長いパスを複数回のBashツール呼び出しにまたがって書き写す必要があり写し間違いを誘発しやすいため採らず、環境変数経由とした（`_resolve_ollama_bench_path`が解決）。子プロセスのPATH自体は書き換えない（対象プロジェクト自身の`python`/`pytest`/`ruff`等をオーケストレータ側のものへ誤ってシャドーイングする恐れがあるため）。
+- 補助用途のローカルLLM併用でも、自走タスク本体（コード変更そのもの）にはローカルLLMの出力をそのまま採用せず、Function Callingの信頼性が確認されているClaude Code自身が最終的な変更を行う（[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)の方針を踏襲）。
+- MCP `ollama-client`の`ollama_chat`は利用量メトリクスを返さず記録できないため、利用量を記録したいプロジェクトは、プロジェクト側の指示で生成呼び出しを次節の`ollama-bench --record`経由にさせる。記載例は[README.md](../README.md)の「補助モデル（MCP）の使用量を記録する」参照。
 
 ### 手動ベンチマーク・本番経路共用ツール（`ollama_bench.py`）
 
@@ -248,7 +380,26 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - 接続先はOllama公式CLIと同じ環境変数`OLLAMA_HOST`（未設定時は`http://127.0.0.1:11434`）から解決する。`--host`引数で明示的に上書きもできる。
 - `--record --repo <repo> --issue-number <n>`を付けると、計測結果（`model`・`input_tokens`・`output_tokens`・`duration_seconds`）を[2-2](#2-2-データ取得仕様ポーリング)の`usage_store.py`経由で`config/usage.db`に統合して記録する。Claude Code実行分の記録では`duration_seconds`は常に`None`になる（Agent Runnerの実行結果JSONには処理時間が含まれないため）。
 - `--format json`を付けると、Ollama REST APIに構造化JSON出力を要求する（コードレビュー支援等でJSON形式のレビュー結果を受け取りたい場合に使う。任意）。
-- Agent Runner本番経路では`AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`が`--record --repo {repo} --issue-number {issue_number}`付きでの呼び出しを指示する（`orchestrator/orchestrator/agent_runner.py`）。オーケストレータのポーリングループ自体からは呼び出さない（呼び出すのはあくまでAgent Runner=Claude Code CLIプロセス自身）。
+- Agent Runner本番経路でも、`--record --repo <repo> --issue-number <n>`付きで呼び出させるかどうかはプロジェクト側の指示に委ねる（共通のAgent Runner指示文には含めない）。オーケストレータのポーリングループ自体からは呼び出さない（呼び出すのはあくまでAgent Runner=Claude Code CLIプロセス自身）。
+
+### ローカルLLM活用状況の可視化（issue #86）
+
+`ollama-bench --record`はローカルLLMの生成呼び出し自体の実測値（トークン数・処理時間）を記録するが、これはAgent Runnerが実際にローカルLLMを呼び出した場合にしか記録されない。「呼び出すかどうかをAgent Runnerが判断した結果」そのもの（使った／使わなかった、使わなかった場合はなぜか）は、issueコメントからもDBからも別途観測できるようにする。
+
+- **報告ルール**: 共通のAgent Runner指示文（3-6）としては、このマーカーの出力を指示しない。ローカルLLMの併用方針と使用状況の報告は、プロジェクト側の`CLAUDE.md`や作業指示で行う（記載例は[README.md](../README.md)の「補助モデル（MCP）の使用量を記録する」参照）。報告を求める場合、セッション終了時の最終応答（3-3の通りissueコメントとして投稿される）に、以下の両方を含めさせる。
+  - 人間向け: 「## ローカルLLM活用」という見出しの下に、使用した場合はタスク種別・モデル名・簡単な用途を、使用しなかった場合はその理由を自然文で記載する。
+  - 機械可読: 同見出しの直後にHTMLコメントとして次の形式のマーカーを埋め込む（前後を空行で区切る。[2-3共通仕様](#共通仕様)の`BOT_COMMENT_MARKER`と同様、レンダリングされない）。
+
+    ```
+    <!-- producer-desk:local-llm-usage
+    {"used": true, "model": "deepseek-coder-v2:16b", "task_type": "code_review_support", "note": "..."}
+    -->
+    ```
+
+    使用しなかった場合は`{"used": false, "reason": "..."}`。
+- **オーケストレータ側のパース**: `agent_runner.py`の`_extract_local_llm_usage_report`が、最終応答（`result`）から上記マーカーを正規表現で抽出しJSONとしてパースする。`_extract_usage_records`（[2-2](#2-2-データ取得仕様ポーリング)）と並ぶ形で`run_agent_runner`から呼び出す。マーカーが存在しない・JSONとしてパースできない場合は例外を送出せず記録をスキップする。この仕組みはAIが指示通りマーカーを埋め込むことに依存しており、issue #78・#82・#84で確認された「AIがsystem prompt指示の実行を忘れる」リスクと同種の限界がある。MCPサーバー側でのサーバーサイドロギング等による完全な保証は将来課題とし、まずは自己申告ベースでの可視化から始める。
+- **DBスキーマ**: `usage_store.py`に`usage_records`とは別テーブル`local_llm_usage_reports`（列: `id`・`recorded_at`・`repo`・`issue_number`・`used`・`model`（NULL可）・`task_type`（NULL可）・`note_or_reason`）を追加し、`record_local_llm_usage_report(...)`で書き込む。トークン数の実測ではなく「使ったかどうか」の自己申告という性質が`usage_records`と異なるため、既存テーブルへの列追加ではなく別テーブルとした（この変更で`config/usage.db`の`SCHEMA_VERSION`を2へ更新。`dist/scripts/migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`も同期させた）。既存列の変更を伴わない非破壊的な追加のため、version=1（本変更より前に作成された既存DB）は`_connect()`が初回接続時に自動でversion 2へ引き上げる（`current_version in (0, 1)`の分岐）。`migrate.sh`側もversion 1のDBをコピー可能と判定するよう対応済みバージョンに1を含めている。
+- **振り返り用の集計**: `local_llm_usage_summary(days=...)`が、期間内の使用有無・モデル・タスク種別別の件数を集計して返す。ダッシュボードへの表示は本issueのスコープ外とし、まずはDBで参照可能にすることを優先する。
 
 ## 5. 通知・承認フロー詳細設計
 
@@ -312,7 +463,26 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - アプリケーションレベルの追加認証（Basic認証等）は設けない。
 - **MVPでは同一LAN内からのアクセスのみ**を前提とする。ダッシュボード（Next.js）の待受プロセスは、0.0.0.0ではなく**LANインターフェースのIPにのみbind**する（`next dev`/`next start` の `--hostname <lan-ip>` オプション。`npm run dev:lan`/`npm run start:lan`、環境変数 `LAN_IP` に自機のLAN IPを設定して使う）。これにより、同一LANの外からは到達不能にする。
 - オーケストレータの内部API（`GET /api/state` 等）は、ダッシュボードのRoute Handlerが**同一マシン上でサーバーサイドから**呼び出す構成（[2-2](#2-2-データ取得仕様ポーリング)参照。ブラウザから直接呼び出すことはない）のため、ネットワークインターフェースに公開する必要が無い。オーケストレータの待受プロセスは`127.0.0.1`（ループバック）にのみbindしたままとする。
-- **将来拡張**: 外出先からのアクセスに対応する際は、ダッシュボードのbind先をTailscaleインターフェースIPに切り替える（`--hostname <tailscale-ip>`、`npm run dev:tailscale`/`npm run start:tailscale`）。別issue（#29）で対応する（[要件定義書 4-2](./requirements.md#4-2-将来拡張とする範囲)参照）。
+- **外出先からのアクセス（Tailscale経由、issue #29）**: ダッシュボードのbind先をTailscaleインターフェースIPに切り替える（`--hostname <tailscale-ip>`、`npm run dev:tailscale`/`npm run start:tailscale`、環境変数 `TAILSCALE_IP`）。`bin/start.sh`（開発用・配布用とも）は `TAILSCALE_IP` が設定されていればそのIPでdashboardをbindする。`next start --hostname`は1アドレスのみ指定可能なため、`LAN_IP`と`TAILSCALE_IP`の同時指定は起動時エラーとする（両方から到達させたい場合は両方未設定にして全インターフェース待ち受けとする）。Tailscaleのネットワーク境界（tailnetに参加した端末のみ到達可能）で保護し、アプリレベルの追加認証は引き続き設けない。オーケストレータは`127.0.0.1`のままでよい。
+
+**Tailscaleのセットアップ（ユーザー作業）**
+
+1. 自機（dashboardを起動するマシン）と外出先で使う端末（スマートフォン等）の両方にTailscaleをインストールし、同一のtailnetにログインする。
+2. 自機のTailscale IPを確認する（`tailscale ip -4`。`100.x.y.z`形式）。
+
+**起動手順**
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
+```
+
+**アクセス確認手順**
+
+1. 自機側: `curl -I http://<TAILSCALE_IP>:3000` がHTTP 200系を返すことを確認する。
+2. 同一LAN内の別端末（Wi-Fi接続）から `http://<TAILSCALE_IP>:3000` を開き、ダッシュボードが表示されることを確認する（Tailscaleアプリを起動しておくこと）。
+3. 外出先（モバイル回線等、自機と別ネットワーク）の端末でTailscaleに接続した状態で `http://<TAILSCALE_IP>:3000` を開き、ダッシュボードが表示され、判断待ち一覧の更新・承認操作ができることを確認する。
+4. Tailscale未接続の端末からは到達できないことを確認する。
+
 
 ## 7. 配布パッケージ化設計
 
@@ -353,7 +523,7 @@ tarballを新バージョンの別ディレクトリに展開する運用のた�
 - **対象ファイルと検証**: `config/projects.yaml`はPyYAMLが利用可能な場合にYAMLとしてパース可能か検証、`config/sessions.json`は標準ライブラリの`json`でパース可能か検証してからコピーする（不正な場合は移行を中止）。`.env`はそのままコピー。`logs/`は必須ではないため`--with-logs`指定時のみ対象
 - **`config/usage.db`のスキーマバージョニング**: `orchestrator/orchestrator/usage_store.py`にSQLiteの`PRAGMA user_version`を使った最小限のスキーマバージョン管理（`SCHEMA_VERSION`定数）を導入した。新規作成時・スキーマバージョン管理導入以前に作成されたDB（`user_version`が未設定=0）ではバージョンを書き込むだけで通す一方、`SCHEMA_VERSION`と異なる値が設定されている場合は`_connect()`が`RuntimeError`で処理を止める。`migrate.sh`側も独立した定数`EXPECTED_USAGE_DB_SCHEMA_VERSION`を持ち、コピー前に`PRAGMA user_version`を比較して不一致なら自動移行せずエラーで停止する（将来テーブル定義を変更する際は、`usage_store.py`の`SCHEMA_VERSION`と`migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`を両方インクリメントし、`_connect()`に変換ロジックを追加する運用を想定。現時点ではスキーマ変更の予定が無いため、フルのマイグレーションフレームワークは導入せず、この最小限の枠組みに留めている）。コピー自体は`sqlite3 <src> ".backup '<dst>'"`（オンラインバックアップAPI）で行うため、旧バージョンのオーケストレータを稼働させたまま実行しても不整合なコピーにならない（`scripts/backup_usage_db.sh`と同じ手法）
 - **上書き挙動**: 新展開先に同名ファイルが既に存在する場合、既定ではスキップ（何度実行しても安全）。`--force`指定時は`<file>.bak-<timestamp>`へリネームしてバックアップした上で上書きする
-- **旧ディレクトリの扱い**: 移行ツールは旧ディレクトリを読み取り専用で扱い、削除・アーカイブは行わない。新バージョンの動作確認（`bin/start.sh`起動後、ダッシュボードでプロジェクト一覧・利用量履歴が表示されること）が済むまで旧バージョンを併用できるようにするため、削除するかどうかは利用者の判断に委ねる（SETUP.md「9. アップグレード手順」参照）
+- **旧ディレクトリの扱い**: 移行ツールは旧ディレクトリを読み取り専用で扱い、削除・アーカイブは行わない。新バージョンの動作確認（`bin/start.sh`起動後、ダッシュボードでプロジェクト一覧・利用量履歴が表示されること）が済むまで旧バージョンを併用できるようにするため、削除するかどうかは利用者の判断に委ねる（SETUP.md「10. アップグレード手順」参照）
 
 ## 成果物
 

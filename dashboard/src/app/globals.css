@@ -10,6 +10,8 @@
   --bg-panel: #161d27;
   --bg-card: #1e2732;
   --bg-card-hover: #24303d;
+  /* PR選択ダイアログの行背景（Claude Design ProducerDesk.dc.htmlの --surface-2、issue #206）。 */
+  --surface-2: #1e2732;
   --border-subtle: #2a3542;
   --border-strong: #3a4756;
   --text-primary: #e8eef5;
@@ -38,6 +40,8 @@
      issue #167）。 */
   --warn: #ff6a5b;
   --warn-bg: rgba(255, 106, 91, 0.15);
+  /* --warn背景上の文字色（Claude Design feature/issue-149-prompt-settings.dc.htmlの --warn-on、issue #149）。 */
+  --warn-on: #1a0806;
   /* 枠で囲ったウィジェット用の影（Claude Design ProducerDesk.dc.htmlの --shadow、issue #121）。 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.32);
 
@@ -49,6 +53,7 @@
   --bg-panel: #ffffff;
   --bg-card: #ffffff;
   --bg-card-hover: #f5f7fa;
+  --surface-2: #f4f7fa;
   --border-subtle: #dde3ea;
   --border-strong: #c7d0da;
   --text-primary: #1a2430;
@@ -72,6 +77,7 @@
   --review-bg: rgba(122, 68, 198, 0.12);
   --warn: #d23a2c;
   --warn-bg: rgba(210, 58, 44, 0.1);
+  --warn-on: #ffffff;
   --shadow: 0 1px 2px rgba(20, 30, 45, 0.05), 0 8px 24px rgba(20, 30, 45, 0.08);
 
   color-scheme: light;
@@ -83,6 +89,7 @@
     --bg-panel: #ffffff;
     --bg-card: #ffffff;
     --bg-card-hover: #f5f7fa;
+    --surface-2: #f4f7fa;
     --border-subtle: #dde3ea;
     --border-strong: #c7d0da;
     --text-primary: #1a2430;
@@ -106,6 +113,7 @@
     --review-bg: rgba(122, 68, 198, 0.12);
     --warn: #d23a2c;
     --warn-bg: rgba(210, 58, 44, 0.1);
+    --warn-on: #ffffff;
     --shadow:
       0 1px 2px rgba(20, 30, 45, 0.05), 0 8px 24px rgba(20, 30, 45, 0.08);
 

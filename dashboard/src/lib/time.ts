@@ -14,3 +14,10 @@ export function formatRelativeTime(
   const diffDay = Math.floor(diffHour / 24);
   return `${diffDay}日前`;
 }
+
+/** 「最終データ更新 YYYY-MM-DD HH:mm」形式のツールチップ文言（issue #197）。 */
+export function formatSyncTitle(isoString: string): string {
+  const d = new Date(isoString);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `最終データ更新 ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}

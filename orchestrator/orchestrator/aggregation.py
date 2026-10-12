@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from orchestrator.labels import (
+    STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_LABEL_PRIORITY,
@@ -51,6 +52,18 @@ IsDispatchActiveFn = Callable[[str, int], bool]
 
 
 @dataclass
+class PrCandidate:
+    """issueの対応PR候補（issue #206）。ダッシュボードのPR選択UIに表示する。"""
+
+    number: int
+    title: str
+    url: str
+    is_draft: bool = False
+    head_ref_name: str = ""
+    base_ref_name: str = ""
+
+
+@dataclass
 class IssueSummary:
     repo: str
     number: int
@@ -62,6 +75,9 @@ class IssueSummary:
     # `status:in-review` のissueについてのみ、ポーリング時に紐づくPR番号を解決して埋める
     # （orchestrator.polling.poll_once参照、issue #58）。
     pr_number: int | None = None
+    # `pr_number`が一意に特定できなかった（候補が0件または2件以上）場合も含め、
+    # 対応PRの候補一覧（issue #206）。承認時はこの候補からユーザーが選択する。
+    pr_candidates: list[PrCandidate] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +99,9 @@ class ProjectStatus:
     is_orphaned: bool = False
     # 状態別のOPEN issue件数（`STATUS_COUNT_UNTAGGED`含む5種、`status:closed`は含まない）。
     counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(STATUS_COUNT_KEYS, 0))
+    # オーケストレータが実際にGitHubからこのリポジトリのissueを取得した時刻（ISO 8601, UTC）。
+    # ダッシュボードの「N分前に更新」表示の元（issue #197）。未取得ならNone。
+    fetched_at: str | None = None
 
 
 @dataclass
@@ -96,6 +115,13 @@ class AggregatedState:
     status_counts: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(STATUS_COUNT_KEYS, 0)
     )
+    # オーケストレータの最終ポーリング時刻（全プロジェクト一括取得の完了時刻、ISO 8601, UTC。
+    # issue #197）。未ポーリングならNone。
+    last_polled_at: str | None = None
+    # 集約の元になったリポジトリ別issue一覧。プロジェクト単位の再取得（issue #197）で
+    # 当該リポジトリ分のみ差し替えて再集約するためStateStoreが保持する内部用データで、
+    # APIレスポンスには含めない（server._handle_state参照）。
+    issues_by_repo: dict[str, list[IssueSummary]] = field(default_factory=dict)
 
 
 def _current_status_label(issue: IssueSummary) -> str | None:
@@ -132,11 +158,59 @@ def _is_orphaned_in_progress(
     return not is_dispatch_active(issue.repo, issue.number)
 
 
+@dataclass
+class ProjectIssue:
+    """プロジェクト別issue一覧ページ（issue #116）の1行分。"""
+
+    number: int
+    title: str
+    # 5つの状態ラベルのうち表示に採用する1つ。クローズ済みで状態ラベルが未付与のissueは
+    # `status:closed`として扱い、OPENで状態ラベルが無いissue（タグなし）はNone。
+    label: str | None
+    state: str
+    comments_count: int
+    updated_at: str
+    # `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。
+    is_orphaned: bool
+
+
+def build_project_issues(
+    issues: list[IssueSummary],
+    is_dispatch_active: IsDispatchActiveFn | None = None,
+) -> list[ProjectIssue]:
+    """1リポジトリのissue一覧を、issue一覧ページ向けに状態ラベル・孤立判定付きで整形する。"""
+    result: list[ProjectIssue] = []
+    for issue in issues:
+        label = _current_status_label(issue)
+        if label is None and issue.state == "CLOSED":
+            label = STATUS_CLOSED
+        result.append(
+            ProjectIssue(
+                number=issue.number,
+                title=issue.title,
+                label=label,
+                state=issue.state,
+                comments_count=len(issue.comments),
+                updated_at=issue.updated_at,
+                is_orphaned=label is not None
+                and _is_orphaned_in_progress(issue, label, is_dispatch_active),
+            )
+        )
+    result.sort(key=lambda i: i.updated_at, reverse=True)
+    return result
+
+
 def aggregate(
     issues_by_repo: dict[str, list[IssueSummary]],
     is_dispatch_active: IsDispatchActiveFn | None = None,
+    *,
+    fetched_at_by_repo: dict[str, str] | None = None,
+    last_polled_at: str | None = None,
 ) -> AggregatedState:
     """リポジトリ別のissue一覧を、判断待ち一覧・レビュー待ち一覧・プロジェクト状況に集約する。
+
+    `fetched_at_by_repo`・`last_polled_at`（issue #197）を渡すと、プロジェクト状況の
+    `fetched_at`・集約結果の`last_polled_at`に反映する。
 
     `is_dispatch_active`（`DispatchQueue.is_active`、issue #50）を渡すと、プロジェクト
     状況の各要素に孤立したin-progressの検知結果（`ProjectStatus.is_orphaned`）を含める。
@@ -152,7 +226,9 @@ def aggregate(
     status_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
     project_status: list[ProjectStatus] = []
 
+    fetched_at_by_repo = fetched_at_by_repo or {}
     for repo, issues in issues_by_repo.items():
+        fetched_at = fetched_at_by_repo.get(repo)
         labeled: list[tuple[IssueSummary, str]] = []
         repo_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
 
@@ -167,7 +243,9 @@ def aggregate(
                     status_counts[count_key] += 1
 
         if not labeled:
-            project_status.append(ProjectStatus(repo=repo, counts=repo_counts))
+            project_status.append(
+                ProjectStatus(repo=repo, counts=repo_counts, fetched_at=fetched_at)
+            )
             continue
 
         latest_issue, latest_label = max(labeled, key=lambda pair: pair[0].updated_at)
@@ -181,6 +259,7 @@ def aggregate(
                     latest_issue, latest_label, is_dispatch_active
                 ),
                 counts=repo_counts,
+                fetched_at=fetched_at,
             )
         )
 
@@ -189,4 +268,6 @@ def aggregate(
         reviews=reviews,
         project_status=project_status,
         status_counts=status_counts,
+        last_polled_at=last_polled_at,
+        issues_by_repo=issues_by_repo,
     )

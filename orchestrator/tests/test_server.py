@@ -9,8 +9,16 @@ import time
 import urllib.error
 import urllib.request
 
-from orchestrator.aggregation import STATUS_COUNT_KEYS, AggregatedState, IssueSummary, ProjectStatus
-from orchestrator.config import Project
+import pytest
+
+from orchestrator.aggregation import (
+    STATUS_COUNT_KEYS,
+    AggregatedState,
+    IssueSummary,
+    PrCandidate,
+    ProjectStatus,
+)
+from orchestrator.config import EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.labels import (
     STATUS_CLOSED,
@@ -19,6 +27,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.prompts import PromptStorageError
 from orchestrator.server import ProgressStore, StateStore, make_server
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 
@@ -47,9 +56,23 @@ class FakeComments:
         self.posted.append((repo, issue_number, body))
 
 
+def _pr_candidate(number: int) -> PrCandidate:
+    return PrCandidate(number=number, title="PR", url=f"https://github.com/o/r/pull/{number}")
+
+
 class FakeReviewMerge:
-    def __init__(self, pr_number: int | None, *, branch: str = "feature/issue-1-something") -> None:
-        self.pr_number = pr_number
+    def __init__(
+        self,
+        pr_number: int | None,
+        *,
+        candidates: list[PrCandidate] | None = None,
+        branch: str = "feature/issue-1-something",
+    ) -> None:
+        self.candidates = (
+            candidates
+            if candidates is not None
+            else ([] if pr_number is None else [_pr_candidate(pr_number)])
+        )
         self.branch = branch
         self.merge_calls: list[tuple[str, int]] = []
         self.close_calls: list[tuple[str, int]] = []
@@ -57,8 +80,8 @@ class FakeReviewMerge:
         self.delete_branch_calls: list[tuple[str, str]] = []
         self.sync_worktree_calls: list[tuple[str, str]] = []
 
-    def resolve_pr_number(self, repo: str, issue_number: int) -> int | None:
-        return self.pr_number
+    def list_linked_prs(self, repo: str, issue_number: int) -> list[PrCandidate]:
+        return self.candidates
 
     def merge_pr(self, repo: str, pr_number: int) -> None:
         self.merge_calls.append((repo, pr_number))
@@ -134,6 +157,43 @@ def _post(server, path: str, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read())
 
 
+def _patch(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=data,
+        method="PATCH",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_get_settings_returns_dashboard_settings() -> None:
+    settings = {
+        "issue_cache_ttl_seconds": 120.0,
+        "dashboard_poll_interval_seconds": 10.0,
+        "sync_tick_interval_seconds": 5.0,
+    }
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        dashboard_settings=settings,
+    )
+    try:
+        status, body = _get(server, "/api/settings")
+        assert status == 200
+        assert body == settings
+    finally:
+        server.shutdown()
+
+
 def test_state_store_returns_none_before_any_update() -> None:
     store = StateStore()
 
@@ -161,6 +221,7 @@ def test_get_api_state_returns_empty_lists_before_first_poll() -> None:
             "reviews": [],
             "project_status": [],
             "status_counts": dict.fromkeys(STATUS_COUNT_KEYS, 0),
+            "last_polled_at": None,
         }
     finally:
         server.shutdown()
@@ -365,6 +426,68 @@ def test_instruct_progress_reports_stage_while_in_flight_and_clears_after() -> N
         server.shutdown()
 
 
+def test_instruct_progress_stays_available_while_refresh_store_runs() -> None:
+    """`_refresh_store`（gh呼び出しを伴い数百ms〜数秒かかりうる）の実行中は、まだ
+    クライアントへ応答していないため`/api/progress`が最後の段階を返し続ける必要が
+    ある。以前は`handle_instruct`完了直後にprogress_storeをクリアしていたため、
+    この間のポーリングが`stage: null`を観測し、段階表示が先頭の段階へ巻き戻って
+    しまう不具合があった（ユーザー報告: 「worktreeを同期」完了後に「PRをマージ」が
+    再度アクティブ表示される）。
+    """
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_TODO}})
+    comments = FakeComments()
+    dispatch_queue, _, event = _recording_dispatch_queue()
+    release_refresh = threading.Event()
+    refresh_started = threading.Event()
+
+    def blocking_list_issues(repo: str) -> list[IssueSummary]:
+        refresh_started.set()
+        release_refresh.wait(timeout=2)
+        return []
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=blocking_list_issues,
+    )
+    try:
+        responses: dict[str, tuple[int, dict]] = {}
+
+        def do_post() -> None:
+            responses["result"] = _post(
+                server,
+                "/api/projects/nosetech/project-a/issues/1/instruct",
+                {"action": "instruct", "message": "進めて", "progressId": "req-refresh"},
+            )
+
+        poster = threading.Thread(target=do_post)
+        poster.start()
+        try:
+            assert refresh_started.wait(timeout=2), "_refresh_storeが開始されない"
+            # handle_instruct自体は完了し最終段階(dispatch)まで記録済みだが、
+            # _refresh_store実行中でまだ応答していないため段階は保持され続けるはず。
+            _, body = _get(server, "/api/progress/req-refresh")
+            assert body["stage"] == "dispatch"
+        finally:
+            release_refresh.set()
+            poster.join(timeout=2)
+
+        status, _ = responses["result"]
+        assert status == 200
+        assert event.wait(timeout=2)
+
+        _, body = _get(server, "/api/progress/req-refresh")
+        assert body == {"stage": None}
+    finally:
+        server.shutdown()
+
+
 def test_create_issue_progress_reports_stage_while_in_flight_and_clears_after() -> None:
     store = StateStore()
     labels = FakeLabels()
@@ -545,7 +668,7 @@ def test_instruct_approve_on_in_review_refreshes_store_synchronously() -> None:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -653,7 +776,7 @@ def test_instruct_approve_on_in_review_merges_pr_and_skips_comment_and_dispatch(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -712,7 +835,7 @@ def test_instruct_concurrent_requests_to_same_issue_are_rejected_with_409() -> N
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=blocking_merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -775,7 +898,7 @@ def test_instruct_concurrent_requests_to_different_issues_are_not_blocked() -> N
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=blocking_merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -833,7 +956,7 @@ def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -870,7 +993,7 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
     )
@@ -881,6 +1004,102 @@ def test_instruct_approve_on_in_review_without_linked_pr_returns_502() -> None:
 
         assert status == 502
         assert "error" in body
+        assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_multiple_candidates_returns_409_with_candidates() -> None:
+    """issue #206: 対応PR候補が複数ある場合は自動マージせず409で候補を返す。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+    )
+    try:
+        status, body = _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+
+        assert status == 409
+        assert body["code"] == "pr_selection_required"
+        assert [c["number"] for c in body["pr_candidates"]] == [33, 40]
+        assert review_merge.merge_calls == []
+        assert review_merge.close_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_pr_number_merges_selected_pr() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(
+        pr_number=None, candidates=[_pr_candidate(33), _pr_candidate(40)]
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+    )
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues/1/instruct",
+            {"action": "approve", "prNumber": 40},
+        )
+
+        assert status == 200
+        assert review_merge.merge_calls == [("nosetech/project-a", 40)]
+    finally:
+        server.shutdown()
+
+
+def test_instruct_approve_with_pr_number_outside_candidates_returns_400() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}})
+    review_merge = FakeReviewMerge(pr_number=33)
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=review_merge.merge_pr,
+        close_issue=review_merge.close_issue,
+    )
+    try:
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues/1/instruct",
+            {"action": "approve", "prNumber": 99},
+        )
+
+        assert status == 400
         assert review_merge.merge_calls == []
         assert review_merge.close_calls == []
     finally:
@@ -907,7 +1126,7 @@ def test_instruct_approve_on_in_review_returns_200_even_if_branch_deletion_fails
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         post_comment=comments.post_comment,
-        resolve_pr_number=review_merge.resolve_pr_number,
+        list_linked_prs=review_merge.list_linked_prs,
         merge_pr=review_merge.merge_pr,
         close_issue=review_merge.close_issue,
         get_pr_branch=review_merge.get_pr_branch,
@@ -1075,3 +1294,577 @@ def test_create_issue_invalid_dispatch_value_returns_400() -> None:
         assert status == 400
     finally:
         server.shutdown()
+
+
+# issue #176: プロジェクトごとの実行手段デフォルト設定の永続化API
+# （PATCH /api/projects/{repo}/settings）。docs/basic-design.md 4章参照。
+
+
+def test_patch_project_settings_updates_execution_mode() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    project_a = Project(repo="nosetech/project-a", worktree_path="/tmp/project-a")
+    updated_calls = []
+
+    def fake_update(repo, execution_mode, litellm_model):
+        updated_calls.append((repo, execution_mode, litellm_model))
+        return Project(
+            repo=repo,
+            worktree_path="/tmp/project-a",
+            execution_mode=execution_mode,
+            litellm_model=litellm_model,
+        )
+
+    server, _ = _run_server(
+        store,
+        projects=[project_a],
+        dispatch_queue=dispatch_queue,
+        update_execution_settings=fake_update,
+    )
+    try:
+        status, body = _patch(
+            server,
+            "/api/projects/nosetech/project-a/settings",
+            {
+                "execution_mode": EXECUTION_MODE_LITELLM_PROXY,
+                "litellm_model": "ollama/qwen2.5-coder:7b",
+            },
+        )
+        assert status == 200
+        assert body == {
+            "repo": "nosetech/project-a",
+            "execution_mode": EXECUTION_MODE_LITELLM_PROXY,
+            "litellm_model": "ollama/qwen2.5-coder:7b",
+        }
+        assert updated_calls == [
+            ("nosetech/project-a", EXECUTION_MODE_LITELLM_PROXY, "ollama/qwen2.5-coder:7b")
+        ]
+        # サーバー起動時に読み込み済みのProjectインスタンスがその場で書き換わり、
+        # 再起動を待たず次回ディスパッチから反映されること。
+        assert project_a.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        assert project_a.litellm_model == "ollama/qwen2.5-coder:7b"
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _patch(
+            server,
+            "/api/projects/nosetech/unknown/settings",
+            {"execution_mode": EXECUTION_MODE_CLAUDE_CODE},
+        )
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_invalid_execution_mode_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def fake_update(repo, execution_mode, litellm_model):
+        raise ValueError(f"execution_modeが不正です: {execution_mode}")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        update_execution_settings=fake_update,
+    )
+    try:
+        status, body = _patch(
+            server,
+            "/api/projects/nosetech/project-a/settings",
+            {"execution_mode": "bogus"},
+        )
+        assert status == 400
+        assert "execution_mode" in body["error"]
+    finally:
+        server.shutdown()
+
+
+def test_patch_project_settings_missing_execution_mode_returns_400() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _patch(server, "/api/projects/nosetech/project-a/settings", {})
+        assert status == 400
+    finally:
+        server.shutdown()
+
+
+def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def fake_list_issues(repo: str) -> list[IssueSummary]:
+        return [
+            IssueSummary(
+                repo=repo,
+                number=1,
+                title="作業中の孤立issue",
+                labels=[STATUS_IN_PROGRESS],
+                comments=[{"body": "c"}],
+                updated_at="2026-08-01T00:00:00Z",
+            ),
+            IssueSummary(
+                repo=repo,
+                number=2,
+                title="タグなし",
+                labels=[],
+                comments=[],
+                updated_at="2026-08-02T00:00:00Z",
+            ),
+            IssueSummary(
+                repo=repo,
+                number=3,
+                title="クローズ済み",
+                labels=[],
+                comments=[],
+                updated_at="2026-07-01T00:00:00Z",
+                state="CLOSED",
+            ),
+        ]
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_issues=fake_list_issues,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert status == 200
+        assert body["repo"] == "nosetech/project-a"
+        # 更新が新しい順。
+        assert [i["number"] for i in body["issues"]] == [2, 1, 3]
+        by_number = {i["number"]: i for i in body["issues"]}
+        assert by_number[1]["label"] == STATUS_IN_PROGRESS
+        assert by_number[1]["is_orphaned"] is True
+        assert by_number[1]["comments_count"] == 1
+        assert by_number[2]["label"] is None
+        assert by_number[2]["is_orphaned"] is False
+        assert by_number[3]["label"] == STATUS_CLOSED
+    finally:
+        server.shutdown()
+
+
+def test_get_project_issues_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        try:
+            _get(server, "/api/projects/nosetech/unknown-repo/issues")
+            raise AssertionError("expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        server.shutdown()
+
+
+def test_get_project_issues_returns_502_when_gh_fails() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def failing_list_issues(repo: str) -> list[IssueSummary]:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_issues=failing_list_issues,
+    )
+    try:
+        try:
+            _get(server, "/api/projects/nosetech/project-a/issues")
+            raise AssertionError("expected HTTPError")
+        except urllib.error.HTTPError as e:
+            assert e.code == 502
+    finally:
+        server.shutdown()
+
+
+def _issue_in(repo: str, number: int, labels: list[str]) -> IssueSummary:
+    return IssueSummary(
+        repo=repo,
+        number=number,
+        title="t",
+        labels=labels,
+        comments=[],
+        updated_at="2026-08-01T00:00:00Z",
+    )
+
+
+PROJECT_B = Project(repo="nosetech/project-b", worktree_path="/tmp/project-b")
+
+
+def test_get_api_state_includes_polling_timestamps_and_hides_internal_issues() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[
+                ProjectStatus(repo="nosetech/project-a", fetched_at="2026-10-06T00:00:00+00:00")
+            ],
+            last_polled_at="2026-10-06T00:00:01+00:00",
+            issues_by_repo={"nosetech/project-a": []},
+        )
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        _, body = _get(server, "/api/state")
+        assert body["last_polled_at"] == "2026-10-06T00:00:01+00:00"
+        assert body["project_status"][0]["fetched_at"] == "2026-10-06T00:00:00+00:00"
+        assert "issues_by_repo" not in body
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_updates_only_that_repo_in_store() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[
+                ProjectStatus(repo=PROJECT_A.repo, fetched_at="old-a"),
+                ProjectStatus(repo=PROJECT_B.repo, fetched_at="old-b"),
+            ],
+            last_polled_at="old-poll",
+            issues_by_repo={
+                PROJECT_A.repo: [],
+                PROJECT_B.repo: [_issue_in(PROJECT_B.repo, 9, [STATUS_TODO])],
+            },
+        )
+    )
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, PROJECT_B],
+        dispatch_queue=dispatch_queue,
+        list_issues=lambda repo: [_issue_in(repo, 1, [STATUS_IN_REVIEW])],
+        list_linked_prs=lambda repo, n: [_pr_candidate(55)],
+    )
+    try:
+        status, body = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 200
+        assert [i["number"] for i in body["issues"]] == [1]
+        assert body["fetched_at"] != "old-a"
+        by_repo = {p["repo"]: p for p in body["state"]["project_status"]}
+        assert by_repo[PROJECT_A.repo]["fetched_at"] == body["fetched_at"]
+        assert by_repo[PROJECT_A.repo]["counts"][STATUS_IN_REVIEW] == 1
+        assert by_repo[PROJECT_B.repo]["fetched_at"] == "old-b"
+        assert by_repo[PROJECT_B.repo]["counts"][STATUS_TODO] == 1
+        assert body["state"]["last_polled_at"] == "old-poll"
+        assert store.get().reviews[0].pr_number == 55
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_returns_404_for_unknown_repo() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/unknown/refresh", {})
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_returns_502_and_keeps_store_when_gh_fails() -> None:
+    store = StateStore()
+    before = AggregatedState(
+        project_status=[ProjectStatus(repo=PROJECT_A.repo, fetched_at="old-a")],
+        issues_by_repo={PROJECT_A.repo: []},
+    )
+    store.set(before)
+
+    def failing(repo: str):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, list_issues=failing
+    )
+    try:
+        status, _ = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 502
+        assert store.get() is before
+    finally:
+        server.shutdown()
+
+
+def test_post_project_refresh_works_before_first_poll() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, body = _post(server, f"/api/projects/{PROJECT_A.repo}/refresh", {})
+        assert status == 200
+        assert body["state"]["last_polled_at"] is None
+        assert body["state"]["project_status"][0]["fetched_at"] == body["fetched_at"]
+    finally:
+        server.shutdown()
+
+
+def test_post_refresh_all_repolls_every_project_and_updates_store() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, PROJECT_B],
+        dispatch_queue=dispatch_queue,
+        list_issues=lambda repo: [_issue_in(repo, 1, [STATUS_TODO])],
+    )
+    try:
+        status, body = _post(server, "/api/refresh", {})
+        assert status == 200
+        assert body["last_polled_at"] is not None
+        assert {p["repo"] for p in body["project_status"]} == {PROJECT_A.repo, PROJECT_B.repo}
+        assert all(p["fetched_at"] for p in body["project_status"])
+        assert store.get() is not None
+    finally:
+        server.shutdown()
+
+
+def test_post_refresh_all_returns_502_and_keeps_store_when_gh_fails() -> None:
+    store = StateStore()
+    before = AggregatedState()
+    store.set(before)
+
+    def failing(repo: str):
+        raise subprocess.CalledProcessError(1, "gh")
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, list_issues=failing
+    )
+    try:
+        status, _ = _post(server, "/api/refresh", {})
+        assert status == 502
+        assert store.get() is before
+    finally:
+        server.shutdown()
+
+
+# --- Agent Runnerプロンプト設定API（issue #149） ---
+
+
+def _put(server, path: str, payload: dict) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _delete(server, path: str) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(f"http://{host}:{port}{path}", method="DELETE")
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _prompt_server():
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    return _run_server(StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue)[0]
+
+
+def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    by_key = {p["key"]: p for p in body["prompts"]}
+    assert list(by_key) == [
+        "label_instruction",
+        "comment_marker_instruction",
+        "pr_instruction",
+        "final_message_instruction",
+        "approve_default_message",
+        "user_name",
+    ]
+    assert all(p["is_default"] for p in by_key.values())
+    comment_tokens = [t["token"] for t in by_key["comment_marker_instruction"]["required_tokens"]]
+    assert comment_tokens == ["<!-- producer-desk:bot-comment -->"]
+
+
+def test_put_prompt_saves_and_marks_as_edited() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        _, listed = _get(server, "/api/prompts")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["text"] == "新本文"
+    assert body["is_default"] is False
+    edited = {p["key"]: p for p in listed["prompts"]}["final_message_instruction"]
+    assert edited["text"] == "新本文"
+
+
+def test_put_prompt_missing_required_token_returns_400_with_errors() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/comment_marker_instruction", {"text": "無し"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert body["errors"] == ["必須トークン <!-- producer-desk:bot-comment --> が含まれていません"]
+
+
+def test_put_prompt_unknown_placeholder_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "{foo}"})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "{foo}" in body["error"]
+
+
+def test_put_prompt_unknown_key_returns_404() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/nope", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 404
+
+
+def test_put_prompt_without_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_delete_prompt_resets_to_default() -> None:
+    server = _prompt_server()
+    try:
+        _put(server, "/api/prompts/final_message_instruction", {"text": "新本文"})
+        status, body = _delete(server, "/api/prompts/final_message_instruction")
+    finally:
+        server.shutdown()
+
+    assert status == 200
+    assert body["is_default"] is True
+
+
+def test_put_user_name_saves_and_rejects_braces() -> None:
+    server = _prompt_server()
+    try:
+        ok_status, ok_body = _put(server, "/api/prompts/user_name", {"text": "山田さん"})
+        bad_status, _ = _put(server, "/api/prompts/user_name", {"text": "{repo}"})
+    finally:
+        server.shutdown()
+
+    assert ok_status == 200
+    assert ok_body["text"] == "山田さん"
+    assert ok_body["multiline"] is False
+    assert ok_body["placeholders"] == []
+    assert bad_status == 400
+
+
+def _raw_put(server, path: str, body: bytes) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"text"', b"123", b"null", b"{not json"])
+def test_put_prompt_non_object_body_returns_400(body: bytes) -> None:
+    server = _prompt_server()
+    try:
+        status, payload = _raw_put(server, "/api/prompts/final_message_instruction", body)
+    finally:
+        server.shutdown()
+
+    assert status == 400
+    assert "error" in payload
+
+
+def test_put_prompt_non_string_text_returns_400() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(server, "/api/prompts/final_message_instruction", {"text": 123})
+    finally:
+        server.shutdown()
+
+    assert status == 400
+
+
+def test_put_prompt_too_large_returns_413() -> None:
+    server = _prompt_server()
+    try:
+        status, _ = _put(
+            server, "/api/prompts/final_message_instruction", {"text": "a" * (300 * 1024)}
+        )
+    finally:
+        server.shutdown()
+
+    assert status == 413
+
+
+def test_put_prompt_recovers_from_broken_yaml(_isolated_prompts_path) -> None:
+    _isolated_prompts_path.write_text("prompts: [unclosed", encoding="utf-8")
+    server = _prompt_server()
+    try:
+        list_status, _ = _get(server, "/api/prompts")
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "復旧"})
+    finally:
+        server.shutdown()
+
+    assert list_status == 200
+    assert status == 200
+    assert body["text"] == "復旧"
+
+
+def test_put_prompt_storage_failure_returns_500(_isolated_prompts_path, monkeypatch) -> None:
+    def boom(spec, text):  # noqa: ANN001
+        raise PromptStorageError("書き込めません")
+
+    monkeypatch.setattr("orchestrator.server.save_prompt_override", boom)
+    server = _prompt_server()
+    try:
+        status, body = _put(server, "/api/prompts/final_message_instruction", {"text": "x"})
+    finally:
+        server.shutdown()
+
+    assert status == 500
+    assert body["error"] == "書き込めません"

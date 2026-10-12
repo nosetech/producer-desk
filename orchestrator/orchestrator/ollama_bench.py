@@ -8,7 +8,7 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）はOlla
 する必要がある（issue #60コメント参照）。
 
 当初は人間が手動でモデル比較・性能検証を行う専用ツールとして追加したが、
-issue #107でAgent Runner本番経路（`agent_runner.AGENT_RUNNER_LOCAL_LLM_INSTRUCTION`）
+issue #107でAgent Runner本番経路（プロジェクト側の指示。README.md参照）
 のローカルLLM生成呼び出しもこのツール（`--record`付き）経由に一本化し、
 `config/usage.db`への利用量記録を本番経路でも行うようにした。
 """
@@ -23,6 +23,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from orchestrator.config import (
+    DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS,
+    load_ollama_bench_timeout_seconds,
+)
 from orchestrator.usage_store import DEFAULT_USAGE_DB_PATH, UsageRecord
 from orchestrator.usage_store import record_usage as store_record_usage
 
@@ -66,7 +70,7 @@ def call_ollama_chat(
     host: str | None = None,
     system: str | None = None,
     response_format: str | None = None,
-    timeout: float = 300.0,
+    timeout: float = DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS,
     http_post: HttpPostFn = _http_post,
 ) -> BenchmarkResult:
     """`POST /api/chat`（`stream: false`）を直接呼び出し、実測のトークン数・処理時間を取得する。
@@ -172,6 +176,7 @@ def main() -> None:
         host=args.host,
         system=args.system,
         response_format=args.response_format,
+        timeout=load_ollama_bench_timeout_seconds(),
     )
     _print_result(result)
 

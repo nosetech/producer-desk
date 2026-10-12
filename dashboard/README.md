@@ -35,4 +35,8 @@ LAN_IP=<自機のLAN IP> npm run start:lan
 
 オーケストレータの内部APIはこのプロセスから同一マシン上でサーバーサイドに呼び出すのみで、ブラウザから直接到達させる必要が無いため、`127.0.0.1`（既定値）から変更しなくてよい。
 
-外出先からのTailscale経由アクセス対応（`npm run start:tailscale`、`TAILSCALE_IP` 環境変数）は将来拡張issue（#29）で対応する。
+外出先からTailscale経由でアクセスする場合は、自機のTailscale IP（`tailscale ip -4`）を `TAILSCALE_IP` に設定して起動する（`LAN_IP`とは同時に指定できない）。手順・確認方法は `docs/basic-design.md` 6-2参照。
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4) npm run start:tailscale
+```

@@ -1,105 +1,61 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchProjects, fetchState } from "@/lib/api";
+import { useState } from "react";
+import { postRefreshAll } from "@/lib/api";
 import { deriveProjectStatus } from "@/lib/projectStatus";
-import { EMPTY_STATUS_COUNTS, type AggregatedState } from "@/lib/types";
-import Header from "./Header";
+import { useApp } from "./AppContext";
 import ProjectStatusRow from "./ProjectStatusRow";
+import ProjectSettingsDialog from "./ProjectSettingsDialog";
 import DecisionsList from "./DecisionsList";
 import ReviewsList from "./ReviewsList";
 import UsageMonitor from "./UsageMonitor";
-import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
-import Toast from "./Toast";
 import styles from "./Dashboard.module.css";
 
-const POLL_INTERVAL_MS = 30_000;
-const TOAST_DURATION_MS = 4_600;
-const EMPTY_STATE: AggregatedState = {
-  decisions: [],
-  reviews: [],
-  project_status: [],
-  status_counts: EMPTY_STATUS_COUNTS,
-};
-
 export default function Dashboard() {
-  const [state, setState] = useState<AggregatedState>(EMPTY_STATE);
-  const [repos, setRepos] = useState<string[]>([]);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    state,
+    repos,
+    projectSettings,
+    error,
+    lockedIssue,
+    refresh,
+    refreshAfterAction,
+    refreshProjects,
+    showToast,
+    openReply,
+    openNewTask,
+  } = useApp();
+  const [settingsRepo, setSettingsRepo] = useState<string | null>(null);
+  const [refreshingAll, setRefreshingAll] = useState(false);
 
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [composerMode, setComposerMode] = useState<ComposerMode>("new");
-  const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
-  const [newTaskRepo, setNewTaskRepo] = useState("");
-  const [lockedIssue, setLockedIssue] = useState<IssueRef | null>(null);
-
-  const [toast, setToast] = useState<{ show: boolean; text: string }>({
-    show: false,
-    text: "",
-  });
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = useCallback((text: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ show: true, text });
-    toastTimer.current = setTimeout(
-      () => setToast((t) => ({ ...t, show: false })),
-      TOAST_DURATION_MS,
-    );
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-    };
-  }, []);
-
-  const refresh = useCallback((): Promise<void> => {
-    return fetchState()
-      .then((data) => {
-        setState(data);
-        setLastUpdated(new Date());
-        setError(null);
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : "状態の取得に失敗しました");
-      });
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    fetchProjects()
-      .then((data) => setRepos(data.repos))
-      .catch(() => setRepos([]));
-    const interval = setInterval(refresh, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, [refresh]);
-
-  function handleReply(repo: string, issueNumber: number, title: string) {
-    setComposerMode("reply");
-    setReplyTarget({ repo, number: issueNumber, title });
-    setComposerOpen(true);
-  }
-
-  function handleQuickCreate(repo: string) {
-    setComposerMode("new");
-    setNewTaskRepo(repo);
-    setComposerOpen(true);
-  }
-
-  function handleOpenComposer() {
-    setComposerMode("new");
-    setComposerOpen(true);
-  }
+  // 全プロジェクトのissue・ラベル情報をGitHubから再取得する（issue #197）。
+  // 失敗時は表示中の内容を残したままToastで通知する。
+  const refreshAll = () => {
+    if (refreshingAll) return;
+    setRefreshingAll(true);
+    postRefreshAll()
+      .then(() => refresh())
+      .catch((e) =>
+        showToast(
+          e instanceof Error
+            ? `再取得に失敗しました: ${e.message}`
+            : "再取得に失敗しました",
+        ),
+      )
+      .finally(() => setRefreshingAll(false));
+  };
 
   const projectStatuses = repos.map((repo) =>
-    deriveProjectStatus(repo, state.decisions, state.project_status),
+    deriveProjectStatus(
+      repo,
+      state.decisions,
+      state.project_status,
+      projectSettings[repo],
+    ),
   );
 
   return (
     <div className={styles.page}>
-      <Header lastUpdated={lastUpdated} />
       {error && (
         <div className={styles.banner}>
           {error}（オーケストレータが起動しているか確認してください）
@@ -107,21 +63,24 @@ export default function Dashboard() {
       )}
       <ProjectStatusRow
         projects={projectStatuses}
-        onQuickCreate={handleQuickCreate}
+        onQuickCreate={openNewTask}
+        onOpenSettings={setSettingsRepo}
+        refreshing={refreshingAll}
+        onRefreshAll={refreshAll}
       />
       <main className={styles.main}>
         <div className={styles.left}>
           <DecisionsList
             decisions={state.decisions}
-            onApproved={refresh}
-            onReply={handleReply}
+            onApproved={refreshAfterAction}
+            onReply={openReply}
             onToast={showToast}
             lockedIssue={lockedIssue}
           />
           <ReviewsList
             reviews={state.reviews}
-            onApproved={refresh}
-            onReply={handleReply}
+            onApproved={refreshAfterAction}
+            onReply={openReply}
             onToast={showToast}
             lockedIssue={lockedIssue}
           />
@@ -130,20 +89,14 @@ export default function Dashboard() {
           <UsageMonitor />
         </div>
       </main>
-      <ComposerBar
-        open={composerOpen}
-        mode={composerMode}
-        replyTarget={replyTarget}
-        onClearReplyTarget={() => setReplyTarget(null)}
-        onOpen={handleOpenComposer}
-        onClose={() => setComposerOpen(false)}
-        repos={repos}
-        newTaskRepo={newTaskRepo}
-        onNewTaskRepoChange={setNewTaskRepo}
-        onSubmitted={refresh}
-        onReplySubmittingChange={setLockedIssue}
-      />
-      <Toast show={toast.show} text={toast.text} />
+      {settingsRepo && (
+        <ProjectSettingsDialog
+          repo={settingsRepo}
+          onClose={() => setSettingsRepo(null)}
+          onSaved={refreshProjects}
+          onToast={showToast}
+        />
+      )}
     </div>
   );
 }

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LiteLLM Proxy（issue #148・#174・#176、bin/litellm_proxy_start.sh参照）を
+     launchd の per-user LaunchAgent として常駐化するための設定サンプル。
+     オーケストレータ自体（bin/start.sh）と同様、常時起動が必要なプロセスのため
+     RunAtLoad + KeepAlive で常駐させる（バックアップの定期実行
+     （com.nosetech.producer-desk.backup-usage-db.plist.example）とは異なり
+     StartCalendarIntervalは使わない）。
+
+     使い方:
+       1. このファイルを ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+          にコピーする
+       2. コピー後のファイル内の /path/to/producer-desk を実パス（展開先ルート、
+          またはgit clone先）に書き換える
+       3. litellm_proxy/.venv が未作成の場合は先に ./bin/litellm_proxy_start.sh を
+          手動で一度実行し、venvへ litellm[proxy] をインストールしておく
+          （launchd起動時のネットワークアクセスを避けるため）
+       4. launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy.plist
+          で読み込む -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nosetech.producer-desk.litellm-proxy</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/producer-desk/litellm_proxy/.venv/bin/litellm</string>
+        <string>--config</string>
+        <string>/path/to/producer-desk/config/litellm_config.yaml</string>
+        <string>--port</string>
+        <string>4000</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/producer-desk</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/path/to/producer-desk/logs/litellm_proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/producer-desk/logs/litellm_proxy.log</string>
+</dict>
+</plist>

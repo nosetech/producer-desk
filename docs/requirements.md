@@ -21,7 +21,7 @@
 - 判断待ち一覧（`needs-human-decision` ラベルが付与されたissueの横断集約）
 - 最近の活動ログ（タイムライン形式。Agent Runnerの直近のコミット・PR・issue更新）
 - Claude Codeの利用量／リミット到達状況モニター（日単位・モデル別の使用量表示、リミット到達時の解除予定時刻表示。[3-4](#3-4-コスト制約)参照）
-- 新しい指示を出す入力欄（自由記述のテキストボックス。既存issueへの追加指示、新規タスクの作成の両方に使用。[2-3](#2-3-aiへの指示出し導線)参照）
+- 新しい指示を出す入力欄（自由記述のテキストボックス。新規タスクはプロジェクト単位の「+」ボタン（ダッシュボードのプロジェクト行、issue一覧のプロジェクトタブ）から、既存issueへの追加指示は各カードの返信ボタンから開く。既存issueへの追加指示、新規タスクの作成の両方に使用。[2-3](#2-3-aiへの指示出し導線)参照）
 - プロジェクト別サマリは今回のMVPでは対象外とする。
 
 ### 2-2. 「判断が必要な項目」の判定規約
@@ -48,8 +48,11 @@
 
 ### 2-5. モデル選択方針
 
-- コード変更を伴う自走タスク（Agent Runnerでのコード編集そのもの）はClaude Codeのみを利用する。Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約を利用する（[3-4](#3-4-コスト制約)参照）。Agent RunnerはClaude Code CLIプロセスとしてプロジェクトごとに起動する。
-  - ローカルLLMはツール呼び出し（Function Calling）の信頼性がモデルサイズに強く依存し不安定であることがPoC（[architecture-and-challenges.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/architecture-and-challenges.md) 2-4節）で確認されているため、自走タスク本体には引き続き採用しない。この方針は本節で後述するローカルLLM併用方針によって変更されない。
+- issue #148での検討を経て、コード変更を伴う自走タスク（Agent Runnerでのコード編集そのもの）の実行手段は、プロジェクトごとにユーザーが選択できる方針とする（従来の「自走タスク本体はClaude Codeのみ」という限定は撤廃）。選択肢は以下の2つ。
+  - **(A) Claude Code CLI直利用**: Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約を利用する（[3-4](#3-4-コスト制約)参照）。Agent RunnerはClaude Code CLIプロセスとしてプロジェクトごとに起動する。
+  - **(B) LiteLLM Proxy経由**: Claude Code CLIの接続先をLiteLLM Proxyへ切り替え、他社プロバイダのモデル・ローカルLLMを自走タスク本体の実行に利用する。この経路は（Claudeモデルを指定した場合を含め）従量課金に切り替わる（[3-4](#3-4-コスト制約)参照）。
+  - デフォルトの実行手段はダッシュボードのプロジェクト設定UIでプロジェクトごとに設定し、issueコメントでの都度指示によりデフォルトから一時的に変更できる（設定方式・導入方式の詳細は[architecture.md 5章](./architecture.md#5-モデルルーティング)・[basic-design.md 4章](./basic-design.md#4-モデルルーター設定設計)参照。設定画面自体は別issueで扱う）。
+  - 自走タスク本体の実行手段として(B) LiteLLM Proxy経由でローカルLLMを選択する場合、ツール呼び出し（Function Calling）の信頼性がモデルサイズに強く依存し不安定であることがPoC（[architecture-and-challenges.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/architecture-and-challenges.md) 2-4節）で確認されている点に留意する。この制約は、後述する「ローカルLLMの補助的併用」方針（自走タスク本体ではなくAgent Runnerが直接呼び出す補助用途）そのものには影響しない。
 - **ローカルLLMの補助的併用**: 自走タスク本体とは別に、Function Calling非依存または低リスクな補助用途（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）に限り、ローカルLLM（Ollama）を併用する。Agent Runner（Claude Code CLI）自身が、後述のタスク種別ごとの推奨モデルに従って必要に応じて呼び出す。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しはOllama REST APIを直接呼び出す`ollama-bench`コマンド経由に一本化している（MCP `ollama-client`はOllama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できないため。issue #107）（呼び出し方式・モデルルーティング層の要否の設計判断は[architecture.md 5章](./architecture.md#5-モデルルーティング)、実装仕様は[basic-design.md 4章](./basic-design.md#4-モデルルーター設定設計)参照）。
   - 根拠となる調査: `research-log` [`log/2026/08/local-llm-benchmark/README.md`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark/README.md)（issue [#70](https://github.com/nosetech/research-log/issues/70)、`qwen2.5:7b` / `gemma2` / `qwen2.5-coder:7b` の検証）、[`log/2026/08/local-llm-benchmark-additional/README.md`](https://github.com/nosetech/research-log/blob/main/log/2026/08/local-llm-benchmark-additional/README.md)（issue [#72](https://github.com/nosetech/research-log/issues/72)、`granite-code:8b` / `deepseek-coder-v2:16b` / `codestral:22b` の追加検証）
   - タスク種別ごとの推奨モデル:
@@ -58,7 +61,7 @@
     - 日本語ドキュメント生成 → `gemma2`（中国語混入がなく日本語の一貫性が最も高い。ただし4例題に文書生成は含まれておらず、コードレビュー例題での説明の丁寧さからの類推であるため、実運用開始時に改めて品質を確認すること）
     - 上記以外・速度優先の簡易チェック → `qwen2.5-coder:7b`（VRAM内に収まる7B級で最速の76〜79 tok/s帯）
   - 不採用としたモデル: `granite-code:8b`（デバッグ・コードレビュー例題で日本語出力が意味不明な単語の反復やスペイン語化に陥り、日本語プロダクト用途に耐えない）、`codestral:22b`（RTX 3070のVRAM 8GBを大きく超過し4.6 tok/sまで速度低下、実用性が低い）
-- LiteLLM Proxy等のモデルルーティング層は導入しない。ローカルLLMはMCP `ollama-client`・`ollama-bench`コマンドを介してAgent Runnerが直接呼び出すため、モデルルーターを挟む構成は不要と判断した（詳細は[architecture.md 5章](./architecture.md#5-モデルルーティング)参照）。
+- 自走タスク本体の実行手段選択（上記(B)）のためLiteLLM Proxyを導入する。ローカルLLMの補助的併用（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）は引き続きLiteLLM Proxyを経由せず、MCP `ollama-client`・`ollama-bench`コマンドを介してAgent Runnerが直接呼び出す構成のままとする（用途・計測経路が自走タスク本体とは異なるため統合しない。詳細は[architecture.md 5章](./architecture.md#5-モデルルーティング)参照）。
 
 ### 2-6. 通知要件
 
@@ -71,6 +74,14 @@
 - ダッシュボード上でワンタップでの承認操作を提供する（[2-3](#2-3-aiへの指示出し導線)の通り、内部的にはissueコメント投稿として実装）。押下時はYes/No確認のみで、コメント文の入力は不要とする。
 - 却下（差し戻し）専用の操作は設けない。承認以外の意思表示（方針変更・保留等）は自由記述の指示で行う。
 - 加えて、自由記述のテキストボックスから任意の指示を送れるようにする。既存issueへの追加指示（状態を問わない）と、新規タスクの作成（即時着手／todo登録の選択式）の両方に対応する。
+
+### 2-8. Agent Runnerプロンプトの閲覧・編集（issue #149）
+
+- Agent Runner起動時に渡す指示文（状態ラベル遷移・コメントマーカー・最終応答の書き方等）と判断待ち承認時の定型コメントを、ダッシュボードの「プロンプト設定」画面から閲覧・編集できる。AIの動作に影響するものはすべて編集可能とする。
+- 指示文・最終応答中でユーザーを指す呼称（既定「ユーザー」）も同じ画面の1項目（`user_name`）として変更でき、各指示文の`{user_name}`、および必須トークンの説明文に展開される。
+- 保存内容は次回以降のAgent Runner起動から反映される（実行中のセッションには反映されない）。
+- 誤編集でシステムが壊れないよう、オーケストレータが依存する文字列（状態ラベル名・機械可読マーカー等）を「必須トークン」として画面に理由付きで表示し、欠けた本文は保存できない。コード内蔵のデフォルト値へ戻す手段を備える。
+- 詳細は[basic-design.md 3-6](./basic-design.md#3-6-agent-runnerプロンプト設定管理issue-149)を参照。
 
 ## 3. 非機能要件
 
@@ -91,8 +102,9 @@
 
 ### 3-4. コスト制約
 
-- Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約の範囲内で運用する。追加コストを支払っての即時再開は行わない。
-- 利用リミット（レートリミット等）に達した場合は、Agent Runnerを一時停止し、プランのリセットタイミングまで待機する。
+- [2-5](#2-5-モデル選択方針)の(A) Claude Code CLI直利用を選択した場合、Anthropic APIの従量課金は使わず、Claude Code Pro/Maxプラン等のサブスクリプション契約の範囲内で運用する。追加コストを支払っての即時再開は行わない。
+- [2-5](#2-5-モデル選択方針)の(B) LiteLLM Proxy経由を選択した場合、自走タスク本体の実行は他社プロバイダ・ローカルLLMを含め従量課金の経路として扱う（ローカルLLM自体の生成に金銭コストは発生しないが、他社プロバイダと同じ経由先・同じ利用量計測方式で扱う。[architecture.md 5章](./architecture.md#5-モデルルーティング)参照）。プロバイダ・モデルの種類による利用制限は設けず、実行手段の選択と同様にユーザーの判断に委ねる。従量課金の予算上限による自動ブロックは導入しない（DBなし運用のため機能しない。可視化のみ）ため、コスト超過の防止は利用者自身の判断に委ねる。なお、コードレビュー支援等のローカルLLM補助的併用（[2-5](#2-5-モデル選択方針)参照）はこの(B)の対象外であり、引き続きLiteLLM Proxyを経由しない。
+- 利用リミット（レートリミット等）に達した場合は、Agent Runnerを一時停止し、プランのリセットタイミングまで待機する（(A)を選択している場合。(B)選択時は従量課金のため利用リミットという概念自体が当てはまらない）。
 - ダッシュボードには利用量・リミット到達状況をモニターとして表示する（[2-1](#2-1-ダッシュボード表示項目)参照）。
 - Anthropicアカウント側が内部管理するセッション5時間枠・週間上限に対する正確な消費率(%)は、Agent Runnerの実行結果（非対話の`-p`実行）からは取得できないことが判明した（issue #60）。そのため、正確な利用率(%)表示は行わず、Agent Runner実行のたびに得られるトークン数・コストを記録し、**日単位・モデル別の使用量**として表示する方式とする（[basic-design.md 2-2](./basic-design.md#2-2-データ取得仕様ポーリング)参照）。
 - リミット到達時（`is_error: true`かつ`api_error_status: 429`）は、レスポンス中の自由文からリセット予定時刻を抽出し表示する。パース失敗時は生の文字列をそのまま表示するフォールバックを備える。
@@ -108,11 +120,12 @@
 
 - ダッシュボード（判断待ち一覧／最近の活動ログ／利用量・リミットモニター、ワンタップ承認、自由記述による指示入力欄）
 - GitHub issueコメント経由の指示出し（案A）。既存issueへの追加指示・新規タスク（issue）作成の両方に対応
-- 自走タスク本体（コード変更）はClaude Codeのみ（Pro/Maxプラン等のサブスクリプション、Anthropic API従量課金は使わない）
+- 自走タスク本体（コード変更）の実行手段はプロジェクトごとに選択可能（(A) Claude Codeのみ・Pro/Maxプラン等のサブスクリプション、または(B) LiteLLM Proxy経由の他モデル・ローカルLLM・従量課金。[2-5](#2-5-モデル選択方針)参照）
 - コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成に限定した、MCP `ollama-client`・`ollama-bench`コマンド経由でのローカルLLM補助的併用（[2-5](#2-5-モデル選択方針)参照）
 - 同一LAN内アクセスのみによる保護（アプリレベルの追加認証は設けない）
 - プロジェクトごとのgit worktree隔離
 - CLIコマンドによるAgent Runnerの手動起動・停止
+- Agent Runnerプロンプトのダッシュボードからの閲覧・編集（[2-8](#2-8-agent-runnerプロンプトの閲覧編集issue-149)参照）
 - Slack（Incoming Webhook）併用による通知の信頼性補完
 - 利用リミット到達時はプランのリセットまで待機（追加コスト支払いなし）
 
@@ -122,12 +135,12 @@
 - オーケストレータによるAgent Runnerの自動起動・停止・スケーリング
 - コンテナ（Docker）によるプロジェクト隔離
 - 複数ユーザー対応・権限分離
-- Tailscale経由での同一LAN外（外出先）からのダッシュボードアクセス対応
+- ~~Tailscale経由での同一LAN外（外出先）からのダッシュボードアクセス対応~~（issue #29で対応済み。`TAILSCALE_IP`によるbind切替と手順は[basic-design.md 6-2](./basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
 
 ### 4-3. 対象外とする既存ツール・PoC結果の扱い
 
 - **Docker構成**: PoC環境（[poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md) 2章）でDockerのネットワーク関連操作が恒常的にハングする問題が発生し、Homebrew/pipによるネイティブインストールで回避した経緯がある。本番の実際のPC環境での動作確認は未実施のため、MVPではDockerを使わずネイティブ構成（Homebrew/pip等）を採用する。将来Docker採用を検討する場合は、本番PC環境での事前検証を行う。
-- **Tailscale/WireGuard実機セットアップ**: issue #1のスコープ外（ユーザー自身の実機作業）としてPoC側で既に整理済み。本要件定義でもプロデューサー自身の作業として扱う（MVPでは同一LAN内アクセスのみのため、実機セットアップ自体は[4-2](#4-2-将来拡張とする範囲)のTailscale対応issueに着手する時点で行う）。
+- **Tailscale/WireGuard実機セットアップ**: issue #1のスコープ外（ユーザー自身の実機作業）としてPoC側で既に整理済み。本要件定義でもプロデューサー自身の作業として扱う（実機セットアップの手順は[basic-design.md 6-2](./basic-design.md#6-2-ネットワークアクセスの認証設計)に記載）。
 
 ## 参考
 

@@ -22,8 +22,23 @@ export interface IssueSummary {
   labels: string[];
   comments: IssueComment[];
   updated_at: string;
-  /** `status:in-review` のissueについてのみ、紐づくPR番号が入る（issue #58）。 */
+  /**
+   * `status:in-review` のissueについてのみ、対応PRを一意に特定できた場合のPR番号が入る
+   * （issue #58）。候補が0件または2件以上の場合はnull（issue #206）。
+   */
   pr_number: number | null;
+  /** `status:in-review` のissueの対応PR候補（issue #206）。 */
+  pr_candidates: PrCandidate[];
+}
+
+/** issueの対応PR候補。オーケストレータのPrCandidateに対応する（issue #206）。 */
+export interface PrCandidate {
+  number: number;
+  title: string;
+  url: string;
+  is_draft: boolean;
+  head_ref_name: string;
+  base_ref_name: string;
 }
 
 /**
@@ -56,6 +71,8 @@ export interface ProjectStatusSummary {
   is_orphaned: boolean;
   /** そのリポジトリ単体の状態別OPEN issue件数（`status:closed`は含まない）。 */
   counts: StatusCounts;
+  /** オーケストレータが実際にGitHubからこのリポジトリを取得した時刻（ISO 8601、issue #197）。 */
+  fetched_at: string | null;
 }
 
 export interface AggregatedState {
@@ -63,6 +80,8 @@ export interface AggregatedState {
   reviews: IssueSummary[];
   project_status: ProjectStatusSummary[];
   status_counts: StatusCounts;
+  /** オーケストレータの最終ポーリング時刻（ISO 8601、issue #197）。未ポーリングならnull。 */
+  last_polled_at: string | null;
 }
 
 export const EMPTY_STATUS_COUNTS: StatusCounts = {
@@ -75,6 +94,27 @@ export const EMPTY_STATUS_COUNTS: StatusCounts = {
 
 export interface ProjectsResponse {
   repos: string[];
+  settings: Record<string, ProjectExecutionSettings>;
+}
+
+// 自走タスク本体の実行手段（issue #148・#174・#176、basic-design.md 4章）。
+export type ExecutionMode = "claude_code" | "litellm_proxy";
+
+export interface ProjectExecutionSettings {
+  execution_mode: ExecutionMode;
+  litellm_model: string | null;
+}
+
+/** GET /api/projects/{owner}/{name}/settings のレスポンス。 */
+export interface ProjectSettingsResponse extends ProjectExecutionSettings {
+  repo: string;
+  /** `config/litellm_config.yaml`の`model_list`のうち当該repo向けに定義済みのモデルエイリアス。 */
+  available_models: string[];
+}
+
+/** PATCH /api/projects/{owner}/{name}/settings（オーケストレータへプロキシ）のレスポンス。 */
+export interface UpdateProjectSettingsResult extends ProjectExecutionSettings {
+  repo: string;
 }
 
 export type InstructAction = "approve" | "instruct";
@@ -122,4 +162,38 @@ export interface CurrentLimitStatus {
 export interface UsageResponse {
   daily: DailyUsage[];
   currentLimit: CurrentLimitStatus | null;
+}
+
+/** GET /api/projects/{owner}/{name}/issues の issues 配列要素（issue #116）。 */
+export interface ProjectIssue {
+  number: number;
+  title: string;
+  /** 表示に採用する状態ラベル。タグなし（OPENで状態ラベル無し）はnull。 */
+  label: StatusLabel | null;
+  state: string;
+  comments_count: number;
+  updated_at: string;
+  /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
+  is_orphaned: boolean;
+}
+
+export interface ProjectIssuesResponse {
+  repo: string;
+  issues: ProjectIssue[];
+}
+
+/** GET /api/prompts の prompts 配列要素（issue #149）。 */
+export interface PromptInfo {
+  key: string;
+  title: string;
+  description: string;
+  /** 現在の本文（上書きがあれば上書き、無ければデフォルト）。 */
+  text: string;
+  default: string;
+  is_default: boolean;
+  required_tokens: { token: string; reason: string }[];
+  /** 本文中で使えるプレースホルダ名（波括弧なし）。 */
+  placeholders: string[];
+  /** falseの項目（ユーザーの呼称等）は改行・波括弧を含められない短い語句。 */
+  multiline: boolean;
 }

@@ -21,7 +21,7 @@ import pytest
 
 from orchestrator import agent_runner
 from orchestrator.agent_runner import build_claude_command, cleanup_old_agent_logs, run_agent_runner
-from orchestrator.config import Project
+from orchestrator.config import EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.github_client import BOT_COMMENT_MARKER
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
@@ -29,7 +29,9 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
-from orchestrator.usage_store import UsageRecord
+from orchestrator.litellm_model_config import SessionGuardSettings
+from orchestrator.session_store import SessionState
+from orchestrator.usage_store import LocalLlmUsageReport, UsageRecord
 
 # UTCの01:02:03はJSTで同日10:02:03になる（ログファイル名がJST基準である
 # ことをtest_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_output
@@ -87,19 +89,30 @@ class FakePopenFactory:
         return FakePopen(self.lines, self.returncode)
 
 
-class FakePersistSessionId:
+class FakePersistSessionState:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int, str]] = []
+        self.calls: list[tuple[str, int, SessionState]] = []
 
-    def __call__(self, repo: str, issue_number: int, session_id: str) -> None:
-        self.calls.append((repo, issue_number, session_id))
+    def __call__(self, repo: str, issue_number: int, state: SessionState) -> None:
+        self.calls.append((repo, issue_number, state))
 
 
-class FakeGetSessionId:
-    def __init__(self, sessions: dict[tuple[str, int], str] | None = None) -> None:
-        self.sessions = dict(sessions or {})
+class FakeClearSessionState:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
 
-    def __call__(self, repo: str, issue_number: int) -> str | None:
+    def __call__(self, repo: str, issue_number: int) -> None:
+        self.calls.append((repo, issue_number))
+
+
+class FakeGetSessionState:
+    def __init__(self, sessions: dict[tuple[str, int], SessionState | str] | None = None) -> None:
+        self.sessions = {
+            key: (value if isinstance(value, SessionState) else SessionState(value, 0))
+            for key, value in (sessions or {}).items()
+        }
+
+    def __call__(self, repo: str, issue_number: int) -> SessionState | None:
         return self.sessions.get((repo, issue_number))
 
 
@@ -109,6 +122,14 @@ class FakeRecordUsage:
 
     def __call__(self, records: list[UsageRecord], **kwargs: object) -> None:
         self.calls.append(list(records))
+
+
+class FakeRecordLocalLlmUsageReport:
+    def __init__(self) -> None:
+        self.calls: list[LocalLlmUsageReport] = []
+
+    def __call__(self, report: LocalLlmUsageReport, **kwargs: object) -> None:
+        self.calls.append(report)
 
 
 class FakeResolvePrNumber:
@@ -212,6 +233,25 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     assert "gh issue edit 12 --repo nosetech/project-a" in instruction
 
 
+def test_build_claude_command_instructs_ci_wait_marker_instead_of_sleep_polling() -> None:
+    """issue #173の再発防止テスト。
+
+    issue #152/#153が指示していた「sleepを挟んだポーリング」は、Bashツールの長時間
+    sleepチェーン検知でブロックされ実行不能だった。system promptがsleepポーリングを
+    指示せず、代わりにCI待機マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX`）の埋め込み
+    を指示していることを確認する。
+    """
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert agent_runner.CI_WAIT_MARKER_PREFIX in instruction
+    assert "sleepを挟んだポーリングでの待機は行わないで" in instruction
+
+
 def test_build_claude_command_appends_comment_marker_instruction() -> None:
     """issue #43の再発防止テスト。
 
@@ -253,9 +293,9 @@ def test_build_claude_command_instructs_not_to_duplicate_completion_report() -> 
 def test_build_claude_command_enables_chrome_integration() -> None:
     """issue #33の再発防止テスト（続報）。
 
-    AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの利用
-    を指示しても、`-p`（非対話モード）ではClaude in Chrome連携がデフォルト
-    無効なため実際には使えなかった。`--chrome`で明示的に有効化する。
+    プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示しても、
+    `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため実際には使えなかった。
+    `--chrome`で明示的に有効化する。
     """
     command = build_claude_command(
         "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
@@ -264,63 +304,7 @@ def test_build_claude_command_enables_chrome_integration() -> None:
     assert "--chrome" in command
 
 
-def test_build_claude_command_appends_design_verification_instruction() -> None:
-    """issue #33の再発防止テスト。
-
-    ダッシュボードのUI実装がClaude Designの配色・アイコンを反映できていな
-    かった。ブラウザ操作ツールで実際のデザインを確認するよう毎回明示的に
-    指示することを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "claude.ai/design" in instruction
-    assert "mcp__claude-in-chrome__" in instruction
-
-
-def test_build_claude_command_appends_local_llm_instruction() -> None:
-    """issue #59: 補助用途でのローカルLLM使い分け指示がsystem promptに含まれることを確認する。
-
-    自走タスク本体には使わない旨、タスク種別ごとの推奨モデルがそれぞれ
-    system promptに含まれていることを検証する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "deepseek-coder-v2:16b" in instruction
-    assert "gemma2" in instruction
-
-
-def test_build_claude_command_instructs_ollama_bench_for_usage_recording() -> None:
-    """issue #107の再発防止テスト。
-
-    MCP `ollama-client`経由の生成呼び出しではOllama REST APIのトークン数・
-    処理時間メトリクスが取得できず`config/usage.db`に記録できないため、生成
-    本体は`ollama-bench` CLI（`--record`）を使うようsystem promptで明示的に
-    指示し、かつ実行対象のrepo/issue番号が埋め込まれることを確認する。
-    """
-    command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
-    )
-
-    flag_index = command.index("--append-system-prompt")
-    instruction = command[flag_index + 1]
-
-    assert "$OLLAMA_BENCH_PATH" in instruction
-    assert "--record --repo nosetech/project-a --issue-number 12" in instruction
-    assert "mcp__ollama-client__ollama_chat" in instruction
-    assert "mcp__ollama-client__ollama_list" in instruction
-
-
-def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
+def test_build_claude_command_appends_pr_instruction() -> None:
     """issue #82の再発防止テスト。
 
     PR本文で`issue #77で報告された...`のように issue番号の直後に区切り文字なく
@@ -338,7 +322,6 @@ def test_build_claude_command_appends_pr_issue_reference_instruction() -> None:
 
     assert "Closes #<issue番号>" in instruction
     assert "issue #82" in instruction
-    assert "qwen2.5-coder:7b" in instruction
 
 
 def test_build_claude_command_instructs_human_readable_final_message() -> None:
@@ -357,10 +340,10 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     flag_index = command.index("--append-system-prompt")
     instruction = command[flag_index + 1]
 
-    assert "人間が具体的に何をすればよいか" in instruction
+    assert "ユーザーが具体的に何をすればよいか" in instruction
     assert "Monitor" in instruction
     assert "ScheduleWakeup" in instruction
-    assert "実装詳細は人間向け報告に含めないでください" in instruction
+    assert "実装詳細はユーザー向け報告に含めないでください" in instruction
 
 
 def test_build_claude_command_uses_stream_json_output_format() -> None:
@@ -385,7 +368,7 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory()
-    get_session = FakeGetSessionId()
+    get_session = FakeGetSessionState()
 
     result = run_agent_runner(
         project,
@@ -397,7 +380,8 @@ def test_run_agent_runner_missing_worktree_fails_without_running_subprocess(tmp_
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -418,8 +402,8 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId()
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState()
+    persist = FakePersistSessionState()
 
     result = run_agent_runner(
         project,
@@ -431,8 +415,8 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
     )
@@ -441,7 +425,7 @@ def test_run_agent_runner_first_dispatch_generates_and_persists_session_id(tmp_p
     assert "--session-id" in popen.calls[0]["cmd"]
     assert "--resume" not in popen.calls[0]["cmd"]
     assert popen.calls[0]["cwd"] == str(worktree)
-    assert persist.calls == [("nosetech/project-a", 1, FIXED_UUID())]
+    assert persist.calls == [("nosetech/project-a", 1, SessionState(FIXED_UUID(), 1))]
     assert result.success is True
     assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
 
@@ -502,7 +486,7 @@ def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     monkeypatch.setattr(
         agent_runner,
         "_resolve_ollama_bench_path",
@@ -519,7 +503,8 @@ def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -547,15 +532,17 @@ def test_resolve_ollama_bench_path_logs_warning_when_unresolved(
     assert any("ollama-bench" in record.message for record in caplog.records)
 
 
-def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: Path) -> None:
+def test_run_agent_runner_resumes_existing_session_and_increments_turn_count(
+    tmp_path: Path,
+) -> None:
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "続きをやりました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 2): "existing-id"})
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState({("nosetech/project-a", 2): SessionState("existing-id", 3)})
+    persist = FakePersistSessionState()
 
     result = run_agent_runner(
         project,
@@ -567,15 +554,16 @@ def test_run_agent_runner_resumes_existing_session_without_persisting(tmp_path: 
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
     )
 
     assert result.session_id == "existing-id"
     assert "--resume" in popen.calls[0]["cmd"]
     assert "--session-id" not in popen.calls[0]["cmd"]
-    assert persist.calls == []
+    # issue #189: ターン数上限判定のため、resume時もターン数を+1して保存する。
+    assert persist.calls == [("nosetech/project-a", 2, SessionState("existing-id", 4))]
 
 
 def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) -> None:
@@ -592,8 +580,8 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 38): "session-for-38"})
-    persist = FakePersistSessionId()
+    get_session = FakeGetSessionState({("nosetech/project-a", 38): "session-for-38"})
+    persist = FakePersistSessionState()
 
     run_agent_runner(
         project,
@@ -605,8 +593,8 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
-        persist_session_id_fn=persist,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
         now=FIXED_NOW,
         new_uuid=FIXED_UUID,
     )
@@ -615,7 +603,7 @@ def test_run_agent_runner_uses_independent_sessions_per_issue(tmp_path: Path) ->
     assert "--session-id" in popen.calls[0]["cmd"]
     assert "--resume" not in popen.calls[0]["cmd"]
     assert "session-for-38" not in popen.calls[0]["cmd"]
-    assert persist.calls == [("nosetech/project-a", 32, FIXED_UUID())]
+    assert persist.calls == [("nosetech/project-a", 32, SessionState(FIXED_UUID(), 1))]
 
 
 def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: Path) -> None:
@@ -625,7 +613,7 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["not json\n"], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
@@ -637,7 +625,8 @@ def test_run_agent_runner_success_falls_back_when_stdout_is_not_json(tmp_path: P
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -653,7 +642,7 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["boom\n"], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -665,7 +654,8 @@ def test_run_agent_runner_failure_posts_error_comment_and_transitions_to_needs_h
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -697,7 +687,7 @@ def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_p
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -709,7 +699,9 @@ def test_run_agent_runner_failure_on_api_limit_posts_limit_message_without_log_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -742,7 +734,7 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -754,7 +746,9 @@ def test_run_agent_runner_failure_on_non_429_error_keeps_log_path_message(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -784,7 +778,7 @@ def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_pat
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -796,7 +790,9 @@ def test_run_agent_runner_failure_on_api_limit_without_result_text_keeps_log_pat
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        record_usage_fn=FakeRecordUsage(),
         now=FIXED_NOW,
     )
 
@@ -826,7 +822,7 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
         lines=[result_line({"result": "このままpushしてPRを作成してよろしいですか？"})],
         returncode=0,
     )
-    get_session = FakeGetSessionId({("nosetech/project-a", 70): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 70): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -838,12 +834,55 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
     assert result.success is True
     assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+
+
+def test_run_agent_runner_success_with_ci_wait_marker_skips_forced_fallback(
+    tmp_path: Path,
+) -> None:
+    """issue #173の再発防止テスト。
+
+    CI完了待ちのため意図的にstatus:in-progressのまま正常終了した場合
+    （最終応答にCI_WAIT_MARKER_PREFIXマーカーが含まれる場合）は、issue #78由来の
+    強制needs-human-decisionフォールバックをスキップし、status:in-progressを
+    維持することを確認する。CI完了の検知・自動再開はorchestrator.ci_watcherに
+    委ねる設計のため、ここではラベルが変化しないことのみを検証する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    result_text = (
+        "CIの完了を待っています。\n\n"
+        f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 172}}\n-->'
+    )
+    popen = FakePopenFactory(lines=[result_line({"result": result_text})], returncode=0)
+    get_session = FakeGetSessionState({("nosetech/project-a", 173): "existing-id"})
+
+    result = run_agent_runner(
+        project,
+        173,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_PROGRESS}
 
 
 def test_run_agent_runner_success_with_self_transition_does_not_double_transition(
@@ -860,7 +899,7 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -872,7 +911,8 @@ def test_run_agent_runner_success_with_self_transition_does_not_double_transitio
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=FakeResolvePrNumber(81),
     )
@@ -895,7 +935,7 @@ def test_run_agent_runner_status_in_review_with_resolvable_pr_skips_pr_reference
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(81)
     get_current_branch_fn = FakeGetCurrentBranch("feature/71-something")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
@@ -911,7 +951,8 @@ def test_run_agent_runner_status_in_review_with_resolvable_pr_skips_pr_reference
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -941,7 +982,7 @@ def test_run_agent_runner_status_in_review_without_resolvable_pr_appends_issue_r
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 136): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
@@ -959,7 +1000,8 @@ def test_run_agent_runner_status_in_review_without_resolvable_pr_appends_issue_r
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -997,7 +1039,7 @@ def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warni
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("develop")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(None)
@@ -1013,7 +1055,8 @@ def test_run_agent_runner_status_in_review_without_matching_branch_pr_logs_warni
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1041,7 +1084,7 @@ def test_run_agent_runner_status_in_review_skips_append_when_reference_already_p
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 136): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 136): "existing-id"})
     resolve_pr_number_fn = FakeResolvePrNumber(None)
     get_current_branch_fn = FakeGetCurrentBranch("feature/136-usage-panel-empty-state")
     find_open_pr_by_branch_fn = FakeFindOpenPrByBranch(
@@ -1062,7 +1105,8 @@ def test_run_agent_runner_status_in_review_skips_append_when_reference_already_p
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
         get_current_branch_fn=get_current_branch_fn,
@@ -1091,7 +1135,7 @@ def test_run_agent_runner_status_in_review_swallows_called_process_error(
     labels = FakeLabels({STATUS_IN_REVIEW})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "PRを作成しました"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 71): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 71): "existing-id"})
 
     def resolve_pr_number_fn(repo: str, issue_number: int) -> int | None:
         raise subprocess.CalledProcessError(1, ["gh", "api", "..."])
@@ -1106,7 +1150,8 @@ def test_run_agent_runner_status_in_review_swallows_called_process_error(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         resolve_pr_number_fn=resolve_pr_number_fn,
     )
@@ -1133,7 +1178,7 @@ def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_ou
     popen = FakePopenFactory(
         lines=[result_line({"result": "ok"}), "warn: something\n"], returncode=0
     )
-    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 7): "existing-id"})
 
     result = run_agent_runner(
         project,
@@ -1145,7 +1190,8 @@ def test_run_agent_runner_writes_log_file_incrementally_with_issue_number_and_ou
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -1164,7 +1210,7 @@ def test_run_agent_runner_passes_stdout_and_merged_stderr_to_popen(tmp_path: Pat
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 7): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 7): "existing-id"})
 
     run_agent_runner(
         project,
@@ -1176,7 +1222,8 @@ def test_run_agent_runner_passes_stdout_and_merged_stderr_to_popen(tmp_path: Pat
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
     )
 
@@ -1212,7 +1259,7 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1225,7 +1272,8 @@ def test_run_agent_runner_records_usage_per_model_from_model_usage_payload(
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
@@ -1265,7 +1313,7 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
         }
     )
     popen = FakePopenFactory(lines=[payload_line], returncode=1)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1278,7 +1326,8 @@ def test_run_agent_runner_records_limit_reached_with_parsed_reset_text(tmp_path:
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
@@ -1307,7 +1356,7 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=["not json\n"], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
     record_usage_fn = FakeRecordUsage()
 
     run_agent_runner(
@@ -1320,12 +1369,266 @@ def test_run_agent_runner_does_not_record_usage_when_stdout_is_not_json(tmp_path
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=tmp_path / "logs",
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         record_usage_fn=record_usage_fn,
         now=FIXED_NOW,
     )
 
     assert record_usage_fn.calls == []
+
+
+def test_extract_local_llm_usage_report_parses_used_marker() -> None:
+    """issue #86: 最終応答中の機械可読マーカー(used: true)をパースできることを確認する。"""
+    payload = {
+        "result": (
+            "## ローカルLLM活用\n"
+            "コードレビュー支援でdeepseek-coder-v2:16bを使用しました。\n\n"
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": true, "model": "deepseek-coder-v2:16b", '
+            '"task_type": "code_review_support", "note": "PRのレビュー補助"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=True,
+        model="deepseek-coder-v2:16b",
+        task_type="code_review_support",
+        note_or_reason="PRのレビュー補助",
+    )
+
+
+def test_extract_local_llm_usage_report_parses_unused_marker_with_reason() -> None:
+    payload = {
+        "result": (
+            "## ローカルLLM活用\n"
+            "該当する補助タスクが発生しなかったため使用しませんでした。\n\n"
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": false, "reason": "該当する補助タスクが発生しなかった"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=False,
+        model=None,
+        task_type=None,
+        note_or_reason="該当する補助タスクが発生しなかった",
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_marker_missing() -> None:
+    payload = {"result": "実装しました。"}
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_payload_missing() -> None:
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            None, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_marker_body_is_invalid_json() -> None:
+    """issue #78・#82・#84と同種のAI自己申告依存リスク。
+
+    壊れたJSONでも例外にせず記録をスキップすることを確認する。
+    """
+    payload = {"result": (f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\nnot valid json\n-->")}
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_local_llm_usage_report_ignores_arrow_inside_note_text() -> None:
+    """note内に`-->`という部分文字列が含まれても、JSONオブジェクトの範囲だけを
+
+    正しく抽出できることを確認する（`.*?-->`の非貪欲マッチだけだと、note内の
+    `-->`で早期に閉じタグとみなしパースが壊れてしまう）。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": true, "model": "deepseek-coder-v2:16b", '
+            '"task_type": "code_review_support", '
+            '"note": "矢印記法(-->)に言及したレビュー"}\n'
+            "-->"
+        )
+    }
+
+    report = agent_runner._extract_local_llm_usage_report(
+        payload, repo="nosetech/project-a", issue_number=1
+    )
+
+    assert report == LocalLlmUsageReport(
+        repo="nosetech/project-a",
+        issue_number=1,
+        used=True,
+        model="deepseek-coder-v2:16b",
+        task_type="code_review_support",
+        note_or_reason="矢印記法(-->)に言及したレビュー",
+    )
+
+
+def test_extract_local_llm_usage_report_returns_none_when_used_is_not_a_bool() -> None:
+    """issue #78・#82・#84と同種のAI自己申告依存リスク。
+
+    `"used": "false"`のような文字列は`bool()`変換で誤って真になるため、
+    真偽値リテラルでない場合は信頼できる自己申告とみなさずスキップすることを
+    確認する。
+    """
+    payload = {
+        "result": (
+            f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+            '{"used": "false", "reason": "..."}\n'
+            "-->"
+        )
+    }
+
+    assert (
+        agent_runner._extract_local_llm_usage_report(
+            payload, repo="nosetech/project-a", issue_number=1
+        )
+        is None
+    )
+
+
+def test_extract_ci_wait_marker_parses_pr_number() -> None:
+    """issue #173: 最終応答（またはissueコメント本文）中のCI待機マーカーから
+
+    対象PR番号を抽出できることを確認する。
+    """
+    text = (
+        "CIの完了を待っています。\n\n"
+        f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 172}}\n-->'
+    )
+
+    assert agent_runner.extract_ci_wait_marker(text) == 172
+
+
+def test_extract_ci_wait_marker_returns_none_when_marker_missing() -> None:
+    assert agent_runner.extract_ci_wait_marker("PRを作成しました。") is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_text_is_none_or_empty() -> None:
+    assert agent_runner.extract_ci_wait_marker(None) is None
+    assert agent_runner.extract_ci_wait_marker("") is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_marker_body_is_invalid_json() -> None:
+    text = f"{agent_runner.CI_WAIT_MARKER_PREFIX}\nnot valid json\n-->"
+
+    assert agent_runner.extract_ci_wait_marker(text) is None
+
+
+def test_extract_ci_wait_marker_returns_none_when_pr_number_is_not_an_int() -> None:
+    text = f'{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": "172"}}\n-->'
+
+    assert agent_runner.extract_ci_wait_marker(text) is None
+
+
+def test_run_agent_runner_records_local_llm_usage_report_from_marker(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    summary = (
+        "## ローカルLLM活用\n"
+        "コードレビュー支援でdeepseek-coder-v2:16bを使用しました。\n\n"
+        f"{agent_runner.LOCAL_LLM_USAGE_MARKER_PREFIX}\n"
+        '{"used": true, "model": "deepseek-coder-v2:16b", '
+        '"task_type": "code_review_support", "note": "PRのレビュー補助"}\n'
+        "-->"
+    )
+    payload_line = result_line({"result": summary, "is_error": False})
+    popen = FakePopenFactory(lines=[payload_line], returncode=0)
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
+    record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
+        now=FIXED_NOW,
+    )
+
+    assert record_local_llm_usage_report_fn.calls == [
+        LocalLlmUsageReport(
+            repo="nosetech/project-a",
+            issue_number=1,
+            used=True,
+            model="deepseek-coder-v2:16b",
+            task_type="code_review_support",
+            note_or_reason="PRのレビュー補助",
+        )
+    ]
+
+
+def test_run_agent_runner_does_not_record_local_llm_usage_report_when_marker_missing(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line({"result": "実装しました。", "is_error": False})
+    popen = FakePopenFactory(lines=[payload_line], returncode=0)
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
+    record_local_llm_usage_report_fn = FakeRecordLocalLlmUsageReport()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        record_local_llm_usage_report_fn=record_local_llm_usage_report_fn,
+        now=FIXED_NOW,
+    )
+
+    assert record_local_llm_usage_report_fn.calls == []
 
 
 def test_cleanup_old_agent_logs_removes_files_older_than_retention_days(tmp_path: Path) -> None:
@@ -1410,7 +1713,7 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
     labels = FakeLabels({STATUS_TODO})
     comments = FakeComments()
     popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
-    get_session = FakeGetSessionId({("nosetech/project-a", 1): "existing-id"})
+    get_session = FakeGetSessionState({("nosetech/project-a", 1): "existing-id"})
 
     run_agent_runner(
         project,
@@ -1422,10 +1725,435 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
         add_label=labels.add_label,
         remove_label=labels.remove_label,
         logs_dir=logs_dir,
-        get_session_id_fn=get_session,
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
         log_retention_days=7,
     )
 
     assert not old_log.exists()
     assert other_old_log.exists()
+
+
+# issue #176: 実行手段（(A) Claude Code CLI直利用／(B) LiteLLM Proxy経由）の
+# 切り替え。docs/basic-design.md 3-1「実行手段の切り替え」・4章参照。
+
+
+def test_build_claude_command_adds_model_flag_when_specified() -> None:
+    command = build_claude_command(
+        "hello",
+        session_id="new-id",
+        resume=False,
+        repo="nosetech/project-a",
+        issue_number=12,
+        model="ollama/qwen2.5-coder:7b",
+    )
+
+    model_index = command.index("--model")
+    assert command[model_index + 1] == "ollama/qwen2.5-coder:7b"
+
+
+def test_build_claude_command_omits_model_flag_by_default() -> None:
+    command = build_claude_command(
+        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    assert "--model" not in command
+
+
+def test_run_agent_runner_uses_litellm_env_vars_and_model_flag_when_proxy_is_healthy(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionState()
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    assert result.success is True
+    call = popen.calls[0]
+    assert "--model" in call["cmd"]
+    assert call["cmd"][call["cmd"].index("--model") + 1] == "ollama/qwen2.5-coder:7b"
+    assert call["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
+    assert call["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-test"
+    # フォールバック時の警告コメントは投稿されない。
+    assert comments.posted == [("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")]
+
+
+def test_run_agent_runner_falls_back_to_claude_code_when_litellm_proxy_unhealthy(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionState()
+
+    result = run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: False,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    assert result.success is True
+    call = popen.calls[0]
+    assert "--model" not in call["cmd"]
+    assert "ANTHROPIC_BASE_URL" not in call["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in call["env"]
+    # フォールバックした旨の警告コメントが最終結果コメントより先に投稿されること。
+    assert comments.posted[0][2].startswith(":warning: LiteLLM Proxyに接続できなかった")
+    assert comments.posted[1] == ("nosetech/project-a", 1, "Agent Runner実行結果:\n実装しました")
+
+
+def _run_litellm_proxy_session_guard_case(
+    tmp_path: Path,
+    *,
+    max_session_tokens: int | None,
+    max_session_turns: int | None,
+    existing_state: SessionState | None,
+    context_tokens: int | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[FakeComments, FakePersistSessionState, FakeClearSessionState]:
+    """issue #189: 会話量・ターン数上限ガードのテスト共通セットアップ。
+
+    transcriptファイルの探索・パースはtest_session_context_guard.pyで別途検証
+    済みのため、ここでは`agent_runner.read_latest_context_tokens`自体を差し
+    替えて注入する。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a",
+        worktree_path=str(worktree),
+        execution_mode=EXECUTION_MODE_LITELLM_PROXY,
+        litellm_model="ollama/qwen2.5-coder:7b",
+    )
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    sessions = {} if existing_state is None else {("nosetech/project-a", 1): existing_state}
+    get_session = FakeGetSessionState(sessions)
+    persist = FakePersistSessionState()
+    clear = FakeClearSessionState()
+    monkeypatch.setattr(agent_runner, "read_latest_context_tokens", lambda path: context_tokens)
+    guard_settings = SessionGuardSettings(
+        max_session_tokens=max_session_tokens, max_session_turns=max_session_turns
+    )
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=persist,
+        clear_session_state_fn=clear,
+        resolve_session_guard_settings_fn=lambda litellm_model: guard_settings,
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: None,
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    return comments, persist, clear
+
+
+def test_run_agent_runner_resets_session_when_token_threshold_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=None,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=25000,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert comments.posted[-1][2].startswith(":arrows_counterclockwise:")
+    assert "コンテキスト量が上限" in comments.posted[-1][2]
+
+
+def test_run_agent_runner_resets_session_when_turn_threshold_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=None,
+        max_session_turns=3,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=None,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert comments.posted[-1][2].startswith(":arrows_counterclockwise:")
+    assert "ターン数が上限" in comments.posted[-1][2]
+
+
+def test_run_agent_runner_persists_incremented_turn_when_thresholds_not_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=10,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=12000,
+        monkeypatch=monkeypatch,
+    )
+
+    assert clear.calls == []
+    assert persist.calls == [("nosetech/project-a", 1, SessionState("existing-id", 3))]
+    assert not any(body.startswith(":arrows_counterclockwise:") for (_, _, body) in comments.posted)
+
+
+def test_run_agent_runner_falls_back_to_turn_count_when_transcript_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """transcriptの読み取りに失敗（None）しても、ターン数上限判定で機能を継続する。"""
+    comments, persist, clear = _run_litellm_proxy_session_guard_case(
+        tmp_path,
+        max_session_tokens=24000,
+        max_session_turns=3,
+        existing_state=SessionState("existing-id", 2),
+        context_tokens=None,
+        monkeypatch=monkeypatch,
+    )
+
+    assert persist.calls == []
+    assert clear.calls == [("nosetech/project-a", 1)]
+    assert "ターン数が上限" in comments.posted[-1][2]
+
+
+def test_run_agent_runner_message_directive_overrides_project_default_and_strips_directive(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionState()
+    persisted: list[tuple] = []
+
+    run_agent_runner(
+        project,
+        1,
+        "対応してください\n/model litellm:ollama/qwen2.5-coder:7b",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+        get_execution_override_fn=lambda repo, issue_number: None,
+        persist_execution_override_fn=lambda *args: persisted.append(args),
+        check_litellm_health_fn=lambda base_url: True,
+        litellm_base_url="http://127.0.0.1:4000",
+        litellm_api_key="sk-test",
+    )
+
+    call = popen.calls[0]
+    prompt = call["cmd"][2]
+    assert "/model" not in prompt
+    assert "対応してください" in prompt
+    assert call["cmd"][call["cmd"].index("--model") + 1] == "ollama/qwen2.5-coder:7b"
+    assert persisted == [
+        ("nosetech/project-a", 1, EXECUTION_MODE_LITELLM_PROXY, "ollama/qwen2.5-coder:7b")
+    ]
+
+
+def test_run_agent_runner_strips_stray_anthropic_env_vars_in_claude_code_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LiteLLM Proxy検証作業の残骸等でオーケストレータ自身のプロセス環境に
+
+    ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKENが設定されていても、(A) Claude Code
+    CLI直利用時はそれらを子プロセスへ素通しさせないことを確認する（issue #176
+    コードレビューでの指摘。素通しさせると、LiteLLM Proxy疎通不能時のフォール
+    バック処理が意図せず無効化されうる）。
+    """
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://stray-leftover:9999")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-stray-leftover")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "実装しました"})], returncode=0)
+    get_session = FakeGetSessionState()
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+    )
+
+    call = popen.calls[0]
+    assert "ANTHROPIC_BASE_URL" not in call["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in call["env"]
+
+
+def test_build_failure_comment_includes_error_message(tmp_path: Path) -> None:
+    payload = {"type": "result", "is_error": True, "result": "API Error: 400 bad request"}
+    log_path = tmp_path / "x.log"
+
+    comment = agent_runner._build_failure_comment(payload, returncode=1, log_path=log_path)
+
+    assert "終了コード: 1" in comment
+    assert "エラー内容: API Error: 400 bad request" in comment
+    assert f"ログ: {log_path}" in comment
+
+
+def test_build_failure_comment_truncates_long_error_message(tmp_path: Path) -> None:
+    long_text = "a" * (agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS + 500)
+    payload = {"type": "result", "is_error": True, "result": long_text}
+
+    comment = agent_runner._build_failure_comment(
+        payload, returncode=1, log_path=tmp_path / "x.log"
+    )
+
+    assert "a" * agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS in comment
+    assert "a" * (agent_runner._FAILURE_COMMENT_ERROR_MAX_CHARS + 1) not in comment
+    assert "省略" in comment
+
+
+@pytest.mark.parametrize("payload", [None, {"type": "result", "is_error": True, "result": ""}])
+def test_build_failure_comment_falls_back_to_log_path_only(
+    payload: dict | None, tmp_path: Path
+) -> None:
+    log_path = tmp_path / "x.log"
+
+    comment = agent_runner._build_failure_comment(payload, returncode=2, log_path=log_path)
+
+    assert comment == f":warning: Agent Runnerが異常終了しました（終了コード: 2）。ログ: {log_path}"
+
+
+# issue #149: config/prompts.yamlの上書きが次回起動のsystem promptに反映されること。
+
+
+def _system_prompt_of(command: list[str]) -> str:
+    return command[command.index("--append-system-prompt") + 1]
+
+
+def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
+    from orchestrator.prompts import save_prompt_override
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_instruction")
+    save_prompt_override(spec, "独自ルール: {repo} #{issue_number}")
+
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "独自ルール: o/r #5" in prompt
+    assert spec.default not in prompt
+
+
+def test_build_claude_command_without_overrides_renders_placeholders() -> None:
+    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+
+    prompt = _system_prompt_of(command)
+    assert "o/r#5" in prompt
+    assert "{repo}" not in prompt
+    assert "{issue_number}" not in prompt
+    # JSON例示の波括弧は置換の影響を受けず、そのまま残る。
+    assert '{"pr_number": <PR番号（整数）>}' in prompt
+
+
+def test_build_claude_command_replaces_user_name_in_instructions(_isolated_prompts_path) -> None:
+    from orchestrator.prompts import USER_NAME_SPEC, save_prompt_override
+
+    default_prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "ユーザーの判断が必要だと自ら判断した場合" in default_prompt
+    assert "{user_name}" not in default_prompt
+
+    save_prompt_override(USER_NAME_SPEC, "山田さん")
+    prompt = _system_prompt_of(
+        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+
+    assert "山田さんの判断が必要だと自ら判断した場合" in prompt
+    assert "山田さん向けの状況報告" in prompt
+    assert "ユーザー" not in prompt
+    assert "{user_name}" not in prompt

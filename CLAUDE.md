@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. `docs/requirements.md` — 要件定義（issue #2）。想定ユーザー（プロデューサー1名、並行3〜5プロジェクト）、機能/非機能要件、MVPスコープ
 2. `docs/architecture.md` — アーキテクチャ設計（issue #3）。全体構成図、コンポーネント間通信方式、エージェント実行基盤の方針
 3. `docs/basic-design.md` — 基本設計（issue #4）。ラベルによる状態遷移の詳細、内部API仕様、Agent Runner起動仕様、通知フロー、権限設計
-4. `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` — ダッシュボードの画面設計を別セッションのClaude（Claude Design）に委譲するための、そのままコピペして使うプロンプト。`-diff` の方は初回デザイン後の差分追加依頼用で、単独では使わない
+4. `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff*.md` — ダッシュボードの画面設計を別セッションのClaude（Claude Design）に委譲するための、そのままコピペして使うプロンプト。`-diff*` の方は初回デザイン後の差分追加依頼用で、単独では使わない。画面はダッシュボードとプロジェクト別issue一覧の2つ（サイドバーで切替、issue #116）
 
 各ドキュメントは相互にMarkdownリンク・見出しアンカーで参照し合っている。一方を編集した際は、他方からの参照（アンカー文字列を含む）が壊れていないか確認すること。
 
@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `DesignSync` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 
-Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付与している（`orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION`、`docs/basic-design.md` 3-1参照）。
+Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため、上記の指示はそのまま適用される（プロジェクトごとの指示であり、Agent Runner共通の`--append-system-prompt`では付与しない。`docs/basic-design.md` 3-6参照）。
 
 ## 確定済みの設計判断（変更時は要注意）
 
@@ -51,10 +51,10 @@ Agent Runner実行時も同様の指示を `--append-system-prompt` で毎回付
 - **GitHub Issues/Projectsが正のデータストア**。独自DBは持たない。状態は単一の排他的ラベルで表現する: `status:todo` → `status:in-progress` → `needs-human-decision` → `status:in-review` → `status:closed`（issueクローズをオーケストレータがポーリングで検知し自己付与。`docs/basic-design.md` 1章参照）。この5つの状態ラベルのいずれも付与されていないissueはproducer-deskの管理対象外として扱い、ダッシュボードの判断待ち一覧・最近の活動には表示しない
 - ラベル操作は**冪等**に行う（`gh` のadd/remove-labelは非atomicなため、現在のラベルを取得してから差分のみ適用する。`basic-design.md` 1章の擬似コード参照）
 - Agent Runnerは常駐プロセスではなく **`claude -p ... --resume ... --dangerously-skip-permissions` のワンショット実行**（worktreeディレクトリはCLIフラグではなくsubprocessの`cwd`引数で指定する。実CLIに`--cwd`フラグは存在しないため、`basic-design.md` 3-1参照）。プロジェクトごとにgit worktreeで隔離し、同一プロジェクトへの同時実行は行わずFIFOキューで順次処理する
-- MVPでは **LiteLLM Proxy等のモデルルーターを導入しない**。Claude Code CLIを直接利用し、Anthropic APIの従量課金ではなく**Claude Code Pro/Maxプラン等のサブスクリプション**を使う。利用リミット到達時は追加コストを払わずリセットまで待機する
+- 自走タスク本体を含め、**実行手段をプロジェクトごとにユーザーが選択可能**とする（issue #148/#174で確定、従来の「自走タスク本体はClaude Codeのみ」という制限は撤廃）。(A) Claude Code CLI直利用＋**Claude Code Pro/Maxプラン等のサブスクリプション**、または (B) **LiteLLM Proxy経由**（Docker不使用のネイティブ構成、`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`で接続先切替）で他社プロバイダ・ローカルLLMを従量課金で利用、のいずれかを選べる。既存のAgent Runner起動方式（`claude -p`ワンショット・worktree隔離）は作り替えない。(A)選択時、利用リミット到達時は追加コストを払わずリセットまで待機する（詳細は`architecture.md` 5章、`basic-design.md` 4章参照）
 - MVPでは**Dockerを使わずネイティブ構成**（Homebrew/pip等）。PoC環境でDockerのネットワーク操作がハングする問題が確認されたため
 - コンポーネント間通信は**ポーリングに統一**（Webhookは不採用）。ローカルネットワーク内で完結させる前提のため、外部到達可能なエンドポイントを必要とする方式は避ける
-- ネットワーク・認証は**MVPでは同一LAN内アクセスのみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない。**Tailscale経由での外出先アクセス対応は別issueの将来拡張**とする（`requirements.md` 4-2、`architecture.md` 8章、`basic-design.md` 6-2参照）
+- ネットワーク・認証は**MVPでは同一LAN内アクセスのみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない。**Tailscale経由での外出先アクセスは環境変数`TAILSCALE_IP`でdashboardのbind先を切り替えて対応済み（issue #29、`LAN_IP`との同時指定は不可）**（`requirements.md` 4-2、`architecture.md` 8章、`basic-design.md` 6-2参照）
 - 通知は**Slack Incoming Webhook**（一方向）。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わない
 - AIへの指示出しは**GitHub issueコメント経由**（案A）。ダッシュボードのボタン操作・自由記述テキストボックスも、内部的にはissueコメント投稿として実装する。専用API（案B）は将来拡張
 

@@ -10,7 +10,7 @@ import re
 import subprocess
 from collections.abc import Callable
 
-from orchestrator.aggregation import IssueSummary
+from orchestrator.aggregation import IssueSummary, PrCandidate
 
 ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state"
 
@@ -30,6 +30,7 @@ RunFn = Callable[..., subprocess.CompletedProcess[str]]
 PostCommentFn = Callable[[str, int, str], None]
 CreateIssueFn = Callable[[str, str, str], int]
 ResolvePrNumberFn = Callable[[str, int], int | None]
+ListLinkedPrsFn = Callable[[str, int], list[PrCandidate]]
 MergePrFn = Callable[[str, int], None]
 CloseIssueFn = Callable[[str, int], None]
 GetPrBranchFn = Callable[[str, int], str]
@@ -37,6 +38,7 @@ DeleteBranchFn = Callable[[str, str], None]
 GetCurrentBranchFn = Callable[[str], str]
 FindOpenPrByBranchFn = Callable[[str, str], dict | None]
 AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
+GetPrStatusCheckRollupFn = Callable[[str, int], list[dict]]
 
 
 def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]:
@@ -106,50 +108,30 @@ def create_issue(repo: str, title: str, body: str, *, run: RunFn = subprocess.ru
     return json.loads(result.stdout)["number"]
 
 
-def resolve_pr_number(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> int | None:
-    """issueに紐づく（`Closes #`等でリンクされた）PR番号を解決する。
+# PR本文の「closeする意図」を示すキーワード（GitHubのclosing keywords）。直後の`#N`が
+# 数字で続く場合（`#770`等）は別issueへの参照のため除外する。`#77で`のような日本語
+# 直後の参照（issue #82のCJK境界問題）でもマッチさせるため、本文を直接検索する。
+_CLOSING_KEYWORD_PATTERN = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#{issue_number}(?!\d)"
 
-    `gh api repos/{repo}/issues/{issue_number}/timeline` のタイムラインイベントのうち、
-    `event == "cross-referenced"` かつ `source.issue.pull_request` が存在するものを
-    issueへリンクされたPRとみなす（issue #58）。複数紐づく場合は最後（最新）のものを採用する。
-
-    このcross-referenceイベントは、issue番号の直後に区切り文字（半角スペース・改行・
-    句読点等）を挟まず日本語テキストが続く形（`#77で`等）だとGitHub側の自動リンク
-    解析がissue参照として認識せず、生成されないことがある（issue #82）。日本語で
-    PR本文を書く場合に構造的に起こりやすいため、cross-referenceイベントで解決でき
-    ない場合はフォールバックとして、対象リポジトリのOPEN PR一覧のタイトル・本文を
-    直接検索する（`_resolve_pr_number_from_open_prs`）。どちらでも見つからない場合は
-    `None`を返す。
-    """
-    result = run(
-        ["gh", "api", f"repos/{repo}/issues/{issue_number}/timeline"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    events = json.loads(result.stdout)
-    pr_numbers = [
-        event["source"]["issue"]["number"]
-        for event in events
-        if event.get("event") == "cross-referenced"
-        and event.get("source", {}).get("issue", {}).get("pull_request") is not None
-    ]
-    if pr_numbers:
-        return pr_numbers[-1]
-
-    return _resolve_pr_number_from_open_prs(repo, issue_number, run=run)
+LINKED_PR_LIST_FIELDS = (
+    "number,title,url,isDraft,headRefName,baseRefName,body,closingIssuesReferences"
+)
+LINKED_PR_LIST_LIMIT = 100
 
 
-def _resolve_pr_number_from_open_prs(
+def list_linked_prs(
     repo: str, issue_number: int, *, run: RunFn = subprocess.run
-) -> int | None:
-    """OPEN PR一覧のタイトル・本文から`#{issue_number}`への言及を直接探すフォールバック。
+) -> list[PrCandidate]:
+    """issueの「対応PR」（そのissueをcloseする意図のOPEN PR）候補を返す（issue #206）。
 
-    GitHub側のcross-referenceイベント生成（issue参照パーサーのCJK境界問題）に依存
-    しないため、`#77で`のような日本語直後の参照でも検出できる。`#770`のような別issue
-    番号への誤マッチを避けるため、直後に数字が続かない形のみを対象とする。複数件
-    ヒットする場合は、`resolve_pr_number`本体（cross-reference方式）と同じ方針で
-    最も更新が新しいものを採用する。
+    対象リポジトリのOPEN PR一覧のうち、次のいずれかを満たすものを候補とする。
+    - GraphQLの`closingIssuesReferences`（PR→closeされるissue）に当該issueが含まれる
+    - PR本文に`Closes|Fixes|Resolves #N`（直後が数字でない）が含まれる
+      （issue #82のCJK境界問題でGitHub側の参照解析が効かないケースの補完）
+
+    単にPR本文・コメントで`#N`に言及しただけのPR（`cross-referenced`イベントの
+    発生源になるが対応PRとは限らない）や、マージ済み・クローズ済みPRは含めない。
+    返り値の順序は`gh pr list`の順（作成の新しい順）。
     """
     result = run(
         [
@@ -161,25 +143,47 @@ def _resolve_pr_number_from_open_prs(
             "--state",
             "open",
             "--json",
-            "number,title,body,updatedAt",
+            LINKED_PR_LIST_FIELDS,
+            "--limit",
+            str(LINKED_PR_LIST_LIMIT),
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    prs = json.loads(result.stdout)
-    reference_pattern = re.compile(rf"#{issue_number}(?!\d)")
-    matched_prs = [
-        pr
-        for pr in prs
-        if reference_pattern.search(pr.get("title", ""))
-        or reference_pattern.search(pr.get("body") or "")
-    ]
-    if not matched_prs:
-        return None
+    closing_pattern = re.compile(
+        _CLOSING_KEYWORD_PATTERN.format(issue_number=issue_number), re.IGNORECASE
+    )
+    candidates: list[PrCandidate] = []
+    for pr in json.loads(result.stdout):
+        closing_numbers = {ref.get("number") for ref in pr.get("closingIssuesReferences") or []}
+        if issue_number not in closing_numbers and not closing_pattern.search(pr.get("body") or ""):
+            continue
+        candidates.append(
+            PrCandidate(
+                number=pr["number"],
+                title=pr.get("title", ""),
+                url=pr.get("url", ""),
+                is_draft=bool(pr.get("isDraft", False)),
+                head_ref_name=pr.get("headRefName", ""),
+                base_ref_name=pr.get("baseRefName", ""),
+            )
+        )
+    return candidates
 
-    latest_pr = max(matched_prs, key=lambda pr: pr["updatedAt"])
-    return latest_pr["number"]
+
+def resolve_pr_number(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> int | None:
+    """issueの対応PRを一意に特定できる場合のみ、そのPR番号を返す（issue #206）。
+
+    `list_linked_prs`の候補がちょうど1件ならその番号、0件または2件以上なら`None`。
+    以前の「最後のcross-referenceを採用」「`updatedAt`最新を採用」は誤ったPRを
+    選びうるため廃止した。複数候補の扱い（ユーザー選択）は呼び出し元が
+    `list_linked_prs`の候補一覧を使って行う。
+    """
+    candidates = list_linked_prs(repo, issue_number, run=run)
+    if len(candidates) == 1:
+        return candidates[0].number
+    return None
 
 
 def get_current_branch(worktree_path: str, *, run: RunFn = subprocess.run) -> str:
@@ -250,6 +254,30 @@ def append_pr_issue_reference(
         text=True,
         check=True,
     )
+
+
+def get_pr_status_check_rollup(
+    repo: str, pr_number: int, *, run: RunFn = subprocess.run
+) -> list[dict]:
+    """PRのCIチェック結果一覧を取得する（`gh pr view --json statusCheckRollup`）。
+
+    issue #173: `orchestrator.ci_watcher`がCI完了待機中のissueについて、対象PRの
+    CIが完了したかどうかをポーリングで確認するために使う。返り値の各要素は
+    GitHub Checks API由来（`status`: `QUEUED`/`IN_PROGRESS`/`COMPLETED`等）と、
+    レガシーなCommit Status API由来（`state`: `PENDING`/`SUCCESS`/`FAILURE`等）の
+    いずれかの形を取り得る（`gh`のGraphQLクエリがcheck run/status contextを
+    区別せず同一フィールドに混在させて返すため）。`statusCheckRollup`が存在しない
+    （CIが1件も設定されていない）場合は空リストを返す。
+    """
+    result = run(
+        ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "statusCheckRollup"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    data = json.loads(result.stdout)
+    rollup = data.get("statusCheckRollup")
+    return rollup if isinstance(rollup, list) else []
 
 
 def merge_pr(repo: str, pr_number: int, *, run: RunFn = subprocess.run) -> None:

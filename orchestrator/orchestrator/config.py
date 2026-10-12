@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -45,11 +46,80 @@ CONFIG_PATH_ENV = "PROJECTS_CONFIG_PATH"
 # （issue #114）。
 DEFAULT_LOG_RETENTION_DAYS = 7
 
+# タイミング系設定の既定値（issue #201）。いずれもconfig/projects.yamlの同名の
+# トップレベルキーで上書きでき、未指定時は従来コード内に固定していた値を使う。
+DEFAULT_POLLING_INTERVAL_SECONDS = 5 * 60
+DEFAULT_CI_WAIT_TIMEOUT_HOURS = 6.0
+DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS = 3.0
+DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS = 300.0
+DEFAULT_ISSUE_CACHE_TTL_SECONDS = 60.0
+DEFAULT_DASHBOARD_POLL_INTERVAL_SECONDS = 30.0
+DEFAULT_SYNC_TICK_INTERVAL_SECONDS = 30.0
+
+DEFAULT_DASHBOARD_SETTINGS: dict[str, float] = {
+    "issue_cache_ttl_seconds": DEFAULT_ISSUE_CACHE_TTL_SECONDS,
+    "dashboard_poll_interval_seconds": DEFAULT_DASHBOARD_POLL_INTERVAL_SECONDS,
+    "sync_tick_interval_seconds": DEFAULT_SYNC_TICK_INTERVAL_SECONDS,
+}
+
+# 自走タスク本体の実行手段（issue #148・#174・#176、docs/basic-design.md 4章）。
+# (A) Claude Code CLI直利用＋サブスクリプション（既定）と、
+# (B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金のいずれか。
+EXECUTION_MODE_CLAUDE_CODE = "claude_code"
+EXECUTION_MODE_LITELLM_PROXY = "litellm_proxy"
+VALID_EXECUTION_MODES = frozenset({EXECUTION_MODE_CLAUDE_CODE, EXECUTION_MODE_LITELLM_PROXY})
+
 
 @dataclass
 class Project:
     repo: str
     worktree_path: str
+    # (B) LiteLLM Proxy経由選択時は、LiteLLM Proxy側のconfig.yaml（model_list）で
+    # 定義したモデルエイリアス名を保持する（`claude -p --model <litellm_model>`として
+    # 渡す。orchestrator/orchestrator/agent_runner.py参照）。
+    execution_mode: str = EXECUTION_MODE_CLAUDE_CODE
+    litellm_model: str | None = None
+    # `server.py`の`PATCH /api/projects/{repo}/settings`はディスパッチ実行中の別
+    # スレッド（`DispatchQueue`のワーカーが`run_agent_runner`経由でこのインスタンスの
+    # execution_mode/litellm_modelを読む）と並行して呼ばれうる。2フィールドを個別に
+    # 代入すると、その間に「新しいexecution_modeだが古いlitellm_model」のような
+    # 不整合な組み合わせが他スレッドから一時的に観測されうる（例:
+    # litellm_proxyへ切り替え中にlitellm_modelがまだ更新されておらず、
+    # `--model`フラグ無しでLiteLLM Proxyへディスパッチしてしまう）。このロックで
+    # `replace_execution_settings`（書き込み）と`snapshot_execution_settings`
+    # （読み込み）を同じ排他区間に入れ、両フィールドを常に一貫した組として
+    # 読み書きする（dataclassの比較・repr出力には含めない）。
+    execution_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        validate_execution_settings(self.execution_mode, self.litellm_model, context=self.repo)
+
+    def replace_execution_settings(self, execution_mode: str, litellm_model: str | None) -> None:
+        validate_execution_settings(execution_mode, litellm_model, context=self.repo)
+        with self.execution_lock:
+            self.execution_mode = execution_mode
+            self.litellm_model = litellm_model
+
+    def snapshot_execution_settings(self) -> tuple[str, str | None]:
+        with self.execution_lock:
+            return self.execution_mode, self.litellm_model
+
+
+def validate_execution_settings(
+    execution_mode: str, litellm_model: str | None, *, context: str
+) -> None:
+    if execution_mode not in VALID_EXECUTION_MODES:
+        raise ValueError(
+            f"{context}: execution_modeは{sorted(VALID_EXECUTION_MODES)}のいずれかである"
+            f"必要があります（実際の値: {execution_mode!r}）。"
+        )
+    if execution_mode == EXECUTION_MODE_LITELLM_PROXY and not litellm_model:
+        raise ValueError(
+            f"{context}: execution_modeが{EXECUTION_MODE_LITELLM_PROXY!r}の場合、"
+            "litellm_modelの指定が必須です。"
+        )
 
 
 def _load_yaml_data(config_path: Path | None) -> dict:
@@ -78,3 +148,126 @@ def load_log_retention_days(config_path: Path | None = None) -> int:
     # backupCount管理・cleanup_old_agent_logs（agent_runner.py）のmtime判定で
     # 即座に削除されうるため、最低1日は保持する（issue #114）。
     return max(1, value)
+
+
+def _load_positive_number(key: str, default: float, config_path: Path | None) -> float:
+    """トップレベルキー`key`を正の数値として読む。未指定なら`default`。
+
+    0以下・非数値は、ポーリングの忙しループやタイムアウト即発火を招くため
+    黙って補正せず、起動時エラーとして設定ミスに気付けるようにする（issue #201）。
+    """
+    raw = _load_yaml_data(config_path).get(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        raise ValueError(
+            f"config/projects.yamlの{key}は正の数値である必要があります（実際の値: {raw!r}）。"
+        )
+    return float(raw)
+
+
+def load_polling_interval_seconds(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "polling_interval_seconds", DEFAULT_POLLING_INTERVAL_SECONDS, config_path
+    )
+
+
+def load_ci_wait_timeout_hours(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "ci_wait_timeout_hours", DEFAULT_CI_WAIT_TIMEOUT_HOURS, config_path
+    )
+
+
+def load_litellm_health_timeout_seconds(config_path: Path | None = None) -> float:
+    return _load_positive_number(
+        "litellm_health_timeout_seconds", DEFAULT_LITELLM_HEALTH_TIMEOUT_SECONDS, config_path
+    )
+
+
+def load_ollama_bench_timeout_seconds(config_path: Path | None = None) -> float:
+    """ollama-bench CLIは設定ファイルが無い環境でも単体で動かせるよう、欠落時は既定値。"""
+    try:
+        return _load_positive_number(
+            "ollama_bench_timeout_seconds", DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS, config_path
+        )
+    except FileNotFoundError:
+        return DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS
+
+
+def load_dashboard_settings(config_path: Path | None = None) -> dict[str, float]:
+    """ダッシュボードへ配信する設定（`GET /api/settings`、単位は秒）。"""
+    return {
+        key: _load_positive_number(key, default, config_path)
+        for key, default in DEFAULT_DASHBOARD_SETTINGS.items()
+    }
+
+
+def _resolve_config_path(config_path: Path | None) -> Path:
+    if config_path is not None:
+        return config_path
+    return Path(os.environ.get(CONFIG_PATH_ENV, str(DEFAULT_CONFIG_PATH)))
+
+
+# `update_project_execution_settings`はconfig/projects.yaml全体を読み込んでから
+# 対象エントリのみ書き換えて丸ごと書き戻す（read-modify-write）ため、
+# `ThreadingHTTPServer`配下の別スレッドから同時に呼ばれると、両方が更新前の
+# 内容を読み込んでから別々に書き戻し、後勝ちで片方の更新が失われうる
+# （lost update）。プロセス内の同時呼び出しに限りこのロックで直列化する
+# （複数オーケストレータプロセスが同一ファイルへ書き込む運用は想定していない）。
+_PROJECTS_YAML_WRITE_LOCK = threading.Lock()
+
+
+# issue #176: ダッシュボードのプロジェクト設定UI（issue #175、本関数に依存）から
+# 実行手段のデフォルト設定を更新するための永続化API。「GitHub Issues/Projectsが
+# 正のデータストア」という確定済み設計判断（CLAUDE.md）はissueそのものの状態に
+# 関するものであり、プロジェクト単位の運用設定は元々config/projects.yaml
+# （オーケストレータのみが読む設定ファイル）で管理している（2-1章）ため、実行手段の
+# デフォルト設定もこのファイルに追加する形で一貫させる。
+def update_project_execution_settings(
+    repo: str,
+    execution_mode: str,
+    litellm_model: str | None,
+    *,
+    config_path: Path | None = None,
+) -> Project:
+    """`config/projects.yaml`の対象プロジェクトエントリの実行手段設定を更新する。
+
+    既存のYAML全体（他プロジェクトのエントリ・`log_retention_days`等）は
+    `yaml.safe_load`で読み込んだdictをそのまま使い、対象エントリのみ書き換えて
+    `yaml.safe_dump`で書き戻す（コメントは保持されないが、実データである
+    `config/projects.yaml`自体は.gitignore対象でコメント運用を前提としていない。
+    コメント付きの`.yaml.example`は本関数の対象外）。
+    """
+    validate_execution_settings(execution_mode, litellm_model, context=repo)
+    if execution_mode != EXECUTION_MODE_LITELLM_PROXY:
+        # claude_code時にlitellm_modelが誤って（クライアントの実装ミス等で）
+        # 送られてきても無視し、YAMLに不要なフィールドを残さない。
+        litellm_model = None
+
+    resolved_path = _resolve_config_path(config_path)
+
+    with _PROJECTS_YAML_WRITE_LOCK:
+        data = _load_yaml_data(resolved_path)
+        entries = data.get("projects", [])
+
+        for entry in entries:
+            if entry.get("repo") == repo:
+                entry["execution_mode"] = execution_mode
+                if litellm_model is not None:
+                    entry["litellm_model"] = litellm_model
+                else:
+                    entry.pop("litellm_model", None)
+                break
+        else:
+            raise ValueError(f"config/projects.yamlに未登録のリポジトリです: {repo}")
+
+        resolved_path.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        worktree_path = entry["worktree_path"]
+
+    return Project(
+        repo=repo,
+        worktree_path=worktree_path,
+        execution_mode=execution_mode,
+        litellm_model=litellm_model,
+    )

@@ -20,6 +20,10 @@
 #   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
 #                       `next start --hostname "$LAN_IP"` で起動する。未設定時は
 #                       全インターフェースで待ち受ける既定動作のまま）
+#   TAILSCALE_IP        外出先からTailscale経由でアクセスする場合のみ設定する
+#                       （dashboardを`next start --hostname "$TAILSCALE_IP"`で
+#                       起動する。`tailscale ip -4`で確認できる自機のTailscale
+#                       IP。LAN_IPとは同時に指定できない）
 #   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
 #            （既定: orchestrator/.venv/bin/python。.venvが無ければこのスクリプトが
 #            自動作成する。既にorchestrator/venv/bin/pythonがあればそちらを使う）
@@ -112,6 +116,16 @@ fi
 : "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
 export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
 
+# dashboardのbind先。`next start`の--hostnameは1つのアドレスしか取れないため、
+# LAN_IPとTAILSCALE_IPの同時指定は曖昧になる。黙ってどちらかを選ばず明示的に失敗
+# させる（両方から到達させたい場合は、どちらも未設定にして全インターフェースで
+# 待ち受ける既定動作を使う）。
+if [ -n "${LAN_IP:-}" ] && [ -n "${TAILSCALE_IP:-}" ]; then
+    err "LAN_IP と TAILSCALE_IP は同時に指定できません。どちらか一方のみ設定してください（両方から到達させたい場合は両方とも未設定にしてください）。"
+    exit 1
+fi
+DASHBOARD_BIND_HOST="${TAILSCALE_IP:-${LAN_IP:-}}"
+
 if [ -z "${ORCHESTRATOR_PYTHON:-}" ]; then
     if [ -x "${ORCHESTRATOR_DIR}/.venv/bin/python" ]; then
         ORCHESTRATOR_PYTHON="${ORCHESTRATOR_DIR}/.venv/bin/python"
@@ -157,8 +171,8 @@ log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}、ポート${ORCHE
 log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 (
     cd "${DASHBOARD_DIR}"
-    if [ -n "${LAN_IP:-}" ]; then
-        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${LAN_IP}" >>"${DASHBOARD_LOG}" 2>&1 &
+    if [ -n "${DASHBOARD_BIND_HOST}" ]; then
+        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${DASHBOARD_BIND_HOST}" >>"${DASHBOARD_LOG}" 2>&1 &
     else
         nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" >>"${DASHBOARD_LOG}" 2>&1 &
     fi
@@ -168,8 +182,8 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 log "起動完了"
 log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG} (fallback: ${ORCHESTRATOR_FALLBACK_LOG})  URL: http://127.0.0.1:${ORCHESTRATOR_PORT}"
 log "  dashboard:    PID $(cat "${DASHBOARD_PID_FILE}")  log: ${DASHBOARD_LOG}"
-if [ -n "${LAN_IP:-}" ]; then
-    log "  dashboard URL: http://${LAN_IP}:${DASHBOARD_PORT}"
+if [ -n "${DASHBOARD_BIND_HOST}" ]; then
+    log "  dashboard URL: http://${DASHBOARD_BIND_HOST}:${DASHBOARD_PORT}"
 else
     log "  dashboard URL: http://127.0.0.1:${DASHBOARD_PORT}"
 fi

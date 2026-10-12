@@ -12,21 +12,22 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from orchestrator.aggregation import PrCandidate
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
     DeleteBranchFn,
     GetPrBranchFn,
+    ListLinkedPrsFn,
     MergePrFn,
     PostCommentFn,
-    ResolvePrNumberFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import delete_branch as gh_delete_branch
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
+from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.github_client import merge_pr as gh_merge_pr
-from orchestrator.github_client import resolve_pr_number as gh_resolve_pr_number
 from orchestrator.labels import (
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
@@ -38,10 +39,27 @@ from orchestrator.labels import (
     resolve_instruction_label,
     transition_label,
 )
+from orchestrator.prompts import PromptSpec, load_prompt_text
 from orchestrator.worktree import SyncWorktreeFn
 from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
 
 APPROVE_DEFAULT_MESSAGE = "承認します。進めてください。"
+
+# issue #149: 判断待ちの承認時（ダッシュボードの承認はmessageを持たない）に、issue
+# コメントとして投稿される定型文。Agent Runnerへの指示としてそのまま渡るため、
+# 他のプロンプトと同様ダッシュボードから編集できるようにする
+# （必須トークン・プレースホルダは無し）。
+APPROVE_DEFAULT_MESSAGE_SPEC = PromptSpec(
+    key="approve_default_message",
+    title="判断待ち承認時の定型コメント",
+    description=(
+        "判断待ち（needs-human-decision）のissueを承認したときにissueへ投稿される"
+        "定型文。レビュー待ち（status:in-review）の承認ではコメントは投稿されず、"
+        "PRのマージのみが行われるため、この文言は使われない"
+    ),
+    default=APPROVE_DEFAULT_MESSAGE,
+    placeholders=(),  # issueコメントとしてそのまま投稿され、展開されない
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +83,22 @@ def _noop_on_stage(stage: str) -> None:
 
 class ReviewMergeError(RuntimeError):
     """レビュー承認時、対象issueに紐づくPRが見つからない場合に送出する（issue #58）。"""
+
+
+class PrSelectionRequiredError(RuntimeError):
+    """レビュー承認時、対応PRを一意に特定できずユーザーの選択が必要な場合に送出する（issue #206）。
+
+    候補が2件以上ある場合に、誤ったPRを自動マージしないために使う。`candidates`は
+    ダッシュボードの選択UIに返す現在の候補一覧。
+    """
+
+    def __init__(self, message: str, candidates: list[PrCandidate]) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
+
+class InvalidPrSelectionError(ValueError):
+    """承認リクエストの`prNumber`が現在の候補に含まれない場合に送出する（issue #206）。"""
 
 
 @dataclass
@@ -125,7 +159,7 @@ def handle_instruct(
     remove_label: RemoveLabelFn,
     post_comment: PostCommentFn,
     dispatch_queue: DispatchQueue,
-    resolve_pr_number: ResolvePrNumberFn = gh_resolve_pr_number,
+    list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
     merge_pr: MergePrFn = gh_merge_pr,
     close_issue: CloseIssueFn = gh_close_issue,
     get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
@@ -133,6 +167,7 @@ def handle_instruct(
     worktree_path: str | None = None,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     on_stage: OnStageFn = _noop_on_stage,
+    pr_number: int | None = None,
 ) -> InstructResult:
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
@@ -141,9 +176,26 @@ def handle_instruct(
         # にしか発動せず、本プロジェクトのワークフロー（`develop`へマージ）では発動しないため
         # issueが開いたまま残っていた不具合が確認された。マージ成功後はここで明示的にissueを
         # クローズする。
-        pr_number = resolve_pr_number(repo, issue_number)
-        if pr_number is None:
-            raise ReviewMergeError(f"{repo}#{issue_number} に紐づくPRが見つかりません")
+        #
+        # マージ対象は「issueをcloseする意図のOPEN PR」の候補（issue #206）から決める。
+        # `pr_number`（ユーザーが選択したPR）が指定された場合は現在の候補に含まれるかを
+        # 再検証し、含まれなければ拒否する（古い画面・なりすましからの誤マージ防止）。
+        # 未指定で候補が一意に決まらない場合は、自動マージせずユーザーの選択を求める。
+        candidates = list_linked_prs(repo, issue_number)
+        if pr_number is not None:
+            if pr_number not in {c.number for c in candidates}:
+                raise InvalidPrSelectionError(
+                    f"PR #{pr_number} は {repo}#{issue_number} の対応PR候補に含まれません"
+                )
+        elif not candidates:
+            raise ReviewMergeError(f"{repo}#{issue_number} の対応PRが見つかりません")
+        elif len(candidates) > 1:
+            raise PrSelectionRequiredError(
+                f"{repo}#{issue_number} の対応PR候補が複数あります。マージするPRを選択してください",
+                candidates,
+            )
+        else:
+            pr_number = candidates[0].number
         merge_pr(repo, pr_number)
         on_stage("merge")
         close_issue(repo, issue_number)
@@ -198,7 +250,7 @@ def handle_instruct(
         return InstructResult(action="approve", comment="", label=None, dispatched=False)
 
     if action == "approve":
-        comment = message or APPROVE_DEFAULT_MESSAGE
+        comment = message or load_prompt_text(APPROVE_DEFAULT_MESSAGE_SPEC)
     elif action == "instruct":
         if not message:
             raise ValueError("instructアクションにはmessageが必須です")

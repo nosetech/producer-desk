@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,25 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from orchestrator.config import DEFAULT_LOG_RETENTION_DAYS, REPO_ROOT, Project
+from orchestrator.config import (
+    DEFAULT_LOG_RETENTION_DAYS,
+    EXECUTION_MODE_CLAUDE_CODE,
+    EXECUTION_MODE_LITELLM_PROXY,
+    REPO_ROOT,
+    Project,
+)
+from orchestrator.execution_mode import (
+    ExecutionSettings,
+    GetExecutionOverrideFn,
+    PersistExecutionOverrideFn,
+    resolve_execution_settings,
+)
+from orchestrator.execution_override_store import (
+    get_execution_override as store_get_execution_override,
+)
+from orchestrator.execution_override_store import (
+    persist_execution_override as store_persist_execution_override,
+)
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     AppendPrIssueReferenceFn,
@@ -43,12 +62,40 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
-from orchestrator.session_store import get_session_id, persist_session_id
+from orchestrator.litellm_model_config import SessionGuardSettings
+from orchestrator.litellm_model_config import (
+    resolve_session_guard_settings as litellm_resolve_session_guard_settings,
+)
+from orchestrator.litellm_proxy import build_env_overrides as litellm_build_env_overrides
+from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
+from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
+from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
+from orchestrator.prompts import (
+    USER_NAME_SPEC,
+    PromptSpec,
+    RequiredToken,
+    load_overrides_safe,
+    render_prompt,
+    resolve_prompt_text,
+)
+from orchestrator.session_context_guard import (
+    read_latest_context_tokens,
+    resolve_transcript_path,
+)
+from orchestrator.session_store import SessionState
+from orchestrator.session_store import clear_session_state as store_clear_session_state
+from orchestrator.session_store import get_session_state as store_get_session_state
+from orchestrator.session_store import persist_session_state as store_persist_session_state
 from orchestrator.timezone import JST
 from orchestrator.usage_store import (
+    LocalLlmUsageReport,
+    RecordLocalLlmUsageReportFn,
     RecordUsageFn,
     UsageRecord,
     parse_limit_reset_text,
+)
+from orchestrator.usage_store import (
+    record_local_llm_usage_report as store_record_local_llm_usage_report,
 )
 from orchestrator.usage_store import (
     record_usage as store_record_usage,
@@ -61,8 +108,10 @@ DEFAULT_LOGS_DIR = REPO_ROOT / "logs"
 PopenFn = Callable[..., subprocess.Popen]
 NowFn = Callable[[], datetime]
 UuidFn = Callable[[], str]
-GetSessionIdFn = Callable[[str, int], str | None]
-PersistSessionIdFn = Callable[[str, int, str], None]
+GetSessionStateFn = Callable[[str, int], SessionState | None]
+PersistSessionStateFn = Callable[[str, int, SessionState], None]
+ClearSessionStateFn = Callable[[str, int], None]
+ResolveSessionGuardSettingsFn = Callable[[str | None], SessionGuardSettings]
 
 
 @dataclass
@@ -73,6 +122,61 @@ class AgentRunResult:
     log_path: Path
     session_id: str
     success: bool
+
+
+# issue #173: issue #152/#153は「CI待ちをneeds-human-decisionと能動的に誤判断する」
+# 経路のみを塞いだが、以下3点の構造的要因により同症状が別経路で再発した
+# （issue #86実行ログでの実地確認）。
+# 1. #153が指示した「sleepを挟んだポーリング」はBashツールの長時間sleepチェーン
+#    検知でブロックされ、そもそも実行できない。
+# 2. 案内される代替手段のMonitorツールにも20分のハードタイムアウトがあり、CIが
+#    それより長くかかると実際の完了を待たずに強制終了させられる。
+# 3. Monitorの強制終了を受けてAgent Runnerが（能動的にneeds-human-decisionを選ぶ
+#    のではなく）ただターンを終了すると、`run_agent_runner`のissue #78由来の
+#    強制フォールバック安全網（status:in-progressのまま正常終了＝ラベル遷移漏れと
+#    みなす設計）が、CI待ちでの意図的な終了もラベル遷移漏れと区別できず無条件に
+#    needs-human-decisionへ遷移させてしまう。
+#
+# そのため「sleepポーリングで待つ」指示そのものを撤回し、CI待ちのために意図的に
+# ターンを終了する場合はCI_WAIT_MARKER_PREFIXの機械可読マーカーを最終応答に
+# 埋め込むよう指示する方式に変更した。`run_agent_runner`はこのマーカーを検出した
+# 場合に限り強制フォールバックをスキップしstatus:in-progressを維持し
+# （`extract_ci_wait_marker`参照）、CI完了の検知・自動再開はオーケストレータの
+# ポーリング（`orchestrator.ci_watcher`）が担う。
+CI_WAIT_MARKER_PREFIX = "<!-- producer-desk:ci-wait"
+
+_CI_WAIT_MARKER_PATTERN = re.compile(
+    re.escape(CI_WAIT_MARKER_PREFIX) + r"\s*(\{.*?\})\s*-->", re.DOTALL
+)
+
+
+def extract_ci_wait_marker(text: str | None) -> int | None:
+    """本文（最終応答テキスト、またはissueコメント本文）からCI完了待機マーカーの
+
+    対象PR番号を抽出する（issue #173）。マーカーが存在しない・JSONとしてパース
+    できない・`pr_number`が整数でない場合は`None`を返す（AI自己申告への依存という
+    点でissue #78・#82・#84と同種のリスクがあるため、信頼できない入力は静かに
+    無視し、呼び出し元の正常系処理自体は壊さない）。`orchestrator.ci_watcher`が
+    後続ポーリングでissueコメント本文を対象に呼び出す際にも共用する。
+    """
+    if not text:
+        return None
+
+    match = _CI_WAIT_MARKER_PATTERN.search(text)
+    if match is None:
+        return None
+
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        logger.warning("CI完了待機マーカーをJSONとしてパースできませんでした。")
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    pr_number = data.get("pr_number")
+    return pr_number if isinstance(pr_number, int) else None
 
 
 # 状態遷移のうち、正常終了時のstatus:in-review・needs-human-decisionへの遷移は
@@ -92,9 +196,8 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "あなたはproducer-deskオーケストレータからディスパッチされたAgent Runnerとして、"
     "GitHub issue {repo}#{issue_number} に取り組んでいます。"
     "以下の状態ラベル遷移は、オーケストレータ側では自動的に行われないため、"
-    "該当する状況になったらあなた自身がghコマンドで実行してください"
-    "（docs/basic-design.md 1章「データモデル・状態遷移設計」参照）。\n"
-    "- 人間の判断が必要だと自ら判断した場合: "
+    "該当する状況になったらあなた自身がghコマンドで実行してください。\n"
+    "- {user_name}の判断が必要だと自ら判断した場合: "
     f"`gh issue edit {{issue_number}} --repo {{repo}} "
     f"--add-label {STATUS_NEEDS_HUMAN_DECISION} --remove-label {STATUS_IN_PROGRESS}`\n"
     "- プルリクエストを作成した場合: "
@@ -108,101 +211,25 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     "レビュー待ち一覧に表示されてしまいます（ラベルの有無だけで判定するため）。\n"
     "  なお、CI完了待ちのように単に時間経過を要するだけの状況は、それ自体が"
     "needs-human-decisionへ遷移すべき理由にはなりません。CIが実行中"
-    "（PENDING/IN_PROGRESS）の間はneeds-human-decisionを使わず、"
-    f"`gh pr view <PR番号> --repo {{repo}} --json statusCheckRollup` をBashツールで"
-    "sleepを挟みながら繰り返し確認するポーリングにより、このセッション内で"
-    "status:in-progressのまま待機を継続し、CI完了後に後続作業へ進んでください。\n"
+    "（PENDING/IN_PROGRESS）の間、sleepを挟んだポーリングでの待機は行わないで"
+    "ください（Bashツールの長時間sleepチェーン検知や、代替手段であるMonitorツール"
+    "の20分タイムアウトにより、実行環境上ブロックされるか実際のCI完了を待たずに"
+    "強制終了させられてしまいます）。代わりに、status:in-progressのままこのターンを"
+    "終了し、最終応答に以下の機械可読マーカーを埋め込んでください（本文とマーカーの"
+    "間は空行で区切る）。CI完了の検知と後続処理の再開はオーケストレータのポーリングが"
+    "自動的に行うため、あなた自身がCI結果が出るまで待ち続ける必要はありません。\n"
+    f"  {CI_WAIT_MARKER_PREFIX}\n"
+    '  {"pr_number": <PR番号（整数）>}\n'
+    "  -->\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
 
-# issue #33の再発防止: ダッシュボードのUI実装がClaude Designの見た目（配色・
-# アイコン等）を反映できていなかった。原因は、CLAUDE.mdが「正」とするデザイン
-# URL（claude.ai/design/...）が認証必須でWebFetchでは403になり、テキスト指示
-# だけでは色・アイコンの詳細が伝わらないこと。当初はブラウザ操作ツール
-# （mcp__claude-in-chrome__*）での目視確認のみを指示していたが、キャンバス上の
-# 要素クリックが自動操作から機能しない・プレビューが状態を持つインタラクション
-# を再現しない静的スナップショットである等の理由で細部の再現性に限界があった
-# ため、DesignSync MCPでの実ソース直接取得を主手段に切り替えた（issue #55・
-# PR #57）。DesignSyncの認証（claude.aiログインへのデザインシステムアクセス
-# 権限）は、一度`/design-login`等で許可すればmacOSキーチェーン
-# （`Claude Code-credentials`）に永続化され、同一ホスト上の以降の`claude`CLI
-# 呼び出し（本Agent Runnerを含む）から自動的に利用できるため、Agent Runner
-# 自身が実行時に認証操作を行う必要はない（運用開始前にホスト上で一度だけ人間
-# が許可しておくことが前提）。
-AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION = (
-    "ダッシュボード（dashboard/以下）の画面・コンポーネントを実装・修正する場合、"
-    "CLAUDE.mdの「画面デザインの実装ルール」に記載されたClaude DesignのURL"
-    "（https://claude.ai/design/...）について、まずDesignSync MCPツール"
-    "（get_project→list_files→get_file、projectIdはURLの/p/<uuid>部分）でデザインの"
-    "実ソース（ProducerDesk.dc.html）を直接取得し、対象コンポーネントのスタイル"
-    "オブジェクト定義（色・余白・border-radius・アニメーション等）をそのまま読み取った"
-    "うえで実装してください。テキストの設計文書（docs/design-prompt-dashboard.md等）"
-    "にはレイアウトの要件しか書かれておらず、色やアイコンの指定はデザインそのものにしか"
-    "ありません。DesignSyncが権限不足等で使えない場合はフォールバックしないでください。"
-    "プレビュー画面のクリック操作によるコード選択、ズームしての目視推測、"
-    "mcp__claude-in-chrome__* でのチャットへの問い合わせは不正確になりうるため代替に"
-    "せず、その旨を実行結果に明記してその場で作業を停止し、needs-human-decisionラベルで"
-    "人間の確認を仰いでください。DesignSyncで値を取得できた場合、実装後は"
-    "mcp__claude-in-chrome__* で実装結果とデザインのプレビューを並べて見た目が一致する"
-    "ことを確認してから完了としてください。"
-)
-
-
-# issue #59: コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった
-# 補助用途に限り、ローカルLLMを併用する（自走タスク本体は引き続きClaude Codeのみを
-# 使う。docs/requirements.md 2-5参照）。呼び出すか否か・どのモデルを使うかはAgent
-# Runner自身の裁量とするため、タスク種別ごとの推奨モデルをsystem promptで伝える
-# （docs/basic-design.md 4章参照）。
-#
-# issue #107: MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の
-# `ollama_chat`ツールはOllama REST APIレスポンスから`content`のみを取り出して返し、
-# `prompt_eval_count`/`eval_count`/`total_duration`等のメトリクスを破棄するため、
-# MCP経由の呼び出しでは利用量を`config/usage.db`に記録できない（issue #60の調査で
-# 判明、`ollama_bench.py`を手動ベンチマーク専用ツールとして追加していた）。生成本体
-# の呼び出しはOllama REST APIを直接叩き利用量を記録する`ollama-bench` CLIに一本化
-# し、本番経路でも利用量がダッシュボードに反映されるようにする。モデルの利用可否
-# 確認（メトリクス不要）はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`のままで
-# よい。
-#
-# `ollama-bench`はオーケストレータ自身のvenvにのみインストールされたコンソール
-# スクリプトで、Agent Runnerが担当するプロジェクトのworktree（producer-desk自身
-# とは別リポジトリのことが多い）のPATHには存在しない。解決済みの絶対パスを
-# system prompt本文に直接埋め込みBashツール呼び出しのたびに再現させる案は、長い
-# パスをLLMが複数回のツール呼び出しにまたがって書き写す必要があり、写し間違いで
-# 同じ「command not found」に陥りやすい。代わりに`run_agent_runner`が起動する
-# 子プロセスの環境変数`OLLAMA_BENCH_PATH`に解決済みパスを設定し（`popen`の`env=`
-# 参照）、Agent Runnerには短く安定した`$OLLAMA_BENCH_PATH`という参照だけを
-# 覚えさせる。
-AGENT_RUNNER_LOCAL_LLM_INSTRUCTION = (
-    "コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成といった、"
-    "コード変更そのものを伴わない補助的な作業では、必要に応じてローカルLLM"
-    "（Ollama）を併用してよいです。以下のタスク種別ごとの推奨モデルを参考に、"
-    "呼び出すかどうか・どのモデルを使うかはあなた自身で判断してください"
-    "（docs/basic-design.md 4章「モデルルーター設定設計」参照）。\n"
-    "- コードレビュー支援: `deepseek-coder-v2:16b`\n"
-    "- デバッグ調査の下調べ: `deepseek-coder-v2:16b`\n"
-    "- 日本語ドキュメント生成: `gemma2`\n"
-    "- 上記以外・速度優先の簡易チェック: `qwen2.5-coder:7b`\n"
-    "モデルの利用可否確認はMCP `mcp__ollama-client__ollama_list`/`ollama_ps`で構い"
-    "ませんが、実際に生成させる呼び出しは必ず環境変数`$OLLAMA_BENCH_PATH`が指す"
-    "`ollama-bench`コマンド（Bashツール）経由で行い、`--record --repo {repo} "
-    "--issue-number {issue_number}`を付与してください。あなたが作業している"
-    "プロジェクトのworktreeにはこのコマンドがPATH解決できないため、バレの"
-    "コマンド名`ollama-bench`ではなく必ず`$OLLAMA_BENCH_PATH`経由で呼び出して"
-    "ください。プロンプトは一旦ファイルに書き出してから渡しますが、他プロジェクトの"
-    "並行実行と衝突しないよう`mktemp`等で毎回一意な一時ファイルパスを生成してくだ"
-    "さい（固定パス`/tmp/prompt.txt`等の使い回しは避ける）。例: "
-    '`PROMPT_FILE=$(mktemp); "$OLLAMA_BENCH_PATH" deepseek-coder-v2:16b '
-    '"$PROMPT_FILE" --system "..." --record --repo {repo} '
-    "--issue-number {issue_number}`。MCP `mcp__ollama-client__ollama_chat`は"
-    "Ollama REST APIのトークン数・処理時間メトリクスを返さず利用量を記録できない"
-    "ため、生成呼び出しには使わないでください。\n"
-    "ただし、コード変更そのもの（自走タスク本体）にはローカルLLMの出力をそのまま "
-    "採用せず、必ずあなた自身（Claude Code）が最終的な変更を行ってください"
-    "（ローカルLLMはFunction Callingの信頼性に課題があるため。"
-    "docs/requirements.md 2-5参照）。"
-)
+# issue #86: ローカルLLM活用状況の機械可読マーカー。Agent Runner共通の指示文としては
+# 出力を指示しない（ローカルLLMの併用方針はプロジェクト側のCLAUDE.md等に記載する）が、
+# プロジェクト側の指示でこのマーカーが出力された場合に備え、パース処理は残す。
+# 記載方法はREADME.mdの「補助モデル（MCP）の使用量を記録する」参照。
+LOCAL_LLM_USAGE_MARKER_PREFIX = "<!-- producer-desk:local-llm-usage"
 
 
 # issue #43: Agent Runnerが調査結果報告等の目的で`gh issue comment`等を生で
@@ -227,15 +254,15 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
     "マーカーを付与してください（本文とマーカーの間は空行で区切る）。\n"
     f"{BOT_COMMENT_MARKER}\n"
     "このマーカーが無いと、オーケストレータのコメント監視処理があなた自身の"
-    "投稿を人間からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
-    "まいます（docs/basic-design.md 2-3「共通仕様」参照）。\n"
+    "投稿を{user_name}からの新規指示と誤認し、同一内容を無限に再ディスパッチしてし"
+    "まいます。\n"
     "なお、あなたのセッション終了時の最終応答（このメッセージへの最後の"
     "返信）は、オーケストレータが自動的に「Agent Runner実行結果:」という"
     "見出しを付けてissueコメントに投稿します。そのため、対応が完了した"
     "旨をあなた自身が重ねて完了報告コメントとして投稿する必要はありません"
     "（投稿すると同内容のコメントが2つ連続で並ぶ重複が発生します）。"
     "能動的なissueコメント投稿は、長時間かかる作業の途中経過など、最終応答を"
-    "待たずに人間へ可視化する価値がある場合に限定してください。"
+    "待たずに{user_name}へ可視化する価値がある場合に限定してください。"
 )
 
 
@@ -245,8 +272,9 @@ AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION = (
 # （PR #81で発生。resolve_pr_numberはフォールバックを備えたが、そもそも正しい
 # 記法で書けば発生しない問題のため、CLAUDE.mdの既存規約を`--append-system-prompt`
 # でも重ねて明示する）。
-AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
-    "プルリクエストを作成する場合、本文に対応するissue番号への参照を"
+AGENT_RUNNER_PR_INSTRUCTION = (
+    "プルリクエストを作成する場合は、以下に従ってください。\n"
+    "- 本文に対応するissue番号への参照を"
     "`Closes #<issue番号>`という形で、前後を空行で区切った独立した行として必ず"
     "含めてください。issue番号の直後に半角スペース・改行等の区切り文字を挟まず"
     "日本語（「で」「の」「を」等）を続けて書くと、GitHubの自動リンク解析が"
@@ -268,38 +296,113 @@ AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION = (
 # 自体はAGENT_RUNNER_COMMENT_MARKER_INSTRUCTIONに既にあるため重複させず、
 # ここでは「人間向け報告として何を書くべきか」の指示のみを追加する。
 AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
-    "前述の通りセッション終了時の最終応答はissueコメントとして人間に投稿され"
-    "ます。人間向けの状況報告であることを踏まえ、次の点を意識して書いて"
-    "ください。\n"
+    "セッション終了時の最終応答はissueコメントとして{user_name}に投稿されます。"
+    "{user_name}向けの状況報告であることを踏まえ、次の点を意識して書いてください。\n"
     "- needs-human-decisionラベルを付与した場合は、最終応答に"
-    "「何について・なぜ人間の判断が必要か」と「人間が具体的に何をすればよいか」"
+    "「何について・なぜ{user_name}の判断が必要か」と「{user_name}が具体的に何をすればよいか」"
     "（例:「PR #163をレビューし、問題なければマージしてください」"
     "「A案/B案のどちらで進めるか選んでください」）を明記してください。\n"
     "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
-    "作業手順上の実装詳細は人間向け報告に含めないでください。"
+    "作業手順上の実装詳細は{user_name}向け報告に含めないでください。"
 )
 
 
+# issue #149: 上記4つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
+# 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
+# トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
+# が依存する文字列で、編集で失われるとシステムが壊れるため保存時に検証する。
+AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
+    PromptSpec(
+        key="label_instruction",
+        title="状態ラベル遷移の指示",
+        description=(
+            "Agent Runner自身にghコマンドで状態ラベル（needs-human-decision / "
+            "status:in-review）への遷移とCI待ちマーカーの出力を行わせる指示"
+        ),
+        default=AGENT_RUNNER_LABEL_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                STATUS_NEEDS_HUMAN_DECISION,
+                "{user_name}の判断が必要な場合に自己付与するラベル名。無いと判断待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                STATUS_IN_REVIEW,
+                "作業完了時に自己付与するラベル名。無いとレビュー待ち一覧に表示されません",
+            ),
+            RequiredToken(
+                '"pr_number"',
+                "CI待ちマーカー本文のキー。無いとマーカーからPR番号を読み取れず、"
+                "CI完了後の自動再開が行われません",
+            ),
+            RequiredToken(
+                CI_WAIT_MARKER_PREFIX,
+                "CI完了待ちの機械可読マーカー。無いとCI完了後の自動再開が行われず"
+                "needs-human-decisionへ誤遷移します",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="comment_marker_instruction",
+        title="コメントマーカー付与の指示",
+        description="issueへの自己投稿コメントにボットマーカーを付与させ、最終応答の扱いを伝える指示",
+        default=AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION,
+        required_tokens=(
+            RequiredToken(
+                BOT_COMMENT_MARKER,
+                "AI自身のコメントを示すマーカー。無いとAIのコメントが{user_name}の新規指示と誤認され、"
+                "同一内容が無限に再ディスパッチされます",
+            ),
+        ),
+    ),
+    PromptSpec(
+        key="pr_instruction",
+        title="PR作成時の指示",
+        description="プルリクエスト作成時に従わせる指示（現状はPR本文のissue参照記法）",
+        default=AGENT_RUNNER_PR_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="final_message_instruction",
+        title="最終応答の書き方の指示",
+        description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
+        default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+)
+
+
+def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | None = None) -> str:
+    """`--append-system-prompt`に渡す指示文を、現在の設定で組み立てる。
+
+    起動のたびに`config/prompts.yaml`を読み直すため、保存した変更は次回の
+    Agent Runner起動分から反映される（実行中のセッションには反映されない）。
+    """
+    overrides = load_overrides_safe(prompts_path)
+    user_name = resolve_prompt_text(USER_NAME_SPEC, overrides)
+    return "\n\n".join(
+        render_prompt(
+            resolve_prompt_text(spec, overrides),
+            repo=repo,
+            issue_number=issue_number,
+            user_name=user_name,
+        )
+        for spec in AGENT_RUNNER_PROMPT_SPECS
+    )
+
+
 def build_claude_command(
-    message: str, *, session_id: str, resume: bool, repo: str, issue_number: int
+    message: str,
+    *,
+    session_id: str,
+    resume: bool,
+    repo: str,
+    issue_number: int,
+    model: str | None = None,
 ) -> list[str]:
     """docs/basic-design.md 3-1の起動パラメータに従いコマンドを組み立てる。
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
     """
-    system_prompt = (
-        AGENT_RUNNER_LABEL_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_LOCAL_LLM_INSTRUCTION.format(repo=repo, issue_number=issue_number)
-        + "\n\n"
-        + AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTION
-        + "\n\n"
-        + AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION
-    )
+    system_prompt = build_system_prompt(repo, issue_number)
     command = [
         "claude",
         "-p",
@@ -312,12 +415,17 @@ def build_claude_command(
         "--verbose",
         "--dangerously-skip-permissions",
         # `-p`（非対話モード）ではClaude in Chrome連携がデフォルト無効なため、
-        # AGENT_RUNNER_DESIGN_VERIFICATION_INSTRUCTIONでブラウザ操作ツールの
-        # 利用を指示するだけでは実際には使えない。明示的に有効化する。
+        # プロジェクト側のCLAUDE.md等でブラウザ操作ツールの利用を指示するだけでは
+        # 実際には使えない。明示的に有効化する。
         "--chrome",
         "--append-system-prompt",
         system_prompt,
     ]
+    if model is not None:
+        # issue #176: (B) LiteLLM Proxy経由選択時、LiteLLM Proxy側のconfig.yaml
+        # （model_list）で定義したモデルエイリアス名を明示的に指定する。LiteLLM
+        # Proxyはこのエイリアス名でどのプロバイダ・モデルへ中継するかを解決する。
+        command += ["--model", model]
     if resume:
         command += ["--resume", session_id]
     else:
@@ -329,7 +437,7 @@ def build_claude_command(
 # にのみインストールされたコンソールスクリプトだが、`claude -p`はAgent Runnerが
 # 担当するプロジェクトのworktree（producer-desk自身とは別リポジトリのことが多い）を
 # cwdに起動される。オーケストレータプロセスのPATHをそのまま継承させただけでは
-# `ollama-bench`がPATH解決できず、AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONの指示が
+# `ollama-bench`がPATH解決できず、プロジェクト側の指示（README.md参照）が
 # 「command not found」で失敗し利用量が一切記録されない。解決結果は
 # `run_agent_runner`が子プロセスの環境変数`OLLAMA_BENCH_PATH`に設定する
 # （system promptへの埋め込みではなく環境変数にする理由は同定数の直前コメント参照）。
@@ -556,7 +664,68 @@ def _extract_usage_records(
     return []
 
 
-# issue #144: AGENT_RUNNER_PR_ISSUE_REFERENCE_INSTRUCTIONで「PR本文にCloses #<issue番号>を
+# `note`/`reason`はAIの自由記述であり、値の中に偶然`-->`という部分文字列が
+# 含まれる可能性がある。マーカー本文を素朴に`.*?-->`で非貪欲マッチすると、
+# その位置で早期に閉じタグとみなしてしまい後続のJSONパースが壊れる恐れが
+# あるため、キャプチャ対象を`{...}`（JSONオブジェクト）自体に絞り込む。
+_LOCAL_LLM_USAGE_MARKER_PATTERN = re.compile(
+    re.escape(LOCAL_LLM_USAGE_MARKER_PREFIX) + r"\s*(\{.*?\})\s*-->", re.DOTALL
+)
+
+
+# issue #86: 最終応答（`result`）に埋め込まれた機械可読マーカーからローカルLLM
+# 活用状況の自己申告を抽出する。マーカー自体がプロジェクト側の指示
+# による自己申告に依存するため、issue #78・#82・#84と同種の「AIが指示通りに
+# 出力しない」リスクがある。マーカーが存在しない・JSONとしてパースできない場合は
+# 例外を送出せず記録をスキップする（この機能の失敗でAgent Runnerの正常終了
+# レスポンス自体を壊さないようにする）。
+def _extract_local_llm_usage_report(
+    payload: dict | None, *, repo: str, issue_number: int
+) -> LocalLlmUsageReport | None:
+    summary = _extract_summary(payload)
+    if not summary:
+        return None
+
+    match = _LOCAL_LLM_USAGE_MARKER_PATTERN.search(summary)
+    if match is None:
+        return None
+
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        logger.warning(
+            "issue %s#%d のローカルLLM活用マーカーをJSONとしてパースできませんでした。",
+            repo,
+            issue_number,
+        )
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    used = data.get("used")
+    if not isinstance(used, bool):
+        # `"used": "false"`のような文字列化された値が来ると`bool()`変換で
+        # 誤って真になる（issue #78・#82・#84と同種のAI自己申告依存リスク）。
+        # 真偽値リテラルで無ければ信頼できる自己申告とはみなさずスキップする。
+        logger.warning(
+            "issue %s#%d のローカルLLM活用マーカーの`used`が真偽値ではありません。",
+            repo,
+            issue_number,
+        )
+        return None
+
+    return LocalLlmUsageReport(
+        repo=repo,
+        issue_number=issue_number,
+        used=used,
+        model=data.get("model"),
+        task_type=data.get("task_type"),
+        note_or_reason=data.get("note") or data.get("reason"),
+    )
+
+
+# issue #144: AGENT_RUNNER_PR_INSTRUCTIONで「PR本文にCloses #<issue番号>を
 # 含めること」を指示しているが、これはAIの自己申告に委ねる運用であり、指示が守られず
 # PR本文にissue番号への言及が一切無い場合（issue #82が対策したcross-referenceイベント
 # 未生成のケースとは異なり、そもそも言及自体が存在しないため`resolve_pr_number`の
@@ -624,6 +793,9 @@ def _ensure_pr_issue_reference(
         )
 
 
+_FAILURE_COMMENT_ERROR_MAX_CHARS = 2000
+
+
 # issue #146: プロセスが異常終了（returncode != 0）した際、原因を問わず一律で
 # 「ログを見てください」という文面を投稿していた。この手の異常終了は大抵の場合
 # APIリミット到達（429）が原因であり、`_extract_usage_records`（issue #60）が
@@ -642,7 +814,18 @@ def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: P
             f"（{error_info.limit_reset_text}）"
         )
 
-    return f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。ログ: {log_path}"
+    base = f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。"
+    # issue #190: ログパスだけでは何が起きたか分からないため、取得できていれば
+    # `result`のエラーメッセージ本文をコメントに含める（長大な場合は切り詰める）。
+    error_text = (error_info.result_text or "").strip()
+    if error_text:
+        if len(error_text) > _FAILURE_COMMENT_ERROR_MAX_CHARS:
+            error_text = (
+                error_text[:_FAILURE_COMMENT_ERROR_MAX_CHARS] + "…（省略、詳細はログを参照）"
+            )
+        return f"{base}\n\nエラー内容: {error_text}\n\nログ: {log_path}"
+
+    return f"{base}ログ: {log_path}"
 
 
 def run_agent_runner(
@@ -656,9 +839,16 @@ def run_agent_runner(
     add_label: AddLabelFn = gh_add_label,
     remove_label: RemoveLabelFn = gh_remove_label,
     logs_dir: Path = DEFAULT_LOGS_DIR,
-    get_session_id_fn: GetSessionIdFn = get_session_id,
-    persist_session_id_fn: PersistSessionIdFn = persist_session_id,
+    get_session_state_fn: GetSessionStateFn = store_get_session_state,
+    persist_session_state_fn: PersistSessionStateFn = store_persist_session_state,
+    clear_session_state_fn: ClearSessionStateFn = store_clear_session_state,
+    resolve_session_guard_settings_fn: ResolveSessionGuardSettingsFn = (
+        litellm_resolve_session_guard_settings
+    ),
     record_usage_fn: RecordUsageFn = store_record_usage,
+    record_local_llm_usage_report_fn: RecordLocalLlmUsageReportFn = (
+        store_record_local_llm_usage_report
+    ),
     now: NowFn = lambda: datetime.now(UTC),
     new_uuid: UuidFn = lambda: str(uuid.uuid4()),
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
@@ -666,21 +856,35 @@ def run_agent_runner(
     get_current_branch_fn: GetCurrentBranchFn = gh_get_current_branch,
     find_open_pr_by_branch_fn: FindOpenPrByBranchFn = gh_find_open_pr_by_branch,
     append_pr_issue_reference_fn: AppendPrIssueReferenceFn = gh_append_pr_issue_reference,
+    get_execution_override_fn: GetExecutionOverrideFn = store_get_execution_override,
+    persist_execution_override_fn: PersistExecutionOverrideFn = store_persist_execution_override,
+    check_litellm_health_fn: Callable[[str], bool] = litellm_is_healthy,
+    build_litellm_env_fn: Callable[..., dict[str, str]] = litellm_build_env_overrides,
+    litellm_base_url: str | None = None,
+    litellm_api_key: str | None = None,
 ) -> AgentRunResult:
     """Claude Code CLIをワンショット実行し、結果をissueコメント・ログに反映する。
 
-    セッションはissue単位（`get_session_id_fn`/`persist_session_id_fn`が
+    セッションはissue単位（`get_session_state_fn`/`persist_session_state_fn`が
     `(repo, issue_number)`をキーに管理、[[docs/basic-design.md 3-1]]参照）で
     保持する。プロジェクト単位で1つのセッションを共有すると、あるissueが
     判断待ちで止まっている間に別issueが同じセッションで進行し、後から前者を
     resumeした際に後者issueの文脈を引きずってしまう（issue #32）。
+
+    issue #189: `execution_mode: litellm_proxy`かつ、解決した`litellm_model`に
+    対して`config/litellm_config.yaml`側で`max_session_tokens`/
+    `max_session_turns`が設定されている場合（`resolve_session_guard_settings_fn`
+    参照）、実行完了後に会話量・ターン数を評価し、閾値を超えていれば
+    `clear_session_state_fn`でセッション状態を破棄する。次回ディスパッチは
+    `get_session_state_fn`が`None`を返すため、Claude Code CLI自身の
+    auto-compactionに頼らず新規セッションとして開始される。
     """
     # ログファイル名はJST基準（issue #114）。`now`自体は既定でUTCを返す
     # （record_usage_fn側のrecorded_at契約を維持するため、`now()`の戻り値
     # そのものは変更せずJSTへ変換するだけに留める）。
     timestamp = now().astimezone(JST).strftime("%Y%m%dT%H%M%S")
     worktree_path = Path(project.worktree_path)
-    existing_session_id = get_session_id_fn(project.repo, issue_number)
+    existing_state = get_session_state_fn(project.repo, issue_number)
 
     if not worktree_path.is_dir():
         error_message = f"worktreeが見つかりません: {project.worktree_path}"
@@ -704,25 +908,91 @@ def run_agent_runner(
             issue_number=issue_number,
             exit_code=-1,
             log_path=log_path,
-            session_id=existing_session_id or "",
+            session_id=existing_state.session_id if existing_state else "",
             success=False,
         )
 
-    resume = existing_session_id is not None
-    session_id = existing_session_id or new_uuid()
+    resume = existing_state is not None
+    session_id = existing_state.session_id if existing_state else new_uuid()
+    turn_number = (existing_state.turn_count if existing_state else 0) + 1
+
+    # issue #176: 実行手段（(A) Claude Code CLI直利用／(B) LiteLLM Proxy経由）を
+    # 都度上書き指令→issue単位の保存済み上書き→プロジェクトのデフォルト設定の
+    # 優先順位で解決する（docs/basic-design.md 4章）。`message`から都度上書き
+    # ディレクティブ（`/model ...`）を取り除いたものを実際のプロンプトとして使う。
+    execution_settings, message = resolve_execution_settings(
+        project,
+        project.repo,
+        issue_number,
+        message,
+        get_execution_override_fn=get_execution_override_fn,
+        persist_execution_override_fn=persist_execution_override_fn,
+    )
+
+    resolved_base_url = (
+        litellm_base_url if litellm_base_url is not None else litellm_resolve_base_url()
+    )
+    resolved_api_key = litellm_api_key if litellm_api_key is not None else litellm_resolve_api_key()
+
+    if (
+        execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        and not check_litellm_health_fn(resolved_base_url)
+    ):
+        # LiteLLM Proxyプロセスが落ちている・応答しない場合は(A) Claude Code CLI
+        # 直利用へ自動フォールバックする（needs-human-decisionへは倒さない。
+        # LiteLLM Proxyは実行手段の選択肢の一つに過ぎず、プロセスの一時的な不調で
+        # 自走タスクの進行自体を止める必要はないため。永続化済みの都度上書き・
+        # プロジェクト設定自体は変更せず、次回ディスパッチでは改めてLiteLLM Proxy
+        # への接続を試みる）。
+        logger.warning(
+            "%s#%d: LiteLLM Proxy(%s)が応答しないため、Claude Code CLI直利用に"
+            "フォールバックします。",
+            project.repo,
+            issue_number,
+            resolved_base_url,
+        )
+        post_comment(
+            project.repo,
+            issue_number,
+            ":warning: LiteLLM Proxyに接続できなかったため、今回はClaude Code CLI"
+            "直利用にフォールバックして実行します。",
+        )
+        execution_settings = ExecutionSettings(
+            execution_mode=EXECUTION_MODE_CLAUDE_CODE, litellm_model=None
+        )
+
+    env_overrides = build_litellm_env_fn(
+        execution_settings, base_url=resolved_base_url, api_key=resolved_api_key
+    )
+
     command = build_claude_command(
         message,
         session_id=session_id,
         resume=resume,
         repo=project.repo,
         issue_number=issue_number,
+        model=execution_settings.litellm_model
+        if execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY
+        else None,
     )
 
     log_path = _init_log_file(project.repo, issue_number, logs_dir=logs_dir, timestamp=timestamp)
-    # issue #107: AGENT_RUNNER_LOCAL_LLM_INSTRUCTIONが参照する`$OLLAMA_BENCH_PATH`を
+    # issue #107: プロジェクト側の指示が参照する`$OLLAMA_BENCH_PATH`を
     # 子プロセス（`claude -p`、およびそのBashツールが起動するシェル）の環境変数として
     # 渡す。PATH自体は書き換えず、この1変数だけを追加する。
-    env = {**os.environ, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path()}
+    #
+    # issue #176: (A) Claude Code CLI直利用時（LiteLLM Proxy疎通不能時のフォール
+    # バックを含む）は、オーケストレータ自身のプロセス環境に`ANTHROPIC_BASE_URL`/
+    # `ANTHROPIC_AUTH_TOKEN`が（手動検証の残骸等で）たまたま設定されていても、
+    # それらを子プロセスへ素通しせず必ず除去する。これらのキーは`os.environ`から
+    # 継承させず、`env_overrides`（(B)選択時のみ設定される）経由でのみ与えられる
+    # ようにすることで、フォールバック処理が意図せず無効化される事態を防ぐ。
+    base_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env = {**base_env, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(), **env_overrides}
     process = popen(
         command,
         cwd=str(worktree_path),
@@ -735,14 +1005,17 @@ def run_agent_runner(
     stdout_text = _stream_process_output(process, log_path)
     returncode = process.wait()
 
-    if not resume:
-        persist_session_id_fn(project.repo, issue_number, session_id)
-
     success = returncode == 0
     payload = _parse_result_payload(stdout_text)
     usage_records = _extract_usage_records(payload, repo=project.repo, issue_number=issue_number)
     if usage_records:
         record_usage_fn(usage_records, now=now)
+
+    local_llm_usage_report = _extract_local_llm_usage_report(
+        payload, repo=project.repo, issue_number=issue_number
+    )
+    if local_llm_usage_report is not None:
+        record_local_llm_usage_report_fn(local_llm_usage_report, now=now)
 
     if success:
         summary = (
@@ -759,16 +1032,23 @@ def run_agent_runner(
         # （needs-human-decision）」のいずれかに到達している設計のため、
         # status:in-progressのまま変化がなければ常に異常とみなし、
         # needs-human-decisionへ強制的にフォールバックさせる。
+        #
+        # issue #173: ただし、CI完了待ちのためAGENT_RUNNER_LABEL_INSTRUCTIONの
+        # 指示通り意図的にstatus:in-progressのまま終了したケース（最終応答に
+        # CI_WAIT_MARKER_PREFIXマーカーが含まれる）は、上記の「ラベル遷移漏れ」
+        # とは区別し、この強制フォールバックをスキップする。CI完了の検知と
+        # 後続処理の自動再開はorchestrator.ci_watcherのポーリングに委ねる。
         current_labels = get_labels(project.repo, issue_number)
         if STATUS_IN_PROGRESS in current_labels:
-            transition_label(
-                project.repo,
-                issue_number,
-                STATUS_NEEDS_HUMAN_DECISION,
-                get_labels=get_labels,
-                add_label=add_label,
-                remove_label=remove_label,
-            )
+            if extract_ci_wait_marker(summary) is None:
+                transition_label(
+                    project.repo,
+                    issue_number,
+                    STATUS_NEEDS_HUMAN_DECISION,
+                    get_labels=get_labels,
+                    add_label=add_label,
+                    remove_label=remove_label,
+                )
         elif STATUS_IN_REVIEW in current_labels:
             _ensure_pr_issue_reference(
                 project.repo,
@@ -789,6 +1069,59 @@ def run_agent_runner(
             get_labels=get_labels,
             add_label=add_label,
             remove_label=remove_label,
+        )
+
+    # issue #189: (B) LiteLLM Proxy経由の小コンテキストローカルLLMは、Claude Code
+    # CLI自身のauto-compactionに頼れない（発火が実際のモデル容量より大幅に遅れる）。
+    # 正常終了した回に限り会話量・ターン数を評価し、閾値超過時は次回ディスパッチから
+    # セッションをリセットする（`clear_session_state_fn`でセッション状態を破棄し、
+    # 次回`get_session_state_fn`がNoneを返すことで自然に新規セッションになる）。
+    reset_session = False
+    if execution_settings.execution_mode == EXECUTION_MODE_LITELLM_PROXY and success:
+        # issue #189フォローアップ: max_session_tokens/max_session_turnsは
+        # 「そのモデルがどれだけの会話量を扱えるか」という、litellm_params.num_ctx
+        # と同じ関心事のため、プロジェクト単位のconfig/projects.yamlではなく
+        # num_ctxと同じconfig/litellm_config.yamlのmodel_info（モデル単位）で
+        # 管理する（resolve_session_guard_settings_fn参照）。
+        guard_settings = resolve_session_guard_settings_fn(execution_settings.litellm_model)
+        context_tokens = read_latest_context_tokens(
+            resolve_transcript_path(worktree_path, session_id)
+        )
+        token_exceeded = (
+            guard_settings.max_session_tokens is not None
+            and context_tokens is not None
+            and context_tokens >= guard_settings.max_session_tokens
+        )
+        turn_exceeded = (
+            guard_settings.max_session_turns is not None
+            and turn_number >= guard_settings.max_session_turns
+        )
+        reset_session = token_exceeded or turn_exceeded
+        if reset_session:
+            if token_exceeded:
+                reason = (
+                    f"コンテキスト量が上限（{context_tokens}/{guard_settings.max_session_tokens}"
+                    "トークン）に達した"
+                )
+            else:
+                reason = (
+                    f"ターン数が上限（{turn_number}/{guard_settings.max_session_turns}回）に達した"
+                )
+            post_comment(
+                project.repo,
+                issue_number,
+                f":arrows_counterclockwise: セッションの{reason}ため、"
+                "次回の指示ではセッションをリセットして新規に開始します。"
+                "これまでの進捗は上記コメント・issue履歴を参照してください。",
+            )
+
+    if reset_session:
+        clear_session_state_fn(project.repo, issue_number)
+    else:
+        persist_session_state_fn(
+            project.repo,
+            issue_number,
+            SessionState(session_id=session_id, turn_count=turn_number),
         )
 
     cleanup_old_agent_logs(logs_dir / project.repo, log_retention_days, now)

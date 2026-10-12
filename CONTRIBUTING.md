@@ -56,7 +56,7 @@ hostname -I
 LAN_IP=192.168.1.xx npm run dev:lan
 ```
 
-同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale対応（別issue、`docs/requirements.md` 4-2参照）が必要になる。
+同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale経由（`TAILSCALE_IP` に自機のTailscale IPを設定し `npm run dev:tailscale` / `npm run start:tailscale`、[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照。`LAN_IP`とは同時に指定できない）を使う。
 
 なお、オーケストレータの内部API（後述）はダッシュボードのサーバーサイドから同一マシン上で呼び出す構成のため、LANに公開する必要は無く `127.0.0.1` のままでよい。
 
@@ -94,7 +94,25 @@ cp config/projects.yaml.example config/projects.yaml
   --projects-config-path="$(pwd)/config/projects.yaml"
 ```
 
-### 4. Slack Webhook URL等のsecrets
+### 4. LiteLLM Proxyのセットアップ（任意、issue #176）
+
+`config/projects.yaml`のいずれかのプロジェクトで`execution_mode: litellm_proxy`（[`docs/basic-design.md` 4章](./docs/basic-design.md#4-モデルルーター設定設計)）を使う場合のみ必要。既定の`claude_code`のみを使う運用では不要。
+
+[`config/litellm_config.yaml.example`](./config/litellm_config.yaml.example) をコピーして `config/litellm_config.yaml` を作成し、`model_list`にプロジェクトごとのモデルエイリアスを定義する。
+
+```bash
+cp config/litellm_config.yaml.example config/litellm_config.yaml
+```
+
+```bash
+./bin/litellm_proxy_start.sh
+```
+
+初回起動時、オーケストレータ本体とは別の専用venv（`litellm_proxy/.venv`）を自動作成し、`litellm[proxy]`と`orchestrator`パッケージ（カスタムコールバックが`usage_store.py`をインポートするため）をインストールしてから起動する（ネットワークアクセスが発生する）。既定では`http://127.0.0.1:4000`で待ち受ける（環境変数`LITELLM_PROXY_PORT`で上書き可）。停止する場合は`./bin/litellm_proxy_stop.sh`を実行する。
+
+常時起動しておきたい場合は、[`dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example`](./dist/scripts/com.nosetech.producer-desk.litellm-proxy.plist.example)を参考にlaunchdのLaunchAgentとして常駐化できる。producer-desk本体（オーケストレータ・ダッシュボード）についても同様に常駐化できる（後述「日常運用」の「常時起動（macOS launchd）」参照）。
+
+### 5. Slack Webhook URL等のsecrets
 
 Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変数 `SLACK_WEBHOOK_URL` またはローカルのsecretsファイル（[`orchestrator/.env.example`](./orchestrator/.env.example) をコピーして作成する `orchestrator/.env` 等、`.gitignore` 対象）で管理する（[`docs/basic-design.md` 5-1](./docs/basic-design.md#5-1-slack設定手順)）。未設定の場合、オーケストレータは判断待ち発生時のSlack通知処理を単にスキップする（起動エラーにはならない）。`python -m orchestrator.main` を直接起動する開発時のフローでは`.env`は自動で読み込まれないため、`set -a; source orchestrator/.env; set +a` 等で自分でexportすること（`bin/start.sh` を使う場合は起動時に自動で読み込まれる。後述）。
 
@@ -139,6 +157,19 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 
 - PIDファイルを元にそれぞれのプロセスへ`SIGTERM`を送る。10秒待っても終了しない場合は`SIGKILL`で強制終了する
 - PIDファイルが無い、または記録されたプロセスが既に終了している場合はその旨を表示してエラー終了する（片方だけ起動していた場合、起動している側だけを正しく停止する）
+
+### 常時起動（macOS launchd）
+
+`bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、LiteLLM Proxy（上記「LiteLLM Proxyのセットアップ」）と同様にlaunchdのLaunchAgentとして常駐化できる。orchestrator・dashboardの2プロセス構成のため、以下2つのplistサンプルの両方を登録する。**`bin/start.sh`/`bin/stop.sh`とは併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。
+
+- [`dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example`](./dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example)
+- [`dist/scripts/com.nosetech.producer-desk.dashboard.plist.example`](./dist/scripts/com.nosetech.producer-desk.dashboard.plist.example)
+
+基本手順（`~/Library/LaunchAgents/`へのコピー、`/path/to/producer-desk`・`/path/to/node`・`PATH`・`.env`由来の環境変数の書き換え、`launchctl load -w`/`unload`）は配布パッケージ向けの[README.mdの「本体の常時起動」](./README.md#本体の常時起動macos-launchd任意)と共通で、各plist冒頭のコメントにも詳細がある（コピー元のみ`scripts/`ではなく`dist/scripts/`に読み替える）。git clone環境では以下の差分に注意すること。
+
+- 事前に`./bin/start.sh`を一度手動実行してから`./bin/stop.sh`で停止し、`orchestrator/.venv`とdashboardのビルド成果物（`.next`）を作成しておく（`bin/start.sh`が`npm ci && npm run build`とvenv作成の両方を行うため、別途ビルドは不要）。`config/projects.yaml`も作成済みであること
+- `com.nosetech.producer-desk.dashboard.plist`の既定値は配布パッケージ同梱のビルド済み`dashboard/server.js`（Next.js standalone出力）を前提にしているが、git clone環境にはこのファイルが無い（standalone出力の組み立てはリリースCIのみが行う）。`ProgramArguments`を`["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start", "-p", "3000"]`に変更し、`EnvironmentVariables`から`PORT`キーを削除する。LAN公開したい場合は`"-H", "192.168.1.xx"`を引数に追加する（`next start`は`HOSTNAME`環境変数を読まない）
+- `com.nosetech.producer-desk.orchestrator.plist`の`ProgramArguments`（`orchestrator/.venv/bin/orchestrator`）は`pip install -e .`によるeditable installでも同じパスで動作するため読み替え不要。ただし`bin/start.sh`と異なり`orchestrator/venv`（旧命名）へのフォールバックは無い
 
 ### 運用インスタンスと開発インスタンスの同時起動
 

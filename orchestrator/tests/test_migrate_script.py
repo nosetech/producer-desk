@@ -37,7 +37,10 @@ def _make_old_root(tmp_path: Path) -> Path:
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE usage_records (id INTEGER PRIMARY KEY, repo TEXT)")
         conn.execute("INSERT INTO usage_records (repo) VALUES ('nosetech/project-a')")
-        conn.execute("PRAGMA user_version = 1")
+        # dist/scripts/migrate.shのEXPECTED_USAGE_DB_SCHEMA_VERSION
+        # （orchestrator/orchestrator/usage_store.pyのSCHEMA_VERSIONと同じ値）と
+        # 一致させる。
+        conn.execute("PRAGMA user_version = 2")
 
     logs_dir = old_root / "logs" / "nosetech-project-a"
     logs_dir.mkdir(parents=True)
@@ -137,6 +140,24 @@ def test_migrate_aborts_on_incompatible_usage_db_schema_version(tmp_path: Path) 
     assert not (new_root / "config" / "usage.db").exists()
     # usage.dbより前段の項目（projects.yaml等）は失敗と無関係に移行済みであること
     assert (new_root / "config" / "projects.yaml").exists()
+
+
+def test_migrate_copies_usage_db_from_previous_schema_version(tmp_path: Path) -> None:
+    """issue #86: 直前リリースのSCHEMA_VERSION(1)のDBもコピー可能であることを確認する。
+
+    新バージョンのusage_store.py側で初回接続時に自動でEXPECTED_USAGE_DB_SCHEMA_VERSION
+    へ引き上げられるため、EXPECTED_USAGE_DB_SCHEMA_VERSIONと完全一致しない
+    バージョンでも、対応済みバージョンの範囲内であればコピー自体は成功する。
+    """
+    old_root = _make_old_root(tmp_path)
+    with sqlite3.connect(old_root / "config" / "usage.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root))
+
+    assert result.returncode == 0, result.stderr
+    assert (new_root / "config" / "usage.db").exists()
 
 
 def test_migrate_rejects_same_source_and_destination(tmp_path: Path) -> None:

@@ -6,9 +6,13 @@ import {
   statusCountMeta,
   statusMeta,
 } from "@/lib/status";
+import { useRouter } from "next/navigation";
 import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
+import { WarningIcon } from "./Icons";
+import RefreshButton from "./RefreshButton";
+import SyncAgo from "./SyncAgo";
 import styles from "./ProjectStatusRow.module.css";
 
 // 件数チップの表示順（0件のキーは表示しない、Claude Designの`SLK`に対応）。
@@ -20,21 +24,20 @@ const COUNT_ORDER: (keyof StatusCounts)[] = [
   "untagged",
 ];
 
-function WarningIcon({ size }: { size: number }) {
+function GearIcon() {
   return (
     <svg
-      width={size}
-      height={size}
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2.3"
+      strokeWidth="2.1"
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
-      <path d="M12 9v4" />
-      <path d="M12 17h.01" />
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 4.7a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.03a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1.03Z" />
     </svg>
   );
 }
@@ -60,16 +63,29 @@ function PlusIcon() {
 export default function ProjectStatusRow({
   projects,
   onQuickCreate,
+  onOpenSettings,
+  refreshing,
+  onRefreshAll,
 }: {
   projects: ProjectStatus[];
   onQuickCreate: (repo: string) => void;
+  onOpenSettings: (repo: string) => void;
+  refreshing: boolean;
+  onRefreshAll: () => void;
 }) {
+  const router = useRouter();
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
         <span className={styles.sectionTitle}>
           {projects.length} プロジェクト
         </span>
+        <RefreshButton
+          size="sm"
+          refreshing={refreshing}
+          title="全プロジェクトの情報を再取得"
+          onClick={onRefreshAll}
+        />
       </div>
       <div className={styles.row}>
         {projects.map((project) => {
@@ -78,21 +94,30 @@ export default function ProjectStatusRow({
             (key) => project.counts[key] > 0,
           );
           return (
-            <div key={project.repo} className={styles.chip}>
+            <div
+              key={project.repo}
+              className={styles.chip}
+              role="link"
+              tabIndex={0}
+              title={`${project.repo}のissue一覧を開く`}
+              onClick={() => router.push(`/projects/${project.repo}`)}
+              onKeyDown={(e) => {
+                if (e.target === e.currentTarget && e.key === "Enter")
+                  router.push(`/projects/${project.repo}`);
+              }}
+            >
               <div className={styles.chipTop}>
                 <span
                   className={styles.dot}
                   style={{ backgroundColor: `var(${meta.colorVar})` }}
                 />
-                <a
-                  className={styles.repoName}
-                  title={project.repo}
-                  href={`https://github.com/${project.repo}/issues`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
+                <span className={styles.repoName} title={project.repo}>
                   {shortRepoName(project.repo)}
-                </a>
+                </span>
+                <SyncAgo
+                  fetchedAt={project.fetchedAt}
+                  className={styles.sync}
+                />
                 {project.isOrphaned && (
                   <span
                     className={styles.orphanBadge}
@@ -104,12 +129,36 @@ export default function ProjectStatusRow({
                 <button
                   type="button"
                   className={styles.addButton}
-                  onClick={() => onQuickCreate(project.repo)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQuickCreate(project.repo);
+                  }}
                   aria-label={`${project.repo}に新規タスクを作成`}
                   title="このプロジェクトに新規タスクを作成"
                 >
                   <PlusIcon />
                 </button>
+                <button
+                  type="button"
+                  className={styles.addButton}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSettings(project.repo);
+                  }}
+                  aria-label={`${project.repo}の実行手段・モデルを設定`}
+                  title={`${project.repo}の実行手段・モデルを設定`}
+                >
+                  <GearIcon />
+                </button>
+                {project.executionSettings.execution_mode ===
+                  "litellm_proxy" && (
+                  <span
+                    className={styles.runnerTag}
+                    title={`LiteLLM Proxy経由（${project.executionSettings.litellm_model ?? ""}）`}
+                  >
+                    PROXY
+                  </span>
+                )}
               </div>
               <div className={styles.counts}>
                 {countKeys.map((key) => {

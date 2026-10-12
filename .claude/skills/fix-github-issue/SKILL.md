@@ -1,7 +1,7 @@
 ---
 name: fix-github-issue
 description: github issueを対応する
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
@@ -31,7 +31,7 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
   - マスターファイル（`ProducerDesk.dc.html`）へのマージは人間がClaude Design上でレビュー・承認した後に行う操作であり、本スキルの範囲では実施しない
 - 実装後は `mcp__claude-in-chrome__*` で完成品と（マスターではなく）作業ブランチ名のデザインファイルのプレビューを並べて見た目が一致することを確認する
 
-3.6. **ローカルLLMの補助的活用**
+  3.6. **ローカルLLMの補助的活用**
 
 - コード変更そのものを伴わない補助的な作業（コードレビュー支援・デバッグ調査の下調べ・日本語ドキュメント生成）では、必要に応じてローカルLLM（Ollama）を併用してよい（PR #61 / docs/basic-design.md 4章「モデルルーター設定設計」と同じ方針。Agent Runner本体への実装は `orchestrator/orchestrator/agent_runner.py` の `AGENT_RUNNER_LOCAL_LLM_INSTRUCTION` 参照）。モデルの利用可否確認はMCP `ollama-client`でよいが、実際の生成呼び出しは環境変数`$OLLAMA_BENCH_PATH`が指す`ollama-bench`コマンド（オーケストレータが解決済みの絶対パスを子プロセスの環境変数として渡す。`--record --repo <repo> --issue-number <issue番号>`付き）経由でOllama REST APIを直接呼び出す。MCP `mcp__ollama-client__ollama_chat`はトークン数・処理時間メトリクスを返さず`config/usage.db`に利用量を記録できないため使わない（issue #107）
 - タスク種別ごとの推奨モデル:
@@ -60,9 +60,19 @@ GitHub issueを分析して対応してください: issue番号 $ARGUMENTS
 7. **CI 完了待機と確認**
 
 - GitHub Actions による CI が実行される
-- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）。**CI実行中であること自体は人間の判断が必要な状況ではない。** `PENDING`/`IN_PROGRESS`の間はneeds-human-decisionへ遷移させず、Bashツールで`sleep`を挟んで再度`statusCheckRollup`を確認するポーリングループ等により、同一セッション内で待機を継続しながら`status:in-progress`のまま処理を続ける
-- **CI が SUCCESS で完了したことを確認してから次へ進む**
-- エラーがあれば、原因を調査して修正する
+- CI 完了を待つ（`gh pr view <PR-number> --json statusCheckRollup` で確認）。**CI実行中であること自体は人間の判断が必要な状況ではない。**
+- **まず、このセッションがオーケストレータから起動されたAgent Runnerかを判定する。** 以下の機械可読マーカーは、Agent Runnerの最終応答がissueコメントとして投稿され、オーケストレータ（`ci_watcher`）が`status:in-progress`のissueの最新コメントから読み取る経路でのみ意味を持つ。ユーザーと直接対話しているセッション（`/fix-github-issue`をCLIから手動実行した場合等）で返信に書いても、どこにも投稿されず何も起きないノイズになるため**付けない**。
+  - Agent Runnerである: システムプロンプトに「producer-deskオーケストレータからディスパッチされたAgent Runnerとして」という趣旨の指示があり、かつ`echo "$OLLAMA_BENCH_PATH"`が空でない（Agent Runnerは子プロセスの環境変数として必ず設定する）。
+  - 判断に迷う・どちらか一方しか満たさない場合は、Agent Runnerではない（対話セッション）として扱う。
+  - 対話セッションでは、マーカーを付けずにCIの状況（`gh pr view <PR番号> --json statusCheckRollup`の結果）をユーザーに伝え、CI完了後にユーザーから連絡をもらって次のステップへ進む（短時間で終わりそうなら、数十秒おきの単発確認を数回行うのは構わないが、長時間の`sleep`チェーンは使わない）。
+- **（Agent Runnerの場合）`PENDING`/`IN_PROGRESS`の間、Bashツールでの`sleep`ポーリングやMonitorツールでの監視は使わないこと**（issue #173）。`sleep`を挟んだ長時間ポーリングはBashツールの長時間sleepチェーン検知でブロックされ実行できず、代替のMonitorツールにも20分のハードタイムアウトがあるため、CIがそれより長くかかると実際の完了を待たずに強制終了させられる。これを受けてAgent Runnerがただターンを終了すると、正常終了時の決定的フォールバック（issue #78由来）がCI待ちでの意図的な終了とラベル遷移漏れを区別できず、`needs-human-decision`へ誤って強制遷移してしまう（issue #86で実際に再発）。
+- （Agent Runnerの場合）代わりに、`status:in-progress`のままこのターンを終了し、最終応答に以下の機械可読マーカーを埋め込む（本文とマーカーの間は空行で区切る）。CI完了の検知と後続処理（レビュー実施・レビュー結果のPRコメント投稿・ラベル遷移判断）の自動再開はオーケストレータのポーリングが担うため、自分自身でCI結果が出るまで待ち続ける必要はない。
+  ```
+  <!-- producer-desk:ci-wait
+  {"pr_number": <PR番号>}
+  -->
+  ```
+- オーケストレータからCI完了検知に伴い再開された場合は、`statusCheckRollup`の結果を確認し、SUCCESSであれば次のステップへ進む。エラーがあれば、原因を調査して修正する
 
 8. **コードレビュー実施**
    - サブエージェント `code-reviewer` を使用して、実装コードの詳細レビューを実施する
