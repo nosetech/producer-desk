@@ -25,6 +25,10 @@
 #   LAN_IP              同一LAN内の別端末に公開する場合のみ設定する（dashboardを
 #                       そのLAN IPでbindする。未設定時は全インターフェースで
 #                       待ち受ける既定動作のまま）
+#   TAILSCALE_IP        外出先からTailscale経由でアクセスする場合のみ設定する
+#                       （dashboardをそのTailscale IPでbindする。`tailscale ip -4`
+#                       で確認できる自機のTailscale IP。LAN_IPとは同時に指定
+#                       できない）
 #   SLACK_WEBHOOK_URL   判断待ち・レビュー待ち発生時のSlack通知先。未設定の
 #                       場合、通知処理は単にスキップされる（起動エラーには
 #                       ならない）
@@ -93,6 +97,15 @@ fi
 : "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
 export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
 
+# dashboardのbind先は1つのアドレスしか取れないため、LAN_IPとTAILSCALE_IPの同時
+# 指定は曖昧になる。黙ってどちらかを選ばず明示的に失敗させる（両方から到達させ
+# たい場合は、どちらも未設定にして全インターフェースで待ち受ける既定動作を使う）。
+if [ -n "${LAN_IP:-}" ] && [ -n "${TAILSCALE_IP:-}" ]; then
+    err "LAN_IP と TAILSCALE_IP は同時に指定できません。どちらか一方のみ設定してください（両方から到達させたい場合は両方とも未設定にしてください）。"
+    exit 1
+fi
+DASHBOARD_BIND_HOST="${TAILSCALE_IP:-${LAN_IP:-}}"
+
 if [ ! -x "${ORCHESTRATOR_DIR}/.venv/bin/orchestrator" ]; then
     log "orchestrator/.venv が見つからないため作成します..."
     python3 -m venv "${ORCHESTRATOR_DIR}/.venv"
@@ -122,8 +135,8 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
     export NODE_ENV=production
     export PORT="${DASHBOARD_PORT}"
     export ORCHESTRATOR_URL
-    if [ -n "${LAN_IP:-}" ]; then
-        export HOSTNAME="${LAN_IP}"
+    if [ -n "${DASHBOARD_BIND_HOST}" ]; then
+        export HOSTNAME="${DASHBOARD_BIND_HOST}"
     fi
     nohup node server.js >>"${DASHBOARD_LOG}" 2>&1 &
     echo $! >"${DASHBOARD_PID_FILE}"
@@ -132,8 +145,8 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 log "起動完了"
 log "  orchestrator: PID $(cat "${ORCHESTRATOR_PID_FILE}")  log: ${ORCHESTRATOR_LOG} (fallback: ${ORCHESTRATOR_FALLBACK_LOG})  URL: http://127.0.0.1:${ORCHESTRATOR_PORT}"
 log "  dashboard:    PID $(cat "${DASHBOARD_PID_FILE}")  log: ${DASHBOARD_LOG}"
-if [ -n "${LAN_IP:-}" ]; then
-    log "  dashboard URL: http://${LAN_IP}:${DASHBOARD_PORT}"
+if [ -n "${DASHBOARD_BIND_HOST}" ]; then
+    log "  dashboard URL: http://${DASHBOARD_BIND_HOST}:${DASHBOARD_PORT}"
 else
     log "  dashboard URL: http://127.0.0.1:${DASHBOARD_PORT}"
 fi
