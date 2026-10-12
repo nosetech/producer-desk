@@ -135,12 +135,12 @@
 - オーケストレータによるAgent Runnerの自動起動・停止・スケーリング
 - コンテナ（Docker）によるプロジェクト隔離
 - 複数ユーザー対応・権限分離
-- Tailscale経由での同一LAN外（外出先）からのダッシュボードアクセス対応
+- ~~Tailscale経由での同一LAN外（外出先）からのダッシュボードアクセス対応~~（issue #29で対応済み。`TAILSCALE_IP`によるbind切替と手順は[basic-design.md 6-2](./basic-design.md#6-2-ネットワークアクセスの認証設計)参照）
 
 ### 4-3. 対象外とする既存ツール・PoC結果の扱い
 
 - **Docker構成**: PoC環境（[poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md) 2章）でDockerのネットワーク関連操作が恒常的にハングする問題が発生し、Homebrew/pipによるネイティブインストールで回避した経緯がある。本番の実際のPC環境での動作確認は未実施のため、MVPではDockerを使わずネイティブ構成（Homebrew/pip等）を採用する。将来Docker採用を検討する場合は、本番PC環境での事前検証を行う。
-- **Tailscale/WireGuard実機セットアップ**: issue #1のスコープ外（ユーザー自身の実機作業）としてPoC側で既に整理済み。本要件定義でもプロデューサー自身の作業として扱う（MVPでは同一LAN内アクセスのみのため、実機セットアップ自体は[4-2](#4-2-将来拡張とする範囲)のTailscale対応issueに着手する時点で行う）。
+- **Tailscale/WireGuard実機セットアップ**: issue #1のスコープ外（ユーザー自身の実機作業）としてPoC側で既に整理済み。本要件定義でもプロデューサー自身の作業として扱う（実機セットアップの手順は[basic-design.md 6-2](./basic-design.md#6-2-ネットワークアクセスの認証設計)に記載）。
 
 ## 参考
 

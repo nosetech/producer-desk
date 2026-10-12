@@ -54,7 +54,7 @@ Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため�
 - 自走タスク本体を含め、**実行手段をプロジェクトごとにユーザーが選択可能**とする（issue #148/#174で確定、従来の「自走タスク本体はClaude Codeのみ」という制限は撤廃）。(A) Claude Code CLI直利用＋**Claude Code Pro/Maxプラン等のサブスクリプション**、または (B) **LiteLLM Proxy経由**（Docker不使用のネイティブ構成、`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`で接続先切替）で他社プロバイダ・ローカルLLMを従量課金で利用、のいずれかを選べる。既存のAgent Runner起動方式（`claude -p`ワンショット・worktree隔離）は作り替えない。(A)選択時、利用リミット到達時は追加コストを払わずリセットまで待機する（詳細は`architecture.md` 5章、`basic-design.md` 4章参照）
 - MVPでは**Dockerを使わずネイティブ構成**（Homebrew/pip等）。PoC環境でDockerのネットワーク操作がハングする問題が確認されたため
 - コンポーネント間通信は**ポーリングに統一**（Webhookは不採用）。ローカルネットワーク内で完結させる前提のため、外部到達可能なエンドポイントを必要とする方式は避ける
-- ネットワーク・認証は**MVPでは同一LAN内アクセスのみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない。**Tailscale経由での外出先アクセス対応は別issueの将来拡張**とする（`requirements.md` 4-2、`architecture.md` 8章、`basic-design.md` 6-2参照）
+- ネットワーク・認証は**MVPでは同一LAN内アクセスのみ**で保護し、アプリレベルの追加認証（Basic認証等）は設けない。**Tailscale経由での外出先アクセスは環境変数`TAILSCALE_IP`でdashboardのbind先を切り替えて対応済み（issue #29、`LAN_IP`との同時指定は不可）**（`requirements.md` 4-2、`architecture.md` 8章、`basic-design.md` 6-2参照）
 - 通知は**Slack Incoming Webhook**（一方向）。Claude Code純正のChannelsプラグイン（Telegram/Discord/iMessage）は使わない
 - AIへの指示出しは**GitHub issueコメント経由**（案A）。ダッシュボードのボタン操作・自由記述テキストボックスも、内部的にはissueコメント投稿として実装する。専用API（案B）は将来拡張
 

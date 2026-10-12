@@ -45,7 +45,7 @@ cp config/projects.yaml.example config/projects.yaml
 
 **方法A: `.env` ファイルに記載する（推奨）**
 
-`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載する。`bin/start.sh` が起動のたびに自動で読み込むため、以後は環境変数を都度exportする必要がない。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`（後述）も同様にここで設定できる。
+`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載する。`bin/start.sh` が起動のたびに自動で読み込むため、以後は環境変数を都度exportする必要がない。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`・`TAILSCALE_IP`（後述）も同様にここで設定できる。
 
 ```bash
 cp .env.example .env
@@ -154,7 +154,15 @@ launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.litellm-proxy
 LAN_IP=192.168.1.xx ./bin/start.sh
 ```
 
-アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。
+外出先からTailscale経由でアクセスする場合は、自機・端末の双方にTailscaleをインストールして同一tailnetに参加させた上で、自機のTailscale IP（`tailscale ip -4`）を環境変数 `TAILSCALE_IP` に設定して起動する（`LAN_IP`とは同時に指定できない）。
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
+```
+
+起動後、Tailscaleに接続した端末のブラウザで `http://<TAILSCALE_IP>:3000` を開いてダッシュボードが表示されることを確認する（外出先・モバイル回線の端末でも同様）。
+
+アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内、またはtailnet内でのみ利用すること。
 
 停止する場合:
 

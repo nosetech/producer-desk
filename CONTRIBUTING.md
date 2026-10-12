@@ -56,7 +56,7 @@ hostname -I
 LAN_IP=192.168.1.xx npm run dev:lan
 ```
 
-同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale対応（別issue、`docs/requirements.md` 4-2参照）が必要になる。
+同一LAN内の別端末のブラウザで `http://<LAN_IP>:3000` を開いてダッシュボードが表示されることを確認する。アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用すること。外出先からのアクセスにはTailscale経由（`TAILSCALE_IP` に自機のTailscale IPを設定し `npm run dev:tailscale` / `npm run start:tailscale`、[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照。`LAN_IP`とは同時に指定できない）を使う。
 
 なお、オーケストレータの内部API（後述）はダッシュボードのサーバーサイドから同一マシン上で呼び出す構成のため、LANに公開する必要は無く `127.0.0.1` のままでよい。
 

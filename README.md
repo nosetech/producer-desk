@@ -59,7 +59,7 @@ projects:
 
 **方法A: `.env` ファイルに記載する（推奨）**
 
-`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載します。起動のたびに自動で読み込まれるため、以後は環境変数を都度exportする必要がありません。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`（後述）も同様にここで設定できます。
+`.env.example` をコピーして `.env` を作成し、`SLACK_WEBHOOK_URL` の行のコメントを外してURLを記載します。起動のたびに自動で読み込まれるため、以後は環境変数を都度exportする必要がありません。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`・`TAILSCALE_IP`（後述）も同様にここで設定できます。
 
 ```bash
 cp .env.example .env
@@ -202,7 +202,13 @@ Ollamaのモデルについて使用量を記録したい場合は、生成呼�
 LAN_IP=192.168.1.xx ./bin/start.sh
 ```
 
-アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内でのみ利用してください（外出先からのアクセスへの対応は将来拡張、下記「システムの動作仕様」参照）。
+外出先からTailscale経由でアクセスする場合は、自機のTailscale IPを環境変数 `TAILSCALE_IP` に設定して起動します（`LAN_IP`とは同時に指定できません。手順・確認方法は[`docs/basic-design.md` 6-2](./docs/basic-design.md#6-2-ネットワークアクセスの認証設計)参照）。
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
+```
+
+アプリケーションレベルの追加認証（Basic認証等）は設けていないため、信頼できるLAN内、またはtailnet内でのみ利用してください。
 
 停止する場合:
 
@@ -267,7 +273,7 @@ producer-deskは独自のデータベースを持たず、**GitHub Issuesを正�
 - **5分間隔のポーリング**: オーケストレータは5分ごとに対象リポジトリのissue一覧を取得し、ラベル遷移の検知・判断待ち/レビュー待ちの集約・Slack通知を行います。ダッシュボードから操作した直後は同期的に最新状態へ更新されるため、5分待たずに反映されます。
 - **Agent Runnerが自動で行うこと**: ディスパッチされると、Claude Code CLI（`claude -p --dangerously-skip-permissions`）が対象プロジェクトのworktree内でフル自動実行され、調査・実装・テスト・PR作成・ラベルの自己更新までを行います。1プロジェクトにつき同時に実行されるAgent Runnerは1つのみで、複数の指示が重なった場合はプロジェクトごとのキューで順次処理されます。
 - **Agent Runnerが自動で行わないこと**: 設計判断が必要と自ら判断した場合は`needs-human-decision`で停止し、人間の承認なしにPRをマージすることはありません。issueの再オープンはproducer-deskの操作範囲外で、再着手させたい場合は人間がGitHub上でreopenする必要があります。issueのクローズ自体は、レビュー承認時にproducer-desk（オーケストレータ）がPRのsquash merge後に明示的に行います（GitHubのPRマージによる自動クローズには依存しません。本プロジェクトのPRは`develop`向けのため、GitHubの`Closes #`による自動クローズが働かないための対処です）。
-- **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていません。外出先からのアクセス（Tailscale経由）は将来拡張として別issueで対応予定です。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されています。
+- **権限・ネットワーク**: 現時点では同一LAN内からのアクセスのみを想定し、アプリケーションレベルの追加認証（Basic認証等）は設けていません。外出先からのアクセスはTailscale経由（`TAILSCALE_IP`）で対応しており、tailnetのネットワーク境界で保護します。Agent Runner自体は`--dangerously-skip-permissions`でworktree内のフル自動実行を許可されています。
 - **Agent Runner実行時はユーザー個別のClaude Code設定が適用されない場合があります**: Agent Runnerは`claude -p`によるheadless（非対話）実行のため、対話セッションでは有効な利用者個人の`~/.claude/settings.json`のフック（特に`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示が、Agent Runner実行時には適用されない場合があります。確実に反映させたい指示（回答言語等）は、対象プロジェクトリポジトリ自身の`CLAUDE.md`に明記してください（Agent Runnerは対象プロジェクトのworktreeをカレントディレクトリとして起動されるため、そのプロジェクトのCLAUDE.mdは確実に読み込まれます）。
 
 ## バックアップ・トラブルシューティング

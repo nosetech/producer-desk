@@ -463,7 +463,26 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 - アプリケーションレベルの追加認証（Basic認証等）は設けない。
 - **MVPでは同一LAN内からのアクセスのみ**を前提とする。ダッシュボード（Next.js）の待受プロセスは、0.0.0.0ではなく**LANインターフェースのIPにのみbind**する（`next dev`/`next start` の `--hostname <lan-ip>` オプション。`npm run dev:lan`/`npm run start:lan`、環境変数 `LAN_IP` に自機のLAN IPを設定して使う）。これにより、同一LANの外からは到達不能にする。
 - オーケストレータの内部API（`GET /api/state` 等）は、ダッシュボードのRoute Handlerが**同一マシン上でサーバーサイドから**呼び出す構成（[2-2](#2-2-データ取得仕様ポーリング)参照。ブラウザから直接呼び出すことはない）のため、ネットワークインターフェースに公開する必要が無い。オーケストレータの待受プロセスは`127.0.0.1`（ループバック）にのみbindしたままとする。
-- **将来拡張**: 外出先からのアクセスに対応する際は、ダッシュボードのbind先をTailscaleインターフェースIPに切り替える（`--hostname <tailscale-ip>`、`npm run dev:tailscale`/`npm run start:tailscale`）。別issue（#29）で対応する（[要件定義書 4-2](./requirements.md#4-2-将来拡張とする範囲)参照）。
+- **外出先からのアクセス（Tailscale経由、issue #29）**: ダッシュボードのbind先をTailscaleインターフェースIPに切り替える（`--hostname <tailscale-ip>`、`npm run dev:tailscale`/`npm run start:tailscale`、環境変数 `TAILSCALE_IP`）。`bin/start.sh`（開発用・配布用とも）は `TAILSCALE_IP` が設定されていればそのIPでdashboardをbindする。`next start --hostname`は1アドレスのみ指定可能なため、`LAN_IP`と`TAILSCALE_IP`の同時指定は起動時エラーとする（両方から到達させたい場合は両方未設定にして全インターフェース待ち受けとする）。Tailscaleのネットワーク境界（tailnetに参加した端末のみ到達可能）で保護し、アプリレベルの追加認証は引き続き設けない。オーケストレータは`127.0.0.1`のままでよい。
+
+**Tailscaleのセットアップ（ユーザー作業）**
+
+1. 自機（dashboardを起動するマシン）と外出先で使う端末（スマートフォン等）の両方にTailscaleをインストールし、同一のtailnetにログインする。
+2. 自機のTailscale IPを確認する（`tailscale ip -4`。`100.x.y.z`形式）。
+
+**起動手順**
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
+```
+
+**アクセス確認手順**
+
+1. 自機側: `curl -I http://<TAILSCALE_IP>:3000` がHTTP 200系を返すことを確認する。
+2. 同一LAN内の別端末（Wi-Fi接続）から `http://<TAILSCALE_IP>:3000` を開き、ダッシュボードが表示されることを確認する（Tailscaleアプリを起動しておくこと）。
+3. 外出先（モバイル回線等、自機と別ネットワーク）の端末でTailscaleに接続した状態で `http://<TAILSCALE_IP>:3000` を開き、ダッシュボードが表示され、判断待ち一覧の更新・承認操作ができることを確認する。
+4. Tailscale未接続の端末からは到達できないことを確認する。
+
 
 ## 7. 配布パッケージ化設計
 

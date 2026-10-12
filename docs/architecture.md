@@ -11,7 +11,7 @@
 
 ```mermaid
 flowchart TB
-    subgraph Mobile["モバイル / PC（同一LAN経由。将来Tailscale経由）"]
+    subgraph Mobile["モバイル / PC（同一LAN経由、または外出先からTailscale経由）"]
         A["ブラウザ（ダッシュボード）"]
         N["Slack アプリ"]
     end
@@ -128,7 +128,7 @@ issue #148での検討・設計判断フェーズ（issue #174はその結果の
 
 - **MVPでは同一LAN（同一Wi-Fi）内からのアクセスのみ**を前提とし、ダッシュボード・Agent Runnerへのアクセスをネットワーク境界のみで保護する。外出先からの利用は想定しない。
 - アプリケーションレベルの追加認証（Basic認証等）は設けない。
-- **将来拡張**: 外出先からのアクセスが必要になった時点で、Tailscale経由のアクセスに対応する（別issueで実装。[要件定義書 4-2](./requirements.md#4-2-将来拡張とする範囲)参照）。mDNS/固定IPによる同一LAN限定アクセスの恒久化は採用せず、外出先対応はTailscale経由に一本化する想定。
+- **外出先からのアクセス**: Tailscale経由のアクセスに対応する（issue #29。環境変数`TAILSCALE_IP`でdashboardのbind先を切り替える。[基本設計書 6-2](./basic-design.md#6-2-ネットワークアクセスの認証設計)参照）。mDNS/固定IPによる同一LAN限定アクセスの恒久化は採用せず、外出先対応はTailscale経由に一本化する想定。
 
 ## 9. 実行環境
 
