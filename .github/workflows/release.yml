@@ -113,10 +113,24 @@ jobs:
           cp -r pkg/orchestrator "${ROOT}/orchestrator"
           cp -r dist/bin "${ROOT}/bin"
           cp -r dist/config "${ROOT}/config"
+          # LiteLLM Proxy関連は開発用と配布用で実体を共通化する（二重管理を避ける）。
+          # bin/litellm_proxy_start.shはorchestrator/pyproject.tomlの有無で
+          # editable install/同梱wheelを自動で切り替える。
+          cp config/litellm_config.yaml.example "${ROOT}/config/litellm_config.yaml.example"
+          cp bin/litellm_proxy_start.sh bin/litellm_proxy_stop.sh "${ROOT}/bin/"
           cp -r dist/scripts "${ROOT}/scripts"
           cp dist/SETUP.md "${ROOT}/SETUP.md"
           cp dist/.env.example "${ROOT}/.env.example"
           echo "${VERSION}" > "${ROOT}/VERSION"
+          # SETUP.mdが案内するファイルの欠落を検知する（欠落したままリリースしない）
+          for f in config/projects.yaml.example config/litellm_config.yaml.example \
+                   bin/start.sh bin/stop.sh bin/litellm_proxy_start.sh bin/litellm_proxy_stop.sh \
+                   SETUP.md .env.example VERSION; do
+            if [ ! -f "${ROOT}/${f}" ]; then
+              echo "::error::配布tarballに必須ファイル ${f} が含まれていません"
+              exit 1
+            fi
+          done
           tar czf "${ROOT}.tar.gz" "${ROOT}"
           sha256sum "${ROOT}.tar.gz" > "${ROOT}.tar.gz.sha256"
       - name: create release
