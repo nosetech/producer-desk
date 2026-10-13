@@ -67,8 +67,20 @@ if [ ! -x "${LITELLM_DIR}/.venv/bin/python" ]; then
     "${LITELLM_DIR}/.venv/bin/pip" install 'litellm[proxy]'
     # カスタムコールバック（orchestrator.litellm_callback）がusage_store.py経由で
     # config/usage.dbへ書き込めるよう、orchestratorパッケージも同じvenvへ
-    # editable installする。
-    "${LITELLM_DIR}/.venv/bin/pip" install -e "${ORCHESTRATOR_DIR}"
+    # インストールする。git clone構成（orchestrator/pyproject.tomlあり）では
+    # editable install、配布パッケージ構成（orchestrator/dist/*.whlのみ）では
+    # 同梱のwheelをインストールする。
+    if [ -f "${ORCHESTRATOR_DIR}/pyproject.toml" ]; then
+        "${LITELLM_DIR}/.venv/bin/pip" install -e "${ORCHESTRATOR_DIR}"
+    else
+        WHEEL_FILE="$(ls "${ORCHESTRATOR_DIR}"/dist/*.whl 2>/dev/null | head -n1 || true)"
+        if [ -z "${WHEEL_FILE}" ]; then
+            err "orchestrator/pyproject.toml も orchestrator/dist/*.whl も見つかりません。配布パッケージが破損している可能性があります。"
+            rm -rf "${LITELLM_DIR}/.venv"
+            exit 1
+        fi
+        "${LITELLM_DIR}/.venv/bin/pip" install "${WHEEL_FILE}"
+    fi
 fi
 
 : "${LITELLM_PROXY_PORT:=4000}"

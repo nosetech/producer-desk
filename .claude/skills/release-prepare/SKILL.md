@@ -23,6 +23,18 @@ producer-deskのリリース準備を行ってください: 新バージョン�
    - `dashboard/package.json`の`version`を`$ARGUMENTS`に更新する（`package-lock.json`のルートバージョンも`npm install --package-lock-only`等で追従させる）
    - 他にバージョン番号を参照している箇所がないか確認する（現時点ではこの2箇所のみの想定）
 
+   **配布物（`dist/`配下）の最新化確認**（ステップ番号を振り直さないため、ステップ3の一部として実施する。ステップ4のコミット前に行う）
+   - 前バージョンタグ以降の変更を洗い出す: `git diff <前バージョンタグ>..HEAD --stat`（タグが無い初回リリースの場合は`dist/`全体を現行の開発用ファイルと突き合わせる）
+   - `dist/`と対になる開発用ファイルの変更を抽出し、`dist/`側に反映済みか比較する。対応関係は以下のとおり
+     - `config/projects.yaml.example` ↔ `dist/config/projects.yaml.example`（冒頭コメントと`docs/`参照のみ配布用に別記。それ以外の差分は未反映とみなす）
+     - `bin/start.sh`・`bin/stop.sh` ↔ `dist/bin/start.sh`・`dist/bin/stop.sh`（配布用に別実装。環境変数の扱い・引数仕様に乖離がないか確認する）
+     - `orchestrator/.env.example`・`dashboard/.env.example` ↔ `dist/.env.example`（開発専用変数`ORCHESTRATOR_ENV`・`PROJECTS_CONFIG_PATH`・`SESSIONS_PATH`を除き網羅されているか）
+     - `scripts/*` ↔ `dist/scripts/*`（共通実体。`dist/SETUP.md`・`README.md`が参照するスクリプトが全て存在するか）
+     - `config/litellm_config.yaml.example`・`bin/litellm_proxy_start.sh`・`bin/litellm_proxy_stop.sh`は`dist/`に複製を持たず、`release.yml`がtarball組み立て時に開発用ファイルを直接コピーする（確認不要）
+   - `release.yml`の`assemble tarball`が含めるファイルと、`dist/SETUP.md`が案内するパス（`config/*.example`・`bin/*.sh`・`scripts/*`）が実在するかを確認する
+   - 未反映の差分は`dist/`側を修正し、同じ`release/v$ARGUMENTS`ブランチ上でバージョン更新と同一コミットに含める（ステップ4のコミットを1つに保つ前提）。ステップ4の変更点サマリにも「配布物の更新」を含める
+   - 意図的な差分か判断に迷うものは自動修正せず、人間に報告して確認する
+
 4. **コミット**
    - 前バージョンの特定: `git describe --tags --abbrev=0` を実行し、直近のバージョンタグを取得する（`master`・`develop`の履歴は毎回のリリースでステップ5②の`master`→`develop`マージにより共有祖先を保っているため、`develop`から切った本ブランチ上で実行しても正しく直近タグを指す。タグが1つも存在しない場合は初回リリース扱いとする）
    - 変更点一覧の取得: `git log --oneline <前バージョンタグ>..HEAD`（初回リリースの場合はこのステップを省略）を確認する。`develop`へのマージは通常squash mergeのため、1コミットがおおむね1PRに対応する

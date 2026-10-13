@@ -31,6 +31,18 @@ cd producer-desk-<version>
 cp config/projects.yaml.example config/projects.yaml
 ```
 
+`config/projects.yaml`のトップレベルには、ポーリング間隔等のタイミング系設定（いずれも省略可、省略時は既定値）を記載できる。値は正の数値のみ（0以下・数値以外は起動時エラー）で、変更の反映にはorchestratorの再起動（ダッシュボード向けの3項目はダッシュボードのリロード）が必要。詳細は`config/projects.yaml.example`のコメントを参照。
+
+| キー | 既定値 | 内容 |
+|------|--------|------|
+| `polling_interval_seconds` | 300 | orchestratorがGitHubをポーリングする間隔（秒） |
+| `ci_wait_timeout_hours` | 6 | CI完了待機のタイムアウト（時間）。超過すると`needs-human-decision`へ遷移する |
+| `litellm_health_timeout_seconds` | 3 | LiteLLM Proxyのヘルスチェックのタイムアウト（秒） |
+| `ollama_bench_timeout_seconds` | 300 | ollama-bench（ローカルLLM生成呼び出し）のタイムアウト（秒） |
+| `issue_cache_ttl_seconds` | 60 | プロジェクト別issue一覧のクライアントキャッシュTTL（秒） |
+| `dashboard_poll_interval_seconds` | 30 | ダッシュボードのポーリング間隔（秒） |
+| `sync_tick_interval_seconds` | 30 | 「N分前」表示の更新間隔（秒） |
+
 対象リポジトリへの状態ラベル作成・worktreeの用意・このファイルへの追記は、`scripts/add_project.sh`で1コマンドにまとめて行える（`gh auth login`済みであること）。
 
 ```bash
