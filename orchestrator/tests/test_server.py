@@ -1934,3 +1934,73 @@ def test_put_prompt_storage_failure_returns_500(_isolated_prompts_path, monkeypa
 
     assert status == 500
     assert body["error"] == "書き込めません"
+
+
+def _issue_with_comments(number: int, labels: list[str], bodies: list[str]) -> IssueSummary:
+    return IssueSummary(
+        repo="nosetech/project-a",
+        number=number,
+        title="t",
+        labels=labels,
+        comments=[{"id": f"c{i}", "body": b} for i, b in enumerate(bodies)],
+        updated_at="2026-01-01T00:00:00Z",
+    )
+
+
+def test_dispatch_status_and_redispatch_flow() -> None:
+    """issue #215: 状態チェックで未処理指示を検知し、コメント再投稿なしで再実行できる。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, event = _recording_dispatch_queue()
+    issues = [
+        _issue_with_comments(
+            1, [STATUS_NEEDS_HUMAN_DECISION], ["Agent Runner実行結果:\nx", "再開して"]
+        )
+    ]
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: issues,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues/1/dispatch-status")
+        assert status == 200
+        assert body["state"] == "not_dispatched"
+        assert body["pending_message"] == "再開して"
+        assert body["redispatchable"] is True
+
+        status, body = _post(server, "/api/projects/nosetech/project-a/issues/1/redispatch", {})
+        assert status == 200
+        assert event.wait(timeout=2)
+        assert calls == [("nosetech/project-a", 1, "再開して")]
+        assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
+        assert [c[2] for c in comments.posted] == [":repeat: ダッシュボードから再実行しました"]
+    finally:
+        server.shutdown()
+
+
+def test_redispatch_without_pending_instruction_returns_422() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_TODO}})
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=FakeComments().post_comment,
+        list_issues=lambda repo: [_issue_with_comments(1, [STATUS_TODO], [])],
+    )
+    try:
+        status, body = _post(server, "/api/projects/nosetech/project-a/issues/1/redispatch", {})
+        assert status == 422
+    finally:
+        server.shutdown()
