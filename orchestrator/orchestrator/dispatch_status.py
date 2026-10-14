@@ -16,6 +16,8 @@ HTTPに依存しないビジネスロジックとして実装し、server.pyか�
 
 from __future__ import annotations
 
+import logging
+import subprocess
 from dataclasses import dataclass
 from typing import Literal
 
@@ -45,6 +47,8 @@ BOUNDARY_PREFIXES = (
     ":arrows_counterclockwise:",
     REDISPATCH_COMMENT,
 )
+
+logger = logging.getLogger(__name__)
 
 NO_PENDING_MESSAGE = "未処理の指示コメントがありません"
 
@@ -197,6 +201,12 @@ def handle_redispatch(
         dispatch_queue=dispatch_queue,
         on_stage=on_stage,
     )
-    post_comment(issue.repo, issue.number, REDISPATCH_COMMENT)
-    on_stage("comment")
+    # 記録コメントは付随処理のため、失敗してもキュー投入済みの再実行自体は成功扱いにする。
+    try:
+        post_comment(issue.repo, issue.number, REDISPATCH_COMMENT)
+        on_stage("comment")
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            "%s#%s の再実行記録コメント投稿に失敗しました: %s", issue.repo, issue.number, e
+        )
     return status

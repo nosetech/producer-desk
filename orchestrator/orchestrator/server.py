@@ -699,7 +699,11 @@ def _make_handler(
                 try:
                     try:
                         payload = self._read_json_body()
+                        if not isinstance(payload, dict):
+                            payload = {}
                         progress_id = payload.get("progressId")
+                        if not isinstance(progress_id, str):
+                            progress_id = None
                     except ValueError:
                         payload = {}
                     on_stage = (
