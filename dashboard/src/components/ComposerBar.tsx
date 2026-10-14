@@ -8,20 +8,16 @@ import {
   modelOptions,
 } from "@/lib/modelDirective";
 import { shortRepoName } from "@/lib/projectStatus";
-import {
-  resolveStages,
-  useStageProgress,
-  type StageDef,
-} from "@/lib/stageProgress";
+import type { StageDef } from "@/lib/stageProgress";
+import { findIssueJob } from "@/lib/jobs";
 import { formatCommentTime, stripBotMarkers } from "@/lib/comment";
 import type {
   Dispatch,
-  InstructAction,
   IssueComment,
   ProjectSettingsResponse,
 } from "@/lib/types";
 import CommentBody from "./CommentBody";
-import { SpinnerIcon, StageList } from "./StageProgress";
+import { useApp } from "./AppContext";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -229,8 +225,6 @@ export default function ComposerBar({
   repos,
   newTaskRepo,
   onNewTaskRepoChange,
-  onSubmitted,
-  onReplySubmittingChange,
 }: {
   open: boolean;
   mode: ComposerMode;
@@ -240,21 +234,12 @@ export default function ComposerBar({
   repos: string[];
   newTaskRepo: string;
   onNewTaskRepoChange: (repo: string) => void;
-  onSubmitted: () => Promise<void>;
-  onReplySubmittingChange: (target: IssueRef | null) => void;
 }) {
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeStages, setActiveStages] = useState<StageDef[] | null>(null);
-  const [activeDispatch, setActiveDispatch] = useState<Dispatch | null>(null);
-  const {
-    polledStage,
-    start: startProgress,
-    reset: resetProgress,
-  } = useStageProgress();
+  const { jobs, startJob } = useApp();
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
   const [newModel, setNewModel] = useState(MODEL_DEFAULT);
@@ -312,12 +297,6 @@ export default function ComposerBar({
     setMessage((m) => applyModelDirective(m, MODEL_DEFAULT));
   }
 
-  function endStages() {
-    resetProgress();
-    setActiveStages(null);
-    setActiveDispatch(null);
-  }
-
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
@@ -331,58 +310,57 @@ export default function ComposerBar({
     }
   }
 
+  // 返信先issueが他の操作を処理中の間のみ送信を止める（別issue・別プロジェクトは妨げない）。
+  const replyBusy =
+    replyTarget != null &&
+    findIssueJob(jobs, replyTarget.repo, replyTarget.number) !== undefined;
+
+  // 送信はバックグラウンドのジョブとして実行し、パネルは即座に閉じる（issue #212）。
+  // 進捗・失敗は対象カード（カードが無い場合・新規作成はヘッダーの処理状況）に表示する。
   function handleSendReply() {
-    if (!replyTarget) return;
-    if (!message.trim()) return;
-    setSubmitting(true);
-    setError(null);
-    setActiveStages(REPLY_STAGES);
-    const progressId = startProgress();
-    const action: InstructAction = "instruct";
+    if (!replyTarget || !message.trim()) return;
     const target = replyTarget;
-    onReplySubmittingChange(target);
-    postInstruct(target.repo, target.number, action, message.trim(), progressId)
-      .then(() => {
-        onClearReplyTarget();
-        onClose();
-        return onSubmitted();
-      })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "送信に失敗しました"),
-      )
-      .finally(() => {
-        setSubmitting(false);
-        onReplySubmittingChange(null);
-        endStages();
-      });
+    const text = message.trim();
+    const accepted = startJob({
+      kind: "reply",
+      repo: target.repo,
+      number: target.number,
+      title: target.title,
+      stages: REPLY_STAGES,
+      exec: (progressId) =>
+        postInstruct(target.repo, target.number, "instruct", text, progressId),
+      successMessage: `${shortRepoName(target.repo)} #${target.number} へ指示を送信しました。`,
+    });
+    if (!accepted) {
+      setError("このissueは別の操作を処理中です。完了後に再度お試しください。");
+      return;
+    }
+    onClearReplyTarget();
+    onClose();
   }
 
   function handleCreateTask(dispatch: Dispatch) {
     if (!newRepo || !title.trim() || !prompt.trim()) return;
-    setSubmitting(true);
-    setError(null);
-    setActiveDispatch(dispatch);
-    setActiveStages(
-      dispatch === "immediate" ? CREATE_IMMEDIATE_STAGES : CREATE_QUEUED_STAGES,
-    );
-    const progressId = startProgress();
-    postCreateIssue(newRepo, title.trim(), prompt.trim(), dispatch, progressId)
-      .then(() => {
-        onClose();
-        return onSubmitted();
-      })
-      .catch((e) =>
-        setError(e instanceof Error ? e.message : "作成に失敗しました"),
-      )
-      .finally(() => {
-        setSubmitting(false);
-        endStages();
-      });
+    const repo = newRepo;
+    const issueTitle = title.trim();
+    const body = prompt.trim();
+    startJob({
+      kind: "new",
+      repo,
+      title: issueTitle,
+      stages:
+        dispatch === "immediate"
+          ? CREATE_IMMEDIATE_STAGES
+          : CREATE_QUEUED_STAGES,
+      exec: (progressId) =>
+        postCreateIssue(repo, issueTitle, body, dispatch, progressId),
+      successMessage:
+        dispatch === "immediate"
+          ? `${shortRepoName(repo)} に新しいタスクを作成し、着手を依頼しました。`
+          : `${shortRepoName(repo)} にタスクをtodoとして登録しました（あとで着手）。`,
+    });
+    onClose();
   }
-
-  const resolvedStages = activeStages
-    ? resolveStages(activeStages, polledStage, "busy")
-    : null;
 
   if (!open) return null;
 
@@ -489,7 +467,7 @@ export default function ComposerBar({
             <ModelSelectRow
               value={replyModel}
               settings={replyRepo ? settingsByRepo[replyRepo] : undefined}
-              disabled={submitting || !replyTarget}
+              disabled={replyBusy || !replyTarget}
               onChange={handleReplyModelChange}
             />
             <textarea
@@ -497,38 +475,31 @@ export default function ComposerBar({
               placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              disabled={submitting || !replyTarget}
+              disabled={replyBusy || !replyTarget}
             />
             <div className={styles.sendRow}>
               <button
                 type="button"
                 className={styles.sendBtn}
                 onClick={handleSendReply}
-                disabled={submitting || !replyTarget || !message.trim()}
+                disabled={replyBusy || !replyTarget || !message.trim()}
               >
-                {submitting ? (
-                  <SpinnerIcon />
-                ) : (
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M22 2 11 13" />
-                    <path d="M22 2 15 22l-4-9-9-4Z" />
-                  </svg>
-                )}
-                {submitting ? "送信中…" : "指示を送信"}
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M22 2 11 13" />
+                  <path d="M22 2 15 22l-4-9-9-4Z" />
+                </svg>
+                指示を送信
               </button>
             </div>
-            {submitting && resolvedStages && (
-              <StageList stages={resolvedStages} />
-            )}
           </div>
         ) : (
           <div className={styles.body}>
@@ -553,7 +524,6 @@ export default function ComposerBar({
                 placeholder="例: 請求書の合計金額バリデーションを追加"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                disabled={submitting}
               />
             </div>
             <div className={styles.promptField}>
@@ -562,7 +532,8 @@ export default function ComposerBar({
                 <ModelSelectRow
                   value={newModel}
                   settings={settingsByRepo[newRepo]}
-                  disabled={submitting}
+                  disabled={false}
+
                   onChange={handleNewModelChange}
                 />
               </div>
@@ -571,7 +542,6 @@ export default function ComposerBar({
                 placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                disabled={submitting}
               />
             </div>
             <div className={styles.dispatchRow}>
@@ -579,63 +549,44 @@ export default function ComposerBar({
                 type="button"
                 className={`${styles.dispatchBtn} ${styles.dispatchBtnPrimary}`}
                 onClick={() => handleCreateTask("immediate")}
-                disabled={
-                  submitting || !newRepo || !title.trim() || !prompt.trim()
-                }
+                disabled={!newRepo || !title.trim() || !prompt.trim()}
               >
-                {submitting && activeDispatch === "immediate" ? (
-                  <SpinnerIcon />
-                ) : (
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
-                  </svg>
-                )}
-                {submitting && activeDispatch === "immediate"
-                  ? "送信中…"
-                  : "今すぐ着手"}
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+                </svg>
+                今すぐ着手
               </button>
               <button
                 type="button"
                 className={styles.dispatchBtn}
                 onClick={() => handleCreateTask("queued")}
-                disabled={
-                  submitting || !newRepo || !title.trim() || !prompt.trim()
-                }
+                disabled={!newRepo || !title.trim() || !prompt.trim()}
               >
-                {submitting && activeDispatch === "queued" ? (
-                  <SpinnerIcon />
-                ) : (
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <rect x="3" y="5" width="18" height="16" rx="2" />
-                    <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
-                  </svg>
-                )}
-                {submitting && activeDispatch === "queued"
-                  ? "送信中…"
-                  : "あとで着手（todo）"}
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="5" width="18" height="16" rx="2" />
+                  <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+                </svg>
+                あとで着手（todo）
               </button>
             </div>
-            {submitting && resolvedStages && (
-              <StageList stages={resolvedStages} />
-            )}
           </div>
         )}
         {error && <span className={styles.error}>{error}</span>}

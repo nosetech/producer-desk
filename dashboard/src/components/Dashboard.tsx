@@ -17,9 +17,7 @@ export default function Dashboard() {
     repos,
     projectSettings,
     error,
-    lockedIssue,
     refresh,
-    refreshAfterAction,
     refreshProjects,
     showToast,
     openReply,
@@ -70,20 +68,8 @@ export default function Dashboard() {
       />
       <main className={styles.main}>
         <div className={styles.left}>
-          <DecisionsList
-            decisions={state.decisions}
-            onApproved={refreshAfterAction}
-            onReply={openReply}
-            onToast={showToast}
-            lockedIssue={lockedIssue}
-          />
-          <ReviewsList
-            reviews={state.reviews}
-            onApproved={refreshAfterAction}
-            onReply={openReply}
-            onToast={showToast}
-            lockedIssue={lockedIssue}
-          />
+          <DecisionsList decisions={state.decisions} onReply={openReply} />
+          <ReviewsList reviews={state.reviews} onReply={openReply} />
         </div>
         <div className={styles.right}>
           <UsageMonitor />

@@ -131,9 +131,16 @@ function RowIcon({ state }: { state: ResolvedStage["state"] }) {
   );
 }
 
-export function StageList({ stages }: { stages: ResolvedStage[] }) {
+export function StageList({
+  stages,
+  bare = false,
+}: {
+  stages: ResolvedStage[];
+  /** 親のボックス内に埋め込む場合、枠・背景なしで行だけ描画する。 */
+  bare?: boolean;
+}) {
   return (
-    <div className={styles.stagePanel}>
+    <div className={bare ? styles.stageRows : styles.stagePanel}>
       {stages.map((s) => (
         <div
           className={`${styles.stageRow} ${

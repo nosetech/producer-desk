@@ -1,3 +1,6 @@
+"use client";
+
+import BackgroundJobs from "./BackgroundJobs";
 import ThemeToggle from "./ThemeToggle";
 import styles from "./Header.module.css";
 import { version } from "../../package.json";
@@ -56,6 +59,7 @@ export default function Header() {
         </div>
       </div>
       <div className={styles.meta}>
+        <BackgroundJobs />
         <ThemeToggle />
       </div>
     </header>

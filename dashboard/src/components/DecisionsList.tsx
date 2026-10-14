@@ -1,25 +1,18 @@
-import type { IssueRef } from "./ComposerBar";
 import type { IssueComment, IssueSummary } from "@/lib/types";
 import DecisionCard from "./DecisionCard";
 import styles from "./DecisionsList.module.css";
 
 export default function DecisionsList({
   decisions,
-  onApproved,
   onReply,
-  onToast,
-  lockedIssue,
 }: {
   decisions: IssueSummary[];
-  onApproved: () => Promise<void>;
   onReply: (
     repo: string,
     issueNumber: number,
     title: string,
     comment?: IssueComment,
   ) => void;
-  onToast: (text: string) => void;
-  lockedIssue: IssueRef | null;
 }) {
   return (
     <div className={styles.panel}>
@@ -38,13 +31,7 @@ export default function DecisionsList({
             <DecisionCard
               key={`${decision.repo}#${decision.number}`}
               decision={decision}
-              onApproved={onApproved}
               onReply={onReply}
-              onToast={onToast}
-              locked={
-                lockedIssue?.repo === decision.repo &&
-                lockedIssue?.number === decision.number
-              }
             />
           ))}
         </div>

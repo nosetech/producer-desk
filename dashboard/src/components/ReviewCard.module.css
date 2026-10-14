@@ -688,3 +688,17 @@
   cursor: not-allowed;
   opacity: 0.4;
 }
+
+/* 操作の実行中・失敗中（issue #212）。他のカードの操作は妨げない。 */
+.cardJobRunning {
+  border-color: var(--accent-blue);
+}
+
+.cardJobError {
+  border-color: var(--warn);
+}
+
+.actionsBusy {
+  opacity: 0.4;
+  pointer-events: none;
+}
