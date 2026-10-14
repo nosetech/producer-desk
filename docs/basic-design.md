@@ -177,7 +177,7 @@ Content-Type: application/json
 
 **`GET /api/projects/{repo}/issues/{issue_number}/dispatch-status`（診断）**
 
-- レスポンス: `state` / `label` / `redispatchable` / `pending_message` / `pending_comment_id` / `detail`。
+- レスポンス: `state` / `label` / `redispatchable` / `pending_message` / `pending_comment_id` / `pending_comment_author` / `pending_comment_created_at` / `pending_comment_url` / `detail`。`pending_comment_*`は再実行確認UIで指示コメントの投稿者・時刻・GitHubリンクを表示するための項目。
 - `state`の判定（上から順）:
   - `not_managed`: 状態ラベルが無い、またはクローズ済み。再実行不可。
   - `running` / `queued`: `DispatchQueue.is_active`が真（`is_current`が真なら`running`、それ以外は`queued`）。再実行不可。

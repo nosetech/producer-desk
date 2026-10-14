@@ -10,6 +10,7 @@ import type { IssueComment, IssueSummary, PrCandidate } from "@/lib/types";
 import { useApp } from "./AppContext";
 import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
+import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./ReviewCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の handle_instruct（STATUS_IN_REVIEW分岐）の
@@ -411,6 +412,13 @@ export default function ReviewCard({
           返信
         </button>
       </div>
+
+      <DispatchDiagnosis
+        repo={review.repo}
+        number={review.number}
+        title={review.title}
+        busy={busy}
+      />
 
       {viewerOpen && last && (
         <CommentViewer

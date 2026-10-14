@@ -77,6 +77,10 @@ class DispatchStatus:
     pending_message: str | None
     pending_comment_id: str | None
     detail: str
+    # 再実行確認UIに表示する、未処理指示コメントの投稿者・投稿時刻・URL（issue #215）。
+    pending_comment_author: str | None = None
+    pending_comment_created_at: str | None = None
+    pending_comment_url: str | None = None
 
 
 def _is_boundary(body: str) -> bool:
@@ -130,6 +134,14 @@ def diagnose(issue: IssueSummary, dispatch_queue: DispatchQueue) -> DispatchStat
     if message == "":
         pending, message = None, None
     comment_id = pending["id"] if pending else None
+    extra: dict[str, str | None] = {}
+    if pending is not None:
+        author = pending.get("author") or {}
+        extra = {
+            "pending_comment_author": author.get("login") if isinstance(author, dict) else None,
+            "pending_comment_created_at": pending.get("createdAt"),
+            "pending_comment_url": pending.get("url"),
+        }
 
     if label == STATUS_IN_PROGRESS:
         return DispatchStatus(
@@ -139,6 +151,7 @@ def diagnose(issue: IssueSummary, dispatch_queue: DispatchQueue) -> DispatchStat
             pending_message=message,
             pending_comment_id=comment_id,
             detail="status:in-progressですが実行中・待機中ではありません",
+            **extra,
         )
     if message is not None:
         return DispatchStatus(
@@ -148,6 +161,7 @@ def diagnose(issue: IssueSummary, dispatch_queue: DispatchQueue) -> DispatchStat
             pending_message=message,
             pending_comment_id=comment_id,
             detail="処理された形跡のない指示コメントがあります",
+            **extra,
         )
     return DispatchStatus(
         state="completed",
