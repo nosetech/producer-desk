@@ -1,0 +1,182 @@
+/* Claude Design ProducerDesk.dc.html の bg（ヘッダーの処理状況ピル＋ポップオーバー）。 */
+@keyframes bgFade {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wrap {
+  position: relative;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px 0 9px;
+  border-radius: 14px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  animation: bgFade 0.2s ease;
+}
+
+.pill:hover {
+  filter: brightness(1.08);
+}
+
+.pillFailed {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.failBadge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--warn);
+  color: var(--warn-on);
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+}
+
+.pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 45;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 13px;
+  border-radius: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.3);
+  animation: bgFade 0.16s ease;
+}
+
+.popHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.popTitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  color: var(--text-tertiary);
+}
+
+.popSummary {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  color: var(--accent-blue);
+}
+
+.rowError {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.rowLabel {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-blue);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.rowTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  background: var(--accent-blue);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.barError {
+  background: var(--warn);
+}
+
+.stageText {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.stageTextError {
+  color: var(--warn);
+}
+
+@media (max-width: 640px) {
+  .pop {
+    right: -46px;
+    width: min(330px, calc(100vw - 28px));
+  }
+}

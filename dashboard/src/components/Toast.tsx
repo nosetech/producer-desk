@@ -2,11 +2,22 @@
 
 import styles from "./Toast.module.css";
 
-export default function Toast({ show, text }: { show: boolean; text: string }) {
+export default function Toast({
+  show,
+  text,
+  error = false,
+}: {
+  show: boolean;
+  text: string;
+  error?: boolean;
+}) {
   if (!show) return null;
 
   return (
-    <div className={styles.toast} role="status">
+    <div
+      className={`${styles.toast} ${error ? styles.toastError : ""}`}
+      role={error ? "alert" : "status"}
+    >
       <svg
         width="16"
         height="16"
@@ -18,7 +29,14 @@ export default function Toast({ show, text }: { show: boolean; text: string }) {
         strokeLinejoin="round"
         className={styles.icon}
       >
-        <path d="M20 6 9 17l-5-5" />
+        {error ? (
+          <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8v4M12 16h.01" />
+          </>
+        ) : (
+          <path d="M20 6 9 17l-5-5" />
+        )}
       </svg>
       <span>{text}</span>
     </div>

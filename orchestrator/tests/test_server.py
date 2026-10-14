@@ -926,6 +926,72 @@ def test_instruct_concurrent_requests_to_different_issues_are_not_blocked() -> N
         server.shutdown()
 
 
+def test_requests_to_different_projects_are_processed_concurrently() -> None:
+    """あるプロジェクトの処理が長引いても、別プロジェクトのinstruct/create_issueは待たされない
+    （issue #212）。プロセス全体で共有するロックではなく、repo+issue単位・プロジェクト単位の
+    ロックのみで排他していることの確認。"""
+    project_b = Project(repo="nosetech/project-b", worktree_path="/tmp/project-b")
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}, 2: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+    creator = FakeIssueCreator()
+
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def blocking_merge_pr(repo: str, pr_number: int) -> None:
+        started_event.set()
+        release_event.wait(timeout=5)
+        review_merge.merge_pr(repo, pr_number)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, project_b],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        create_issue=creator.create_issue,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=blocking_merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
+    )
+
+    first_thread = threading.Thread(
+        target=lambda: _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+    )
+    first_thread.start()
+    try:
+        assert started_event.wait(timeout=2)
+
+        status, _ = _post(
+            server, "/api/projects/nosetech/project-b/issues/2/instruct", {"action": "approve"}
+        )
+        assert status == 200
+
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-b/issues",
+            {"title": "t", "prompt": "p", "dispatch": "queued"},
+        )
+        assert status == 201
+        assert [c[0] for c in creator.created] == ["nosetech/project-b"]
+        # 別プロジェクトの処理が完了した時点でも、project-aのマージはまだ進行中。
+        assert first_thread.is_alive()
+    finally:
+        release_event.set()
+        first_thread.join(timeout=5)
+        server.shutdown()
+
+
 def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running() -> None:
     """同じプロジェクトの別issueでAgent Runnerが実行中の場合、worktree同期をスキップする。
 

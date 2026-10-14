@@ -23,6 +23,7 @@ import { AppProvider } from "./AppContext";
 import Header from "./Header";
 import Sidebar from "./Sidebar";
 import BottomNav from "./BottomNav";
+import { useJobs } from "@/lib/useJobs";
 import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
 import Toast from "./Toast";
 import styles from "./AppShell.module.css";
@@ -56,17 +57,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
-  const [lockedIssue, setLockedIssue] = useState<IssueRef | null>(null);
 
-  const [toast, setToast] = useState<{ show: boolean; text: string }>({
+  const [toast, setToast] = useState<{
+    show: boolean;
+    text: string;
+    error: boolean;
+  }>({
     show: false,
     text: "",
+    error: false,
   });
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = useCallback((text: string) => {
+  const showToast = useCallback((text: string, isError = false) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ show: true, text });
+    setToast({ show: true, text, error: isError });
     toastTimer.current = setTimeout(
       () => setToast((t) => ({ ...t, show: false })),
       TOAST_DURATION_MS,
@@ -110,6 +115,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     invalidateIssueCache(issueCache.current);
     return refresh();
   }, [refresh]);
+
+  const { jobs, startJob, retryJob, dismissJob } = useJobs({
+    showToast,
+    onSettled: refreshAfterAction,
+  });
 
   const refreshProjects = useCallback((): Promise<void> => {
     // refresh()と同様、取得失敗時は前回の一覧を残す（別タブでのプロジェクト設定変更や
@@ -176,7 +186,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         projectSettings,
         error,
         settings,
-        lockedIssue,
+        jobs,
+        startJob,
+        retryJob,
+        dismissJob,
         refresh,
         refreshProjects,
         refreshAfterAction,
@@ -193,7 +206,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Sidebar attentionCount={attentionCount} anyOrphan={anyOrphan} />
           <div className={styles.contentPane}>
             <div className={styles.screen}>{children}</div>
-            <Toast show={toast.show} text={toast.text} />
+            <Toast show={toast.show} text={toast.text} error={toast.error} />
             <ComposerBar
               open={composerOpen}
               mode={composerMode}
@@ -203,8 +216,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               repos={repos}
               newTaskRepo={newTaskRepo}
               onNewTaskRepoChange={setNewTaskRepo}
-              onSubmitted={refreshAfterAction}
-              onReplySubmittingChange={setLockedIssue}
             />
           </div>
           <BottomNav attentionCount={attentionCount} anyOrphan={anyOrphan} />
