@@ -15,6 +15,7 @@ const HEADING: Record<Job["kind"], { running: string; failed: string }> = {
   merge: { running: "マージを処理中", failed: "マージに失敗しました" },
   reply: { running: "返信を送信中", failed: "返信の送信に失敗しました" },
   new: { running: "作成を処理中", failed: "作成に失敗しました" },
+  rerun: { running: "再実行を処理中", failed: "再実行に失敗しました" },
 };
 
 export function ErrorIcon({ size = 15 }: { size?: number }) {

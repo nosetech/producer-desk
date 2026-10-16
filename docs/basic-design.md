@@ -171,6 +171,28 @@ Content-Type: application/json
 - 実行中であれば、そのメッセージ（issue番号・コメント本文）をプロジェクトごとのFIFOキューに追加する。実行中の `claude -p` プロセスが終了次第、キューの先頭のメッセージで次のディスパッチを `--resume` 付きで行う。複数メッセージが溜まっている場合は1つずつ順に処理する。
 - `DispatchQueue.is_running(repo)`（プロジェクト単位の実行中判定）に加え、`DispatchQueue.is_active(repo, issue_number)`でissue単位の実行中・待機中判定ができる（[2-2「孤立したin-progress検知」](#2-2-データ取得仕様ポーリング)、issue #50）。
 
+#### 処理状態チェック・再実行API（issue #215）
+
+指示がオーケストレータ停止・ポーリング取りこぼし・Agent Runner異常終了等で処理されなかった場合に、issueへ指示を書き直さずに復旧するためのAPI。ディスパッチキューと既知コメントIDはメモリ上のみで永続化しない（再起動時の古い指示の一斉再開リスクを避けるため）。取りこぼしは本APIによる診断・再実行で救済する。
+
+**`GET /api/projects/{repo}/issues/{issue_number}/dispatch-status`（診断）**
+
+- レスポンス: `state` / `label` / `redispatchable` / `pending_message` / `pending_comment_id` / `pending_comment_author` / `pending_comment_created_at` / `pending_comment_url` / `detail`。`pending_comment_*`は再実行確認UIで指示コメントの投稿者・時刻・GitHubリンクを表示するための項目。
+- `state`の判定（上から順）:
+  - `not_managed`: 状態ラベルが無い、またはクローズ済み。再実行不可。
+  - `running` / `queued`: `DispatchQueue.is_active`が真（`is_current`が真なら`running`、それ以外は`queued`）。再実行不可。
+  - `orphaned_in_progress`: `status:in-progress`だが実行中・待機中でない。未処理指示があれば再実行可。
+  - `not_dispatched`: 未処理の指示コメントがある。再実行可。
+  - `completed`: 未処理の指示コメントが無い。再実行不可（`detail`は「未処理の指示コメントがありません」）。
+- 「最後の未処理指示」は、最後の区切りコメント（本文が`Agent Runner実行結果:` / `:warning:` / `:arrows_counterclockwise:` / 再実行記録`:repeat: ダッシュボードから再実行しました`で始まるもの）より後に付いたコメントの最後の1件。ダッシュボード経由の指示は`post_comment`が`BOT_COMMENT_MARKER`を付与するため、マーカーの有無では直接コメントと区別できず、マーカーの有無は問わない（表示時はマーカーを除去する）。区切りコメントが無い場合は全コメントが候補。コメントが1件も無い場合は検知しない（issue本文は指示として扱わない）。候補は指示ではないコメントの可能性があるため、UIで文面を表示して確認させる。
+
+**`POST /api/projects/{repo}/issues/{issue_number}/redispatch`（再実行）**
+
+- `instruct`の`action`拡張ではなく独立したエンドポイントとする（コメントを投稿しない副作用の違い、`handle_instruct`の分岐肥大化の回避のため）。リクエストボディは任意（`progressId`のみ）。
+- 診断で特定した最後の未処理指示を、issueへ新規コメントを投稿せずにそのままディスパッチキューへ投入する。ラベル整合・キュー投入は`instruct`と共通の`apply_instruction`を用いる。実行後、再実行した事実のみをbotマーカー付きコメントで記録する（指示として再検知されない）。
+- 二重実行防止: 実行中・待機中は409。issue単位の`InstructInFlightLocks`も`instruct`と共有し、処理中は409。
+- 未処理指示が無い場合は422（`未処理の指示コメントがありません`）、管理対象外issueは400、対象issueが見つからない場合は404。
+
 ### 2-4. ダッシュボードの画面設計
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。

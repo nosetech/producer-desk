@@ -126,6 +126,27 @@ export interface InstructResult {
   dispatched: boolean;
 }
 
+/** GET .../issues/{n}/dispatch-status のレスポンス（issue #215）。 */
+export type DispatchState =
+  | "running"
+  | "queued"
+  | "completed"
+  | "not_dispatched"
+  | "orphaned_in_progress"
+  | "not_managed";
+
+export interface DispatchStatus {
+  state: DispatchState;
+  label: string | null;
+  redispatchable: boolean;
+  pending_message: string | null;
+  pending_comment_id: string | null;
+  pending_comment_author: string | null;
+  pending_comment_created_at: string | null;
+  pending_comment_url: string | null;
+  detail: string;
+}
+
 export type Dispatch = "immediate" | "queued";
 
 export interface CreateIssueResult {

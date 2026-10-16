@@ -17,7 +17,10 @@ import { shortRepoName } from "@/lib/projectStatus";
 import { statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
+import { findIssueJob } from "@/lib/jobs";
 import { useApp } from "./AppContext";
+import DispatchDiagnosis from "./DispatchDiagnosis";
+import JobStatus from "./JobStatus";
 import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
@@ -103,6 +106,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     lookupIssues,
     storeIssues,
     settings,
+    jobs,
+    retryJob,
+    dismissJob,
   } = useApp();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
@@ -610,6 +616,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   issue.is_orphaned ? styles.cardOrphan : "",
                 ].join(" ");
                 const reply = () => openReply(repo, issue.number, issue.title);
+                const job = findIssueJob(jobs, repo, issue.number);
                 return (
                   <div key={issue.number} className={styles.item}>
                     <div className={rowClass}>
@@ -703,6 +710,21 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                         </button>
                       </div>
                     </div>
+                    {job && (
+                      <JobStatus
+                        job={job}
+                        onRetry={() => retryJob(job.key)}
+                        onDismiss={() => dismissJob(job.key)}
+                      />
+                    )}
+                    {!done && (
+                      <DispatchDiagnosis
+                        repo={repo}
+                        number={issue.number}
+                        title={issue.title}
+                        busy={job !== undefined}
+                      />
+                    )}
                   </div>
                 );
               })}

@@ -2,6 +2,7 @@ import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
   type CreateIssueResult,
+  type DispatchStatus,
   type Dispatch,
   type ExecutionMode,
   type InstructAction,
@@ -115,6 +116,31 @@ export function postInstruct(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, message, progressId, prNumber }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
+}
+
+/** 指示の処理状態を診断する（issue #215）。 */
+export function fetchDispatchStatus(
+  repo: string,
+  issueNumber: number,
+): Promise<DispatchStatus> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}/dispatch-status`, {
+    cache: "no-store",
+  }).then((res) => parseJsonOrThrow<DispatchStatus>(res));
+}
+
+/** 未処理の指示をコメント再投稿なしで再実行する（issue #215）。 */
+export function postRedispatch(
+  repo: string,
+  issueNumber: number,
+  progressId?: string,
+): Promise<{ dispatched: boolean; comment: string | null }> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}/redispatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ progressId }),
+  }).then((res) =>
+    parseJsonOrThrow<{ dispatched: boolean; comment: string | null }>(res),
+  );
 }
 
 export function postCreateIssue(

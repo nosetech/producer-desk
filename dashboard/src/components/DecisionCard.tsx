@@ -10,6 +10,7 @@ import type { IssueComment, IssueSummary } from "@/lib/types";
 import { useApp } from "./AppContext";
 import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
+import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./DecisionCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の apply_instruction（コメント投稿は
@@ -210,6 +211,13 @@ export default function DecisionCard({
           返信
         </button>
       </div>
+
+      <DispatchDiagnosis
+        repo={decision.repo}
+        number={decision.number}
+        title={decision.title}
+        busy={busy}
+      />
 
       {viewerOpen && last && (
         <CommentViewer
