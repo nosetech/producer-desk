@@ -100,7 +100,7 @@ function Note({ children }: { children: React.ReactNode }) {
  * dispatch-status APIで行い、再実行は他の操作と同じバックグラウンドジョブとして実行する
  * （別プロジェクトの操作をブロックしない）。
  */
-export default function DispatchDiagnosis({
+export function useDispatchDiagnosis({
   repo,
   number,
   title,
@@ -182,209 +182,251 @@ export default function DispatchDiagnosis({
       status?.state === "orphaned_in_progress") &&
     !canRerun;
 
-  return (
-    <div className={styles.root}>
-      <div className={styles.triggerRow}>
-        <button
-          type="button"
-          className={styles.linkBtn}
-          onClick={check}
-          disabled={busy || checking}
-          title="オーケストレータでの処理状態を確認"
-          aria-expanded={open}
-        >
-          <Svg size={13}>
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-          </Svg>
-          状態をチェック
-        </button>
-      </div>
-      {open && (
-        <div
-          role="region"
-          aria-label="状態チェックの結果"
-          aria-live="polite"
-          className={styles.box}
-          style={
-            !checking && emphasized && tone
-              ? { borderColor: `var(${tone.color})` }
-              : undefined
-          }
-        >
-          {checking && (
-            <div className={styles.checking}>
-              <SpinnerIcon />
-              <span className={styles.checkingText}>状態を確認中…</span>
-              <span className={styles.spacer} />
-              <span className={styles.target}>
-                GET {repo} #{number}
+  const linkTrigger = (
+    <div className={styles.triggerRow}>
+      <button
+        type="button"
+        className={styles.linkBtn}
+        onClick={check}
+        disabled={busy || checking}
+        title="オーケストレータでの処理状態を確認"
+        aria-expanded={open}
+      >
+        <Svg size={13}>
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </Svg>
+        状態をチェック
+      </button>
+    </div>
+  );
+
+  // issue一覧用。Claude Designに合わせてアイコンのみ（文言はtitle/aria-labelに持たせる）。
+  const iconTrigger = (size: number) => (
+    <button
+      type="button"
+      className={styles.iconBtn}
+      onClick={check}
+      disabled={busy || checking}
+      title="状態をチェック"
+      aria-label={`#${number} ${title} の状態をチェック`}
+      aria-expanded={open}
+    >
+      <Svg size={size}>
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </Svg>
+    </button>
+  );
+
+  const panel = open && (
+    <div
+      role="region"
+      aria-label="状態チェックの結果"
+      aria-live="polite"
+      className={styles.box}
+      style={
+        !checking && emphasized && tone
+          ? { borderColor: `var(${tone.color})` }
+          : undefined
+      }
+    >
+      {checking && (
+        <div className={styles.checking}>
+          <SpinnerIcon />
+          <span className={styles.checkingText}>状態を確認中…</span>
+          <span className={styles.spacer} />
+          <span className={styles.target}>
+            GET {repo} #{number}
+          </span>
+        </div>
+      )}
+      {!checking && error && (
+        <>
+          <div className={styles.resultHead}>
+            <div className={styles.resultBody}>
+              <span className={styles.label} style={{ color: "var(--warn)" }}>
+                状態を確認できませんでした
               </span>
+              <span className={styles.desc}>{error}</span>
+            </div>
+            <button
+              type="button"
+              className={styles.closeBtn}
+              onClick={close}
+              title="閉じる"
+              aria-label="状態チェックの結果を閉じる"
+            >
+              <Svg size={13}>
+                <path d="M18 6 6 18M6 6l12 12" />
+              </Svg>
+            </button>
+          </div>
+          <div className={styles.btnRow}>
+            <button type="button" className={styles.rerunBtn} onClick={check}>
+              再試行
+            </button>
+          </div>
+        </>
+      )}
+      {!checking && status && meta && tone && (
+        <>
+          <div className={styles.resultHead}>
+            <span
+              className={`${styles.iconWrap} ${status.state === "not_managed" ? styles.iconWrapDashed : ""}`}
+              style={{
+                background: `var(${tone.bg})`,
+                color: `var(${tone.color})`,
+              }}
+            >
+              <StateIcon state={status.state} />
+            </span>
+            <div className={styles.resultBody}>
+              <div className={styles.labelRow}>
+                <span
+                  className={styles.label}
+                  style={{ color: `var(${tone.color})` }}
+                >
+                  {meta.label}
+                </span>
+                {status.pending_comment_created_at && (
+                  <span className={styles.meta}>
+                    最終指示{" "}
+                    {formatRelativeTime(status.pending_comment_created_at)}
+                  </span>
+                )}
+              </div>
+              <span className={styles.desc}>{meta.desc}</span>
+            </div>
+            <button
+              type="button"
+              className={styles.closeBtn}
+              onClick={close}
+              title="閉じる"
+              aria-label="状態チェックの結果を閉じる"
+            >
+              <Svg size={13}>
+                <path d="M18 6 6 18M6 6l12 12" />
+              </Svg>
+            </button>
+          </div>
+          {active && <Note>すでに実行中のため再実行できません。</Note>}
+          {noComment && (
+            <Note>
+              未処理の指示コメントがありません。再開するには、issueに指示を返信してください。
+            </Note>
+          )}
+          {canRerun && !confirming && (
+            <div className={styles.btnRow}>
+              <button
+                type="button"
+                className={styles.rerunBtn}
+                onClick={() => setConfirming(true)}
+              >
+                <Svg>
+                  <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                  <path d="M3 3v5h5" />
+                </Svg>
+                再実行…
+              </button>
             </div>
           )}
-          {!checking && error && (
-            <>
-              <div className={styles.resultHead}>
-                <div className={styles.resultBody}>
-                  <span
-                    className={styles.label}
-                    style={{ color: "var(--warn)" }}
-                  >
-                    状態を確認できませんでした
+          {canRerun && confirming && (
+            <div className={styles.confirm}>
+              <span className={styles.confirmHeading}>
+                再実行される指示コメント
+              </span>
+              <div className={styles.comment}>
+                <div className={styles.commentMeta}>
+                  <span className={styles.commentAuthor}>
+                    {status.pending_comment_author ?? "不明"}
                   </span>
-                  <span className={styles.desc}>{error}</span>
+                  {status.pending_comment_created_at && (
+                    <span className={styles.meta}>
+                      {formatRelativeTime(status.pending_comment_created_at)}
+                    </span>
+                  )}
+                  <span className={styles.spacer} />
+                  {status.pending_comment_url && (
+                    <a
+                      href={status.pending_comment_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={styles.commentLink}
+                      title="GitHubで開く"
+                      aria-label="コメントをGitHubで開く"
+                    >
+                      <Svg size={12}>
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <path d="M15 3h6v6M10 14 21 3" />
+                      </Svg>
+                    </a>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  className={styles.closeBtn}
-                  onClick={close}
-                  title="閉じる"
-                  aria-label="状態チェックの結果を閉じる"
-                >
-                  <Svg size={13}>
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </Svg>
-                </button>
+                <div className={styles.commentBody}>
+                  {status.pending_message}
+                </div>
               </div>
+              <span className={styles.confirmNote}>
+                このコメントをエージェントへの指示として再実行します。指示でない場合は再実行せず、返信で指示を出してください。
+              </span>
               <div className={styles.btnRow}>
                 <button
                   type="button"
                   className={styles.rerunBtn}
-                  onClick={check}
+                  onClick={rerun}
                 >
-                  再試行
+                  <Svg>
+                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                    <path d="M3 3v5h5" />
+                  </Svg>
+                  この内容で再実行
                 </button>
-              </div>
-            </>
-          )}
-          {!checking && status && meta && tone && (
-            <>
-              <div className={styles.resultHead}>
-                <span
-                  className={`${styles.iconWrap} ${status.state === "not_managed" ? styles.iconWrapDashed : ""}`}
-                  style={{
-                    background: `var(${tone.bg})`,
-                    color: `var(${tone.color})`,
-                  }}
-                >
-                  <StateIcon state={status.state} />
-                </span>
-                <div className={styles.resultBody}>
-                  <div className={styles.labelRow}>
-                    <span
-                      className={styles.label}
-                      style={{ color: `var(${tone.color})` }}
-                    >
-                      {meta.label}
-                    </span>
-                    {status.pending_comment_created_at && (
-                      <span className={styles.meta}>
-                        最終指示{" "}
-                        {formatRelativeTime(status.pending_comment_created_at)}
-                      </span>
-                    )}
-                  </div>
-                  <span className={styles.desc}>{meta.desc}</span>
-                </div>
                 <button
                   type="button"
-                  className={styles.closeBtn}
-                  onClick={close}
-                  title="閉じる"
-                  aria-label="状態チェックの結果を閉じる"
+                  className={styles.cancelBtn}
+                  onClick={() => setConfirming(false)}
                 >
-                  <Svg size={13}>
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </Svg>
+                  キャンセル
                 </button>
               </div>
-              {active && <Note>すでに実行中のため再実行できません。</Note>}
-              {noComment && (
-                <Note>
-                  未処理の指示コメントがありません。再開するには、issueに指示を返信してください。
-                </Note>
-              )}
-              {canRerun && !confirming && (
-                <div className={styles.btnRow}>
-                  <button
-                    type="button"
-                    className={styles.rerunBtn}
-                    onClick={() => setConfirming(true)}
-                  >
-                    <Svg>
-                      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-                      <path d="M3 3v5h5" />
-                    </Svg>
-                    再実行…
-                  </button>
-                </div>
-              )}
-              {canRerun && confirming && (
-                <div className={styles.confirm}>
-                  <span className={styles.confirmHeading}>
-                    再実行される指示コメント
-                  </span>
-                  <div className={styles.comment}>
-                    <div className={styles.commentMeta}>
-                      <span className={styles.commentAuthor}>
-                        {status.pending_comment_author ?? "不明"}
-                      </span>
-                      {status.pending_comment_created_at && (
-                        <span className={styles.meta}>
-                          {formatRelativeTime(
-                            status.pending_comment_created_at,
-                          )}
-                        </span>
-                      )}
-                      <span className={styles.spacer} />
-                      {status.pending_comment_url && (
-                        <a
-                          href={status.pending_comment_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className={styles.commentLink}
-                          title="GitHubで開く"
-                          aria-label="コメントをGitHubで開く"
-                        >
-                          <Svg size={12}>
-                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                            <path d="M15 3h6v6M10 14 21 3" />
-                          </Svg>
-                        </a>
-                      )}
-                    </div>
-                    <div className={styles.commentBody}>
-                      {status.pending_message}
-                    </div>
-                  </div>
-                  <span className={styles.confirmNote}>
-                    このコメントをエージェントへの指示として再実行します。指示でない場合は再実行せず、返信で指示を出してください。
-                  </span>
-                  <div className={styles.btnRow}>
-                    <button
-                      type="button"
-                      className={styles.rerunBtn}
-                      onClick={rerun}
-                    >
-                      <Svg>
-                        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-                        <path d="M3 3v5h5" />
-                      </Svg>
-                      この内容で再実行
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.cancelBtn}
-                      onClick={() => setConfirming(false)}
-                    >
-                      キャンセル
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
+
+  return { linkTrigger, iconTrigger, panel };
+}
+
+export default function DispatchDiagnosis(props: {
+  repo: string;
+  number: number;
+  title: string;
+  busy: boolean;
+}) {
+  const { linkTrigger, panel } = useDispatchDiagnosis(props);
+  return (
+    <div className={styles.root}>
+      {linkTrigger}
+      {panel}
+    </div>
+  );
+}
+
+/** issue一覧の行用。トリガー（アイコンのみ）と結果パネルを別の位置に配置できるよう、render propで渡す。 */
+export function DispatchDiagnosisSlot({
+  children,
+  ...props
+}: {
+  repo: string;
+  number: number;
+  title: string;
+  busy: boolean;
+  children: (slot: {
+    iconTrigger: (size: number) => React.ReactNode;
+    panel: React.ReactNode;
+  }) => React.ReactNode;
+}) {
+  const { iconTrigger, panel } = useDispatchDiagnosis(props);
+  return <>{children({ iconTrigger, panel })}</>;
 }

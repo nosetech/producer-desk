@@ -48,6 +48,33 @@
   cursor: default;
 }
 
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.iconBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.iconBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.panelWrap {
+  padding: 0 16px 12px 86px;
+}
+
 .box {
   display: flex;
   flex-direction: column;
@@ -289,7 +316,16 @@
 @media (max-width: 640px) {
   .rerunBtn,
   .cancelBtn,
-  .linkBtn {
+  .linkBtn,
+  .iconBtn {
     min-height: 40px;
+  }
+
+  .iconBtn {
+    min-width: 40px;
+  }
+
+  .panelWrap {
+    padding: 0 14px 12px;
   }
 }
