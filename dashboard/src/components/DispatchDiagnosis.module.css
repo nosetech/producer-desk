@@ -52,7 +52,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 8px;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-panel);
@@ -66,8 +69,14 @@
   color: var(--accent-blue);
 }
 
+.iconBtn.iconBtnOpen {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
 .iconBtn:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: default;
 }
 
@@ -316,13 +325,13 @@
 @media (max-width: 640px) {
   .rerunBtn,
   .cancelBtn,
-  .linkBtn,
-  .iconBtn {
+  .linkBtn {
     min-height: 40px;
   }
 
   .iconBtn {
-    min-width: 40px;
+    width: 40px;
+    height: 40px;
   }
 
   .panelWrap {

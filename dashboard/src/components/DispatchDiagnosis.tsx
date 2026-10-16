@@ -204,7 +204,7 @@ export function useDispatchDiagnosis({
   const iconTrigger = (size: number) => (
     <button
       type="button"
-      className={styles.iconBtn}
+      className={`${styles.iconBtn} ${open ? styles.iconBtnOpen : ""}`}
       onClick={check}
       disabled={busy || checking}
       title="状態をチェック"
