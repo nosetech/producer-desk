@@ -19,11 +19,12 @@ import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { findIssueJob } from "@/lib/jobs";
 import { useApp } from "./AppContext";
-import DispatchDiagnosis from "./DispatchDiagnosis";
+import { DispatchDiagnosisSlot } from "./DispatchDiagnosis";
 import JobStatus from "./JobStatus";
 import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
+import diagStyles from "./DispatchDiagnosis.module.css";
 import styles from "./ProjectIssues.module.css";
 
 const SKELETON_WIDTHS = [62, 48, 70, 40, 56, 44];
@@ -619,112 +620,126 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 const job = findIssueJob(jobs, repo, issue.number);
                 return (
                   <div key={issue.number} className={styles.item}>
-                    <div className={rowClass}>
-                      <span className={styles.num}>#{issue.number}</span>
-                      <div className={styles.titleCell}>
-                        <a
-                          className={`${styles.title} ${done ? styles.titleDone : ""}`}
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={issue.title}
-                        >
-                          {issue.title}
-                        </a>
-                        {issue.is_orphaned && (
-                          <span className={styles.orphanNote}>
-                            <WarningIcon size={12} />
-                            停止の可能性 · {orphanNote(issue.updated_at)}
-                          </span>
-                        )}
-                      </div>
-                      <div className={styles.badgeCell}>
-                        <StatusBadge issue={issue} />
-                      </div>
-                      <span className={styles.num}>{issue.comments_count}</span>
-                      <span className={styles.ago} title={absTime}>
-                        {ago}
-                      </span>
-                      <div className={styles.replyCell}>
-                        <button
-                          type="button"
-                          className={styles.replyBtn}
-                          onClick={reply}
-                        >
-                          <ReplyIcon size={13} />
-                          返信する
-                        </button>
-                      </div>
-                    </div>
-                    <div className={cardClass}>
-                      <div className={styles.cardTop}>
-                        <StatusBadge issue={issue} />
-                        {issue.is_orphaned && (
-                          <span className={styles.orphanNoteInline}>
-                            <WarningIcon size={12} />
-                            停止の可能性
-                          </span>
-                        )}
-                        <span className={styles.cardSpacer} />
-                        <span className={styles.num}>#{issue.number}</span>
-                      </div>
-                      <a
-                        className={`${styles.title} ${styles.titleCard} ${done ? styles.titleDone : ""}`}
-                        href={url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {issue.title}
-                      </a>
-                      <div className={styles.cardMeta}>
-                        <span className={styles.metaItem} title={absTime}>
-                          <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2.1"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{ flex: "none" }}
-                            aria-hidden="true"
-                          >
-                            <circle cx="12" cy="12" r="9" />
-                            <path d="M12 7v5l3 2" />
-                          </svg>
-                          {ago}
-                        </span>
-                        <span className={`${styles.metaItem} ${styles.num}`}>
-                          <CommentIcon size={13} />
-                          {issue.comments_count}
-                        </span>
-                        <span className={styles.cardSpacer} />
-                        <button
-                          type="button"
-                          className={styles.replyBtn}
-                          onClick={reply}
-                        >
-                          <ReplyIcon size={14} />
-                          返信する
-                        </button>
-                      </div>
-                    </div>
-                    {job && (
-                      <JobStatus
-                        job={job}
-                        onRetry={() => retryJob(job.key)}
-                        onDismiss={() => dismissJob(job.key)}
-                      />
-                    )}
-                    {!done && (
-                      <DispatchDiagnosis
-                        repo={repo}
-                        number={issue.number}
-                        title={issue.title}
-                        busy={job !== undefined}
-                      />
-                    )}
+                    <DispatchDiagnosisSlot
+                      repo={repo}
+                      number={issue.number}
+                      title={issue.title}
+                      busy={job !== undefined}
+                    >
+                      {({ iconTrigger, panel }) => (
+                        <>
+                          <div className={rowClass}>
+                            <span className={styles.num}>#{issue.number}</span>
+                            <div className={styles.titleCell}>
+                              <a
+                                className={`${styles.title} ${done ? styles.titleDone : ""}`}
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={issue.title}
+                              >
+                                {issue.title}
+                              </a>
+                              {issue.is_orphaned && (
+                                <span className={styles.orphanNote}>
+                                  <WarningIcon size={12} />
+                                  停止の可能性 · {orphanNote(issue.updated_at)}
+                                </span>
+                              )}
+                            </div>
+                            <div className={styles.badgeCell}>
+                              <StatusBadge issue={issue} />
+                            </div>
+                            <span className={styles.num}>
+                              {issue.comments_count}
+                            </span>
+                            <span className={styles.ago} title={absTime}>
+                              {ago}
+                            </span>
+                            <div className={styles.replyCell}>
+                              {!done && iconTrigger(14)}
+                              <button
+                                type="button"
+                                className={styles.replyBtn}
+                                onClick={reply}
+                              >
+                                <ReplyIcon size={13} />
+                                返信する
+                              </button>
+                            </div>
+                          </div>
+                          <div className={cardClass}>
+                            <div className={styles.cardTop}>
+                              <StatusBadge issue={issue} />
+                              {issue.is_orphaned && (
+                                <span className={styles.orphanNoteInline}>
+                                  <WarningIcon size={12} />
+                                  停止の可能性
+                                </span>
+                              )}
+                              <span className={styles.cardSpacer} />
+                              <span className={styles.num}>
+                                #{issue.number}
+                              </span>
+                            </div>
+                            <a
+                              className={`${styles.title} ${styles.titleCard} ${done ? styles.titleDone : ""}`}
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {issue.title}
+                            </a>
+                            <div className={styles.cardMeta}>
+                              <span className={styles.metaItem} title={absTime}>
+                                <svg
+                                  width="13"
+                                  height="13"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2.1"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  style={{ flex: "none" }}
+                                  aria-hidden="true"
+                                >
+                                  <circle cx="12" cy="12" r="9" />
+                                  <path d="M12 7v5l3 2" />
+                                </svg>
+                                {ago}
+                              </span>
+                              <span
+                                className={`${styles.metaItem} ${styles.num}`}
+                              >
+                                <CommentIcon size={13} />
+                                {issue.comments_count}
+                              </span>
+                              <span className={styles.cardSpacer} />
+                              {!done && iconTrigger(15)}
+                              <button
+                                type="button"
+                                className={styles.replyBtn}
+                                onClick={reply}
+                              >
+                                <ReplyIcon size={14} />
+                                返信する
+                              </button>
+                            </div>
+                          </div>
+                          {job && (
+                            <JobStatus
+                              job={job}
+                              onRetry={() => retryJob(job.key)}
+                              onDismiss={() => dismissJob(job.key)}
+                            />
+                          )}
+                          {!done && panel && (
+                            <div className={diagStyles.panelWrap}>{panel}</div>
+                          )}
+                        </>
+                      )}
+                    </DispatchDiagnosisSlot>
                   </div>
                 );
               })}

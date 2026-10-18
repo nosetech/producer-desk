@@ -563,7 +563,7 @@
 
 .head {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 104px;
+  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 142px;
   gap: 12px;
   align-items: center;
   padding: 8px 16px;
@@ -586,7 +586,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 104px;
+  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 142px;
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
@@ -699,6 +699,8 @@
 .replyCell {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
 }
 
 .replyBtn {

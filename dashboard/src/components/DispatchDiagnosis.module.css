@@ -1,6 +1,6 @@
-/* Claude Design ProducerDesk.dc.html の状態チェック（diag）UI（issue #215）。
-   boxStyle / iconWrap / labelStyle はデザイン実ソースの値。ボタン類のスタイル定義は
-   DesignSyncの取得上限（256KiB）で切れて取得できなかったため、既存の
+/* Claude Design ProducerDesk の状態チェック（diag）UI（issue #215）。
+   linkBtn / iconBtn は ProducerDesk.logic.js の diagLinkBtn / diagBtnStyle（issue #219）、
+   boxStyle / iconWrap / labelStyle もデザイン実ソースの値。その他のボタン類は
    JobStatus.module.css（retryBtn/dismissBtn、同デザイン由来）に揃えている。 */
 @keyframes diagFade {
   from {
@@ -26,26 +26,63 @@
 .linkBtn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 6px;
+  gap: 6px;
+  padding: 4px 8px;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: color 0.12s;
+  transition: all 0.12s;
 }
 
 .linkBtn:hover:not(:disabled) {
-  color: var(--accent-blue);
+  background: var(--bg-panel);
+  color: var(--text-primary);
 }
 
 .linkBtn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.iconBtnOpen {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.iconBtn:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.panelWrap {
+  padding: 0 16px 12px 86px;
 }
 
 .box {
@@ -288,8 +325,22 @@
 
 @media (max-width: 640px) {
   .rerunBtn,
-  .cancelBtn,
-  .linkBtn {
+  .cancelBtn {
     min-height: 40px;
+  }
+
+  .linkBtn {
+    padding: 8px 10px;
+    min-height: 40px;
+  }
+
+  .iconBtn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .panelWrap {
+    padding: 0;
+    margin-top: 6px;
   }
 }
