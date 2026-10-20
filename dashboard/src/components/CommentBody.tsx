@@ -1,4 +1,8 @@
-import { parseCommentBlocks, type InlineSegment } from "@/lib/comment";
+import {
+  attachmentProxyUrl,
+  parseCommentBlocks,
+  type InlineSegment,
+} from "@/lib/comment";
 import styles from "./CommentBody.module.css";
 
 function Segments({ segs }: { segs: InlineSegment[] }) {
@@ -56,6 +60,39 @@ export default function CommentBody({
               <pre key={i} className={styles.code}>
                 {b.text}
               </pre>
+            );
+          case "image":
+            return (
+              // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                className={styles.media}
+                src={attachmentProxyUrl(b.url)}
+                alt={b.alt}
+                loading="lazy"
+              />
+            );
+          case "video":
+            return (
+              <video
+                key={i}
+                className={styles.media}
+                src={attachmentProxyUrl(b.url)}
+                controls
+                preload="metadata"
+              />
+            );
+          case "file":
+            return (
+              <a
+                key={i}
+                className={styles.fileLink}
+                href={attachmentProxyUrl(b.url)}
+                download={b.name}
+              >
+                {b.name}
+              </a>
             );
         }
       })}

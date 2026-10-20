@@ -8,7 +8,7 @@
 
 - Node.js 20以降
 - Python 3.11以降
-- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること）
+- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。Agent Runnerが `gh issue comment --attach` で画像・動画を添付できるよう v2.99.0 以上を推奨。満たさない場合はorchestrator起動時に警告ログが出る）
 - [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
 
@@ -42,6 +42,14 @@ cp config/projects.yaml.example config/projects.yaml
 | `issue_cache_ttl_seconds` | 60 | プロジェクト別issue一覧のクライアントキャッシュTTL（秒） |
 | `dashboard_poll_interval_seconds` | 30 | ダッシュボードのポーリング間隔（秒） |
 | `sync_tick_interval_seconds` | 30 | 「N分前」表示の更新間隔（秒） |
+
+Privateリポジトリを管理対象にする場合は、`config/projects.yaml`のトップレベルに `github_token: ghp_...` を記載する（repo権限を持つトークン）。orchestratorが起動時に環境変数 `GH_TOKEN` へ反映し、`gh` コマンド・Agent Runner・コメント添付画像／動画のダッシュボード表示に使われる。平文で保存されるため `chmod 600 config/projects.yaml` で権限を絞ること。
+
+UI変更のレビュー用にAgent Runnerが動画（Playwrightの `recordVideo`、`.webm`）を録画する場合は、実行ホストにPlaywright専用のffmpegを1回インストールしておく（約1.4MB。旧版のffmpegだとエラーなしで空ファイルになる）。
+
+```bash
+npx playwright-core install ffmpeg
+```
 
 対象リポジトリへの状態ラベル作成・worktreeの用意・このファイルへの追記は、`scripts/add_project.sh`で1コマンドにまとめて行える（`gh auth login`済みであること）。
 

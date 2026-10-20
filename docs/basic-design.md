@@ -85,6 +85,7 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
 
 - プロジェクト追加時は、このファイルにエントリを追加し、対象リポジトリのworktreeを用意した上でオーケストレータを再起動する（[要件定義書 2-4](./requirements.md#2-4-agent-runnerの起動停止プロジェクト追加時の運用フロー)の「手動起動・停止」＝このファイルへの登録とオーケストレータの認識、と読み替える）。この一連の作業（対象リポジトリへの5つの状態ラベル作成・ベースcloneとworktreeの用意・このファイルへの追記）は`dist/scripts/add_project.sh <owner/repo> <worktree-path> [base-branch] [--projects-config-path=<path>] [--base-clone-root=<path>]`で1コマンドにまとめて行える（issue #128）。`--projects-config-path`・`--base-clone-root`はいずれも省略可能で、省略時は本節既定の`config/projects.yaml`・`~/.producer-desk/repos`が使われる（`--projects-config-path`未指定時は従来通り環境変数`PROJECTS_CONFIG_PATH`もフォールバック先として使える）。このファイルはリリース時にtarball展開先ルートの`scripts/add_project.sh`として同梱される。`bin/start.sh`等（開発用ソースビルドとtarball配布用ビルド済み資産とで実際に処理内容が異なるため`bin/`・`dist/bin/`双方に別内容を持つ）とは異なり、add_project.shは開発環境・配布パッケージのどちらで動かしても処理内容が同一のため、二重管理を避けて`dist/scripts/`配下にのみ配置する。ラベル作成は`gh label create`が未作成のラベルに対する`gh issue edit --add-label`の失敗要因になりやすく見落としやすいため、特にこのツールでの一括対応を推奨する。冪等に実装されているため、既にラベル・worktree・エントリが存在する場合はそれぞれスキップされ、何度実行しても安全。オーケストレータの自動再起動は行わないため、実行完了後は案内に従って手動で再起動すること。詳細は`dist/scripts/add_project.sh`冒頭のコメントを参照。
 - トップレベルの`log_retention_days`（プロジェクト単位ではなくファイル全体に1つ、既定値7）で、`logs/orchestrator.log`のローテーション世代数・`logs/<repo>/*.log`（Agent Runner個別実行ログ）の保持日数の両方を制御する（[3-2](#3-2-監視方法)参照。issue #114）。
+- トップレベルの`github_token`（任意、issue #218）で、GitHubのトークンをサーバー側の設定ファイルに記載できる。Privateリポジトリを管理対象にするための設定で、設定されている場合オーケストレータは起動時に環境変数`GH_TOKEN`へ反映する（`gh`はこれを`gh auth login`の認証より優先して使う）。そのためオーケストレータが実行する`gh`コマンドと、Agent Runnerの子プロセス（環境変数を継承する）の双方に適用される。同じトークンは添付ファイルのプロキシ取得（[2-4](#2-4-ダッシュボードの画面設計)）にも使う。未設定または空なら`gh`の既存認証にそのまま委ねる。トークンはブラウザ（ダッシュボード）には一切渡さず、`config/projects.yaml`（`.gitignore`対象）にのみ平文で保存される。ログにも出力しない（使用中である旨のみ記録）。
 - **タイミング系設定（issue #201）**: 動作に影響する時間系の値は、`log_retention_days`と同様に`config/projects.yaml`のトップレベルキーで変更できる（未指定時は括弧内の既定値、正の数値のみ・不正値は起動時エラー、反映にはオーケストレータの再起動が必要。コメント付きの例は`config/projects.yaml.example`）。オーケストレータ側: `polling_interval_seconds`（300）、`ci_wait_timeout_hours`（6、[3-5](#3-5-ci完了待機中の自動再開issue-173)のCI待機タイムアウト）、`litellm_health_timeout_seconds`（3）、`ollama_bench_timeout_seconds`（300）。ダッシュボード側: `issue_cache_ttl_seconds`（60）、`dashboard_poll_interval_seconds`（30）、`sync_tick_interval_seconds`（30）。ダッシュボード側の値はブラウザから`config/projects.yaml`を直接読めないため、内部API `GET /api/settings`（`/api/state`と同じサーバー、レスポンスは上記3キーを秒単位の数値で返す）で配信し、ダッシュボードのRoute Handler（`/api/settings`）経由で`AppShell`が起動時に1回取得する。取得失敗・不正値の場合は括弧内の既定値で動作する。
 
 ### 2-2. データ取得仕様（ポーリング）
@@ -197,6 +198,18 @@ Content-Type: application/json
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
 
+#### コメント添付ファイル（画像・動画）の表示（issue #218）
+
+UI変更のレビュー用に、Agent Runnerは`gh issue comment <n> --attach <file>`（`gh` v2.99.0以降）で実装結果のスクリーンショット・録画をissueコメントへ添付できる。指示はプロンプト設定の`attachment_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で与える。
+
+- **添付の仕様**: `--attach`で付けられるのは画像（png/jpg/jpeg/gif/svg）と動画（mp4/mov/webm）のみ、1回50ファイルまで。サイズ上限は画像・GIF 10MB、動画10MB（無料プラン）/100MB（有料プラン）。コメント本文には、画像は`![name](https://github.com/user-attachments/assets/<uuid>)`、動画はURL単独の行が追記される。
+- **方針**: 静止画で足りる（状態の比較・表示崩れの確認）場合はスクリーンショットにし、動画はアニメーション・ホバー・状態遷移・複数画面にまたがる操作など、動きを見せないと判断できない場合に限る。動画を作る場合の方式は、Playwrightの`recordVideo`（`.webm`）のみとする（mp4/GIF変換・`gif_creator`・`screencapture -v`は採用しない）。録画にはPlaywright専用のffmpegが必要（`npx playwright-core install ffmpeg`）。録画・撮影は書き込み系ボタンを押さない読み取り専用の操作で行い、秘匿情報が映り込んでいないことを確認してから添付する。
+- **ダッシュボードでの表示**: `parseCommentBlocks`（`dashboard/src/lib/comment.ts`）が、画像（`![alt](url)`）・動画（単独行の`user-attachments/assets/<uuid>`のURL、または`<video src>`）・ファイル（`user-attachments/files/<id>/<name>`、リンク表示）をブロックとして解釈し、`CommentBody`が`<img>`/`<video controls>`/リンクとして描画する。コメント表示モーダル（`CommentViewer`）と返信欄の引用（`ComposerBar`）で見える。カードの要約表示は、添付の行を除いて末尾に「[画像1件・動画1件]」のように件数を付ける。添付ファイルのURL以外（外部の画像URL等）は描画せず通常の文字列のままとする。
+- **Privateリポジトリ対応**: `user-attachments`のURLは、リポジトリがPublicか、閲覧者のブラウザがGitHubにログイン済みでないと直接読み込めない。また`body_html`の署名付きURLは約5分で失効するため保存して使えない。そこでダッシュボードは常にプロキシ経由で取得する。ブラウザ → ダッシュボード`GET /api/attachment?url=<添付URL>` → オーケストレータ`GET /api/attachment?url=<添付URL>` → GitHub、の順で中継し、オーケストレータが`config/projects.yaml`の`github_token`（[2-1](#2-1-対象リポジトリ一覧の管理)）で認証する。GitHubは署名付きURLへ302でリダイレクトするため、リダイレクトは自前で辿り、トークンは最初の`github.com`へのリクエストにのみ付与する（S3等の署名付きURLへ引き継ぐと拒否されるため）。動画のシークのため`Range`ヘッダを中継し、本文はバッファせずストリームで返す。
+  - **SSRF対策**: プロキシ対象は`https://github.com/user-attachments/(assets/<uuid>|files/<id>/<name>)`の形式に限定し、リダイレクト先も`githubusercontent.com`/`amazonaws.com`/`github.com`配下のhttpsに限定する。
+  - 取得失敗時はGitHubのステータス（権限が無い・存在しない場合は404）をそのまま返す。
+- **実行ホストの前提**: `gh`がv2.99.0以上であること。満たさない場合、オーケストレータは起動時にログへ警告する。
+
 ## 3. Agent Runner連携設計
 
 ### 3-1. 起動パラメータ
@@ -268,10 +281,10 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の4定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の5定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下6種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下7種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -279,6 +292,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
   | `pr_instruction` | PR作成時の指示（現状はPR本文の`Closes #<issue番号>`記法） | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
+  | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
   | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
   | `user_name` | ユーザーの呼称（既定「ユーザー」） | なし |
 

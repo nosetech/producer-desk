@@ -44,6 +44,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため、上記の指示はそのまま適用される（プロジェクトごとの指示であり、Agent Runner共通の`--append-system-prompt`では付与しない。`docs/basic-design.md` 3-6参照）。
 
+### UI変更のスクリーンショット・動画をissueに添付する場合（issue #218）
+
+レビュー用に実装結果の見た目をissueコメントへ添付するときの手順。プロンプト設定の`attachment_instruction`と同じ内容で、仕様は`docs/basic-design.md` 2-4参照。
+
+- `gh issue comment <n> --attach <file>`で添付する（`gh` v2.99.0以上）。画像・動画のみ、サイズ上限は10MB
+- 静止画で足りる場合はスクリーンショットにする。動画はアニメーション・ホバー・状態遷移など動きを見せないと判断できない場合に限り、Playwrightの`recordVideo`（`.webm`）のみで録画する（Playwright専用ffmpeg: `npx playwright-core install ffmpeg`）
+- 確認用ダッシュボードは上記のとおり本番と衝突しない別ポートで起動する
+- 録画・撮影は、承認・返信・新規作成・保存などの書き込み系ボタンを押さず、読み取り専用の操作のみで行う。秘匿情報が映り込んでいないことを確認してから添付する
+
 ## 確定済みの設計判断（変更時は要注意）
 
 以下はプロデューサーとの対話で確定し、複数ドキュメントに横断的に反映されている前提。ドキュメントを更新する際、これらと矛盾する記述を残さないよう注意する。
