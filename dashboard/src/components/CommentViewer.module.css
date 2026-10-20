@@ -194,6 +194,7 @@
   max-height: 440px;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
   min-width: 0;
   overscroll-behavior: contain;
   padding: 16px 20px 18px;
