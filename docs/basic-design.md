@@ -202,7 +202,7 @@ Content-Type: application/json
 ### 3-1. 起動パラメータ
 
 ```bash
-claude -p "<指示内容>" \
+echo "<指示内容>" | claude -p \
   --output-format stream-json --verbose \
   --dangerously-skip-permissions \
   --chrome \
@@ -210,6 +210,7 @@ claude -p "<指示内容>" \
   (--session-id <new-uuid> | --resume <session-id>)
 ```
 
+- **指示内容は標準入力で渡す（issue #222）**: `claude -p "<指示内容>"`のように位置引数で渡すと、先頭が`-`/`--`（箇条書き等）の指示がオプションと解釈され`error: unknown option`で起動に失敗する。そのため`-p`のみを指定し、指示内容は`subprocess.Popen(..., stdin=subprocess.PIPE)`で起動直後に標準入力へ書き込んで閉じる（`run_agent_runner`）。`--output-format stream-json`・`--resume`・`--session-id`・`--chrome`とも併用できる。
 - **実行手段の切り替え（issue #174、[要件定義書 2-5](./requirements.md#2-5-モデル選択方針)・[アーキテクチャ設計書 5章](./architecture.md#5-モデルルーティング)参照）**: 対象プロジェクトの実行手段設定が(B) LiteLLM Proxy経由の場合、`subprocess.Popen`に渡す環境変数へ`ANTHROPIC_BASE_URL`（LiteLLM Proxyのエンドポイント、例: `http://127.0.0.1:4000`）・`ANTHROPIC_AUTH_TOKEN`（LiteLLM Proxy側で発行した仮想キー）を追加する。(A) Claude Code CLI直利用の場合（LiteLLM Proxy疎通不能時のフォールバックを含む）はこれらの環境変数を設定しないだけでなく、`os.environ`（オーケストレータ自身のプロセス環境）に手動検証の残骸等でたまたま設定されていたとしても子プロセスへは明示的に除去して渡す（`run_agent_runner`）。素通しさせると、LiteLLM Proxy疎通不能時の自動フォールバック処理が実質無効化されうるため（issue #176コードレビューで指摘）。この場合はサブスクリプションOAuth認証のまま起動する（既存の起動方式のまま変更なし）。いずれの場合も子プロセスの他の環境変数（`PATH`等）は書き換えない。実行手段の解決方法（プロジェクト設定のデフォルト値・issueコメントでの都度上書き）は[4章](#4-モデルルーター設定設計)参照。
 - worktreeディレクトリの指定はCLIフラグではなく、Pythonの `subprocess.Popen(..., cwd=<worktree-path>)` で行う（実際の `claude` CLIに `--cwd` フラグは存在しないため。`--add-dir` は追加の許可ディレクトリ指定であり用途が異なる）。
 - `<session-id>` は `config/sessions.json`（`.gitignore`対象、コミットしない）に**issueごと**に保存する（`"{repo}#{issue_number}": "<session-id>"`、`orchestrator/orchestrator/session_store.py`）。初回ディスパッチ時はオーケストレータが `uuid.uuid4()` を生成し `--session-id` で明示的に指定してセッションを新規作成する。生成したIDを `config/sessions.json` に書き込み、同一issueへの以降の指示では `--resume <session-id>` で再開する。
