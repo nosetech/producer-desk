@@ -307,7 +307,30 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
 )
 
 
-# issue #149: 上記4つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #218: UI変更のレビュー用に、実装結果の見た目をissueコメントへ画像・動画で添付
+# させる指示。`gh issue comment --attach`（gh v2.99.0以降）で添付したファイルは
+# ダッシュボードのコメント表示（CommentViewer・返信引用）でも見られる。
+AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
+    "UI変更のレビューに実装結果の見た目が必要なときは、"
+    "`gh issue comment {issue_number} --repo {repo} --attach <ファイル>` で"
+    "画像・動画をissueに添付できます（ghコマンドがv2.99.0以上であること）。\n"
+    "- 状態の比較や表示崩れの確認など静止画で足りる場合は、スクリーンショットを添付してください。"
+    "動画は、アニメーション・ホバー・状態遷移・複数画面にまたがる操作など、動きを見せないと"
+    "判断できない場合に限ります。無駄に動画を作らないでください。\n"
+    "- 動画を作る場合は、Playwrightの`recordVideo`で`.webm`を録画する方法のみを使ってください"
+    "（mp4/GIFへの変換、gif_creator、screencaptureは使いません）。録画にはPlaywright専用の"
+    "ffmpegが必要です（`npx playwright-core install ffmpeg`）。\n"
+    "- `--attach`で添付できるのは画像（png/jpg/jpeg/gif/svg）と動画（mp4/mov/webm）のみです。"
+    "サイズ上限は画像・動画とも10MBなので、動画は短く・解像度を絞ってください。\n"
+    "- 添付前に、APIキー・トークン・内部URLなどの秘匿情報が画面に映り込んでいないことを"
+    "確認してください。"
+    "Publicリポジトリでは誰でも添付ファイルを見られます。\n"
+    "- 録画・撮影は、承認・返信・新規作成・保存などの書き込み系ボタンを押さず、"
+    "読み取り専用の操作のみで行ってください。"
+)
+
+
+# issue #149: 上記5つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -366,6 +389,12 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         title="最終応答の書き方の指示",
         description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
         default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="attachment_instruction",
+        title="画像・動画添付の指示",
+        description="UI変更のレビュー用に、スクリーンショットや録画をissueコメントへ添付させる指示",
+        default=AGENT_RUNNER_ATTACHMENT_INSTRUCTION,
     ),
 )
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -139,6 +141,13 @@ def _get(server, path: str) -> tuple[int, dict]:
     host, port = server.server_address[0], server.server_address[1]
     with urllib.request.urlopen(f"http://{host}:{port}{path}") as response:
         return response.status, json.loads(response.read())
+
+
+def _get_allow_error(server, path: str) -> tuple[int, dict]:
+    try:
+        return _get(server, path)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
 
 
 def _post(server, path: str, payload: dict) -> tuple[int, dict]:
@@ -1766,6 +1775,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "comment_marker_instruction",
         "pr_instruction",
         "final_message_instruction",
+        "attachment_instruction",
         "approve_default_message",
         "user_name",
     ]
@@ -2002,5 +2012,68 @@ def test_redispatch_without_pending_instruction_returns_422() -> None:
     try:
         status, body = _post(server, "/api/projects/nosetech/project-a/issues/1/redispatch", {})
         assert status == 422
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_streams_fetched_body_and_uses_token() -> None:
+    from orchestrator.attachments import AttachmentResponse
+
+    calls: list[tuple] = []
+
+    def fake_fetch(url: str, *, token: str | None, range_header: str | None):
+        calls.append((url, token, range_header))
+        return AttachmentResponse(
+            status=200, headers={"Content-Type": "image/png"}, body=io.BytesIO(b"PNGDATA")
+        )
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        github_token="ghp_x",
+        fetch_attachment_fn=fake_fetch,
+    )
+    try:
+        host, port = server.server_address[0], server.server_address[1]
+        url = "https://github.com/user-attachments/assets/07724aab-a5ec-4183-a942-845fccd103f1"
+        quoted = urllib.parse.quote(url, safe="")
+        with urllib.request.urlopen(f"http://{host}:{port}/api/attachment?url={quoted}") as r:
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/png"
+            assert r.read() == b"PNGDATA"
+        assert calls == [(url, "ghp_x", None)]
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_returns_error_status_from_fetch() -> None:
+    from orchestrator.attachments import AttachmentError
+
+    def fake_fetch(url: str, *, token: str | None, range_header: str | None):
+        raise AttachmentError("not found", status=404)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        fetch_attachment_fn=fake_fetch,
+    )
+    try:
+        status, body = _get_allow_error(server, "/api/attachment?url=https%3A%2F%2Fgithub.com%2Fx")
+        assert status == 404
+        assert body == {"error": "not found"}
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_without_url_returns_400() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _get_allow_error(server, "/api/attachment")
+        assert status == 400
     finally:
         server.shutdown()

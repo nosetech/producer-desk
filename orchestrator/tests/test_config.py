@@ -25,6 +25,7 @@ from orchestrator.config import (
     _detect_repo_root,
     load_ci_wait_timeout_hours,
     load_dashboard_settings,
+    load_github_token,
     load_litellm_health_timeout_seconds,
     load_log_retention_days,
     load_ollama_bench_timeout_seconds,
@@ -410,3 +411,27 @@ def test_ollama_bench_timeout_falls_back_to_default_without_config_file(tmp_path
         load_ollama_bench_timeout_seconds(tmp_path / "missing.yaml")
         == DEFAULT_OLLAMA_BENCH_TIMEOUT_SECONDS
     )
+
+
+def test_load_github_token_reads_value_and_strips(tmp_path: Path) -> None:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text("projects: []\ngithub_token: ' ghp_abc '\n", encoding="utf-8")
+
+    assert load_github_token(config_path=config_path) == "ghp_abc"
+
+
+def test_load_github_token_returns_none_when_absent_or_empty(tmp_path: Path) -> None:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text("projects: []\n", encoding="utf-8")
+    assert load_github_token(config_path=config_path) is None
+
+    config_path.write_text("projects: []\ngithub_token: ''\n", encoding="utf-8")
+    assert load_github_token(config_path=config_path) is None
+
+
+def test_load_github_token_rejects_non_string(tmp_path: Path) -> None:
+    config_path = tmp_path / "projects.yaml"
+    config_path.write_text("projects: []\ngithub_token: 123\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_github_token(config_path=config_path)

@@ -299,3 +299,28 @@ def test_delete_branch_calls_gh_api_delete_ref() -> None:
         "DELETE",
         "repos/nosetech/project-a/git/refs/heads/feature/issue-72-delete-branch",
     ]
+
+
+def _version_run(stdout: str):
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+    return run
+
+
+def test_gh_supports_attach_by_version() -> None:
+    from orchestrator.github_client import gh_supports_attach
+
+    assert gh_supports_attach(run=_version_run("gh version 2.102.0 (2026-01-01)\n")) is True
+    assert gh_supports_attach(run=_version_run("gh version 2.99.0 (2026-01-01)\n")) is True
+    assert gh_supports_attach(run=_version_run("gh version 2.98.9 (2026-01-01)\n")) is False
+    assert gh_supports_attach(run=_version_run("unexpected")) is None
+
+
+def test_gh_supports_attach_returns_none_when_gh_missing() -> None:
+    from orchestrator.github_client import gh_supports_attach
+
+    def run(cmd, **kwargs):
+        raise FileNotFoundError
+
+    assert gh_supports_attach(run=run) is None

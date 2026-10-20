@@ -10,7 +10,7 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
-import { formatCommentTime, stripBotMarkers } from "@/lib/comment";
+import { commentSummary, formatCommentTime } from "@/lib/comment";
 import type {
   Dispatch,
   IssueComment,
@@ -119,7 +119,7 @@ function ReplyQuote({
   onToggle: () => void;
 }) {
   const label = open ? "コメントを折りたたむ" : "コメントを展開";
-  const summary = stripBotMarkers(comment.body).replace(/\s+/g, " ");
+  const summary = commentSummary(comment);
   const openedTime = openedAt
     ? new Date(openedAt).toLocaleTimeString("ja-JP", {
         hour: "2-digit",

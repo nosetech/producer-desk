@@ -15,6 +15,7 @@ import logging
 import re
 import subprocess
 import threading
+import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -27,6 +28,7 @@ from orchestrator.aggregation import (
     aggregate,
     build_project_issues,
 )
+from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
 from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
@@ -113,6 +115,8 @@ PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 # Agent Runnerプロンプト設定（issue #149）。
 PROMPTS_PATH = "/api/prompts"
+# issueコメント添付ファイルのプロキシ取得（issue #218）。クエリ`url`に添付ファイルのURLを渡す。
+ATTACHMENT_PATH = "/api/attachment"
 PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
 
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
@@ -128,6 +132,7 @@ MAX_PROMPT_BODY_BYTES = 256 * 1024
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
 UpdateExecutionSettingsFn = Callable[..., Project]
+FetchAttachmentFn = Callable[..., AttachmentResponse]
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +260,8 @@ def _make_handler(
     sync_worktree: SyncWorktreeFn,
     dashboard_settings: dict[str, float],
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
+    github_token: str | None = None,
+    fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -311,6 +318,9 @@ def _make_handler(
                 return
             if self.path == PROMPTS_PATH:
                 self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
+                return
+            if urllib.parse.urlsplit(self.path).path == ATTACHMENT_PATH:
+                self._handle_attachment()
                 return
 
             progress_match = PROGRESS_PATH.match(self.path)
@@ -418,6 +428,34 @@ def _make_handler(
 
         def _handle_progress(self, progress_id: str) -> None:
             self._send_json(200, {"stage": progress_store.get(progress_id)})
+
+        def _handle_attachment(self) -> None:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            urls = query.get("url", [])
+            if len(urls) != 1:
+                self._send_json(400, {"error": "urlクエリを1つ指定してください"})
+                return
+            try:
+                attachment = fetch_attachment_fn(
+                    urls[0], token=github_token, range_header=self.headers.get("Range")
+                )
+            except AttachmentError as e:
+                logger.warning("添付ファイルを取得できませんでした: %s", e)
+                self._send_json(e.status, {"error": str(e)})
+                return
+            try:
+                self.send_response(attachment.status)
+                for name, value in attachment.headers.items():
+                    self.send_header(name, value)
+                # 署名付きURL先の内容をそのまま中継するため、ブラウザ側での再利用は短時間に留める。
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.end_headers()
+                while chunk := attachment.body.read(64 * 1024):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # 動画のシーク等でブラウザが接続を切った
+            finally:
+                attachment.body.close()
 
         def _handle_state(self) -> None:
             self._send_json(200, self._state_payload(store.get()))
@@ -816,6 +854,8 @@ def make_server(
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
     dashboard_settings: dict[str, float] | None = None,
+    github_token: str | None = None,
+    fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -838,6 +878,8 @@ def make_server(
         list_issues=list_issues,
         sync_worktree=sync_worktree,
         update_execution_settings=update_execution_settings,
+        github_token=github_token,
+        fetch_attachment_fn=fetch_attachment_fn,
         dashboard_settings=(
             dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
         ),
