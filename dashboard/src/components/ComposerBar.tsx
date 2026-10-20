@@ -268,6 +268,16 @@ export default function ComposerBar({
     };
   }, [open, isReply, replyRepo, newRepo]);
 
+  // ESCキーでパネルを閉じる。
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   function handleReplyModelChange(model: string) {
     setReplyModel(model);
     setMessage((m) => applyModelDirective(m, model));
