@@ -390,7 +390,6 @@ def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | No
 
 
 def build_claude_command(
-    message: str,
     *,
     session_id: str,
     resume: bool,
@@ -401,12 +400,14 @@ def build_claude_command(
     """docs/basic-design.md 3-1の起動パラメータに従いコマンドを組み立てる。
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
+    プロンプト（指示内容）もコマンド引数には含めず、呼び出し側が子プロセスの標準入力に
+    渡す。先頭が`-`/`--`のプロンプトを位置引数で渡すと`claude`CLIがオプションと解釈し
+    `error: unknown option`で起動に失敗するため（issue #222）。
     """
     system_prompt = build_system_prompt(repo, issue_number)
     command = [
         "claude",
         "-p",
-        message,
         "--output-format",
         "stream-json",
         # issue #49: `stream-json`はツール呼び出し・メッセージ単位でNDJSON（1行1JSON）
@@ -966,7 +967,6 @@ def run_agent_runner(
     )
 
     command = build_claude_command(
-        message,
         session_id=session_id,
         resume=resume,
         repo=project.repo,
@@ -996,12 +996,17 @@ def run_agent_runner(
     process = popen(
         command,
         cwd=str(worktree_path),
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
         env=env,
     )
+    # issue #222: プロンプトは標準入力で渡す。標準出力を読み始める前に閉じて、
+    # 子プロセスの入力待ちを解消する。
+    process.stdin.write(message)
+    process.stdin.close()
     stdout_text = _stream_process_output(process, log_path)
     returncode = process.wait()
 

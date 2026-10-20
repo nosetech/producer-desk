@@ -11,6 +11,7 @@ issue #49: `claude -p`の出力形式を`--output-format json`（完了後に一
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -67,10 +68,19 @@ class FakeComments:
         self.posted.append((repo, issue_number, body))
 
 
+class FakeStdin(io.StringIO):
+    """`close()`後も書き込み内容を参照できる標準入力。"""
+
+    def close(self) -> None:
+        self.written = self.getvalue()
+        super().close()
+
+
 class FakePopen:
-    """`subprocess.Popen`の必要最小限（`stdout`の行イテレータ・`wait()`）を模倣する。"""
+    """`subprocess.Popen`の必要最小限（`stdin`・`stdout`の行イテレータ・`wait()`）を模倣する。"""
 
     def __init__(self, lines: list[str], returncode: int = 0) -> None:
+        self.stdin = FakeStdin()
         self.stdout = iter(lines)
         self._returncode = returncode
 
@@ -83,10 +93,13 @@ class FakePopenFactory:
         self.lines = lines if lines is not None else []
         self.returncode = returncode
         self.calls: list[dict] = []
+        self.processes: list[FakePopen] = []
 
     def __call__(self, cmd: list[str], **kwargs: object) -> FakePopen:
         self.calls.append({"cmd": cmd, **kwargs})
-        return FakePopen(self.lines, self.returncode)
+        process = FakePopen(self.lines, self.returncode)
+        self.processes.append(process)
+        return process
 
 
 class FakePersistSessionState:
@@ -172,20 +185,19 @@ class FakeAppendPrIssueReference:
 
 def test_build_claude_command_new_session_uses_session_id_flag() -> None:
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     assert command == [
         "claude",
         "-p",
-        "hello",
         "--output-format",
         "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
         "--chrome",
         "--append-system-prompt",
-        command[9],
+        command[8],
         "--session-id",
         "new-id",
     ]
@@ -193,20 +205,19 @@ def test_build_claude_command_new_session_uses_session_id_flag() -> None:
 
 def test_build_claude_command_resume_uses_resume_flag() -> None:
     command = build_claude_command(
-        "hello", session_id="existing-id", resume=True, repo="nosetech/project-a", issue_number=12
+        session_id="existing-id", resume=True, repo="nosetech/project-a", issue_number=12
     )
 
     assert command == [
         "claude",
         "-p",
-        "hello",
         "--output-format",
         "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
         "--chrome",
         "--append-system-prompt",
-        command[9],
+        command[8],
         "--resume",
         "existing-id",
     ]
@@ -220,7 +231,7 @@ def test_build_claude_command_appends_label_self_management_instruction() -> Non
     毎回明示的に指示することを確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -242,7 +253,7 @@ def test_build_claude_command_instructs_ci_wait_marker_instead_of_sleep_polling(
     を指示していることを確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -261,7 +272,7 @@ def test_build_claude_command_appends_comment_marker_instruction() -> None:
     promptで毎回マーカー付与を明示的に指示することを確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -280,7 +291,7 @@ def test_build_claude_command_instructs_not_to_duplicate_completion_report() -> 
     その旨と、能動的投稿を限定すべき場面を明示的に指示することを確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -298,7 +309,7 @@ def test_build_claude_command_enables_chrome_integration() -> None:
     `--chrome`で明示的に有効化する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     assert "--chrome" in command
@@ -314,7 +325,7 @@ def test_build_claude_command_appends_pr_instruction() -> None:
     確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -334,7 +345,7 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     確認する（issue #161で、内部的なツール運用の独り言がそのまま投稿された）。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     flag_index = command.index("--append-system-prompt")
@@ -354,7 +365,7 @@ def test_build_claude_command_uses_stream_json_output_format() -> None:
     stream-json --verbose`（NDJSONを逐次出力）を使うことを確認する。
     """
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     output_format_index = command.index("--output-format")
@@ -468,6 +479,46 @@ def test_resolve_ollama_bench_path_falls_back_to_bare_command(
     monkeypatch.setattr(agent_runner.shutil, "which", lambda name: None)
 
     assert agent_runner._resolve_ollama_bench_path() == "ollama-bench"
+
+
+@pytest.mark.parametrize(
+    "message", ["- iOS/Safariでは動作しました", "--help me", "通常のメッセージ"]
+)
+def test_run_agent_runner_passes_message_via_stdin_not_command_args(
+    tmp_path: Path, message: str
+) -> None:
+    """issue #222の再発防止テスト。
+
+    先頭が`-`/`--`の指示を位置引数で渡すと`claude`CLIがオプションと解釈し
+    `unknown option`で起動に失敗する。メッセージはコマンド引数に含めず標準入力で渡す。
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
+
+    run_agent_runner(
+        project,
+        1,
+        message,
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=FakeGetSessionState(),
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        new_uuid=FIXED_UUID,
+    )
+
+    assert message not in popen.calls[0]["cmd"]
+    assert popen.calls[0]["stdin"] == subprocess.PIPE
+    assert popen.processes[0].stdin.written == message
+    assert popen.processes[0].stdin.closed
 
 
 def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
@@ -1741,7 +1792,6 @@ def test_run_agent_runner_cleans_up_old_logs_for_same_repo(tmp_path: Path) -> No
 
 def test_build_claude_command_adds_model_flag_when_specified() -> None:
     command = build_claude_command(
-        "hello",
         session_id="new-id",
         resume=False,
         repo="nosetech/project-a",
@@ -1755,7 +1805,7 @@ def test_build_claude_command_adds_model_flag_when_specified() -> None:
 
 def test_build_claude_command_omits_model_flag_by_default() -> None:
     command = build_claude_command(
-        "hello", session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
     )
 
     assert "--model" not in command
@@ -2021,7 +2071,7 @@ def test_run_agent_runner_message_directive_overrides_project_default_and_strips
     )
 
     call = popen.calls[0]
-    prompt = call["cmd"][2]
+    prompt = popen.processes[0].stdin.written
     assert "/model" not in prompt
     assert "対応してください" in prompt
     assert call["cmd"][call["cmd"].index("--model") + 1] == "ollama/qwen2.5-coder:7b"
@@ -2121,7 +2171,7 @@ def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> No
     spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "pr_instruction")
     save_prompt_override(spec, "独自ルール: {repo} #{issue_number}")
 
-    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
 
     prompt = _system_prompt_of(command)
     assert "独自ルール: o/r #5" in prompt
@@ -2129,7 +2179,7 @@ def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> No
 
 
 def test_build_claude_command_without_overrides_renders_placeholders() -> None:
-    command = build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+    command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
 
     prompt = _system_prompt_of(command)
     assert "o/r#5" in prompt
@@ -2143,14 +2193,14 @@ def test_build_claude_command_replaces_user_name_in_instructions(_isolated_promp
     from orchestrator.prompts import USER_NAME_SPEC, save_prompt_override
 
     default_prompt = _system_prompt_of(
-        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+        build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
     )
     assert "ユーザーの判断が必要だと自ら判断した場合" in default_prompt
     assert "{user_name}" not in default_prompt
 
     save_prompt_override(USER_NAME_SPEC, "山田さん")
     prompt = _system_prompt_of(
-        build_claude_command("msg", session_id="s", resume=False, repo="o/r", issue_number=5)
+        build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
     )
 
     assert "山田さんの判断が必要だと自ら判断した場合" in prompt
