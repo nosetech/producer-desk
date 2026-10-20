@@ -27,11 +27,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。
 
-**実装・レビュー時は必ず `DesignSync` MCPツールでこのデザインの実ソース（`ProducerDesk.dc.html`）を直接取得し、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（`projectId` はURLの `/p/<uuid>` 部分、`d67961c7-d882-4efb-bac8-492338ae41c4`）。
+**実装・レビュー時は必ず `DesignSync` MCPツールでこのデザインの実ソース（`ProducerDesk.dc.html`）を直接取得し（`ProducerDesk.dc.html`はテンプレート、スタイル・状態ロジックは`ProducerDesk.logic.js`に分割されているため**両方**を取得する）、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（`projectId` はURLの `/p/<uuid>` 部分、`d67961c7-d882-4efb-bac8-492338ae41c4`）。
 
 1. `DesignSync` の `get_project` で `projectId` が読めることを確認する（`list_projects` はデザインシステム種別のプロジェクトのみを返すため、このプロジェクト（`type: PROJECT_TYPE_PROJECT`）は一覧に出てこない。`get_project`/`list_files`/`get_file` は `projectId` を直接渡せば種別を問わず使える）
-2. `list_files` で対象ファイル一覧（`ProducerDesk.dc.html` 等）を確認する
-3. `get_file` でファイルの中身をそのまま取得する（256KiB上限、ページ全体が1ファイルなのでほぼこれで足りる）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn` 等）をそのテキストから直接読み取り、値をそのまま実装に反映する
+2. `list_files` で対象ファイル一覧（`ProducerDesk.dc.html`・`ProducerDesk.logic.js` 等）を確認する
+3. `get_file` でファイルの中身をそのまま取得する（256KiB上限）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn`、`diagBtnStyle` 等。主に`ProducerDesk.logic.js`側にある）をそのテキストから直接読み取り、値をそのまま実装に反映する
+4. **レスポンスの`truncated`を必ず確認する。** `truncated: true`の場合は末尾が欠けており、スタイル定義を取りこぼしている可能性がある（issue #219で`ProducerDesk.dc.html`が256KiBを超えて切れ、ボタンのスタイルが取得できず実装が既存ボタンの見た目の流用になった）。`true`のときは取得できた範囲だけで実装を進めず（既存コンポーネントの見た目を流用して代替するのも不可）、その旨を明記して作業を停止し、Claude Design側でのファイル分割を人間に依頼すること
 
 `DesignSync` の利用には、`claude.ai` ログインへのデザインシステムアクセス権限が必要。**この権限は一度 `/design-login`（ローカルコマンド、または通常の `claude.ai` ログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名 `Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の `claude` CLI呼び出し（Agent Runnerの `claude -p` を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フローを行う必要はない（運用開始前にホスト上で一度だけ人間が `/design-login` を実行しておけば足りる。詳細は `docs/basic-design.md` 3-1参照）。
 
@@ -42,6 +43,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `DesignSync` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 
 Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため、上記の指示はそのまま適用される（プロジェクトごとの指示であり、Agent Runner共通の`--append-system-prompt`では付与しない。`docs/basic-design.md` 3-6参照）。
+
+### UI変更のスクリーンショット・動画をissueに添付する場合（issue #218）
+
+レビュー用に実装結果の見た目をissueコメントへ添付するときの手順。プロンプト設定の`attachment_instruction`と同じ内容で、仕様は`docs/basic-design.md` 2-4参照。
+
+- `gh issue comment <n> --attach <file>`で添付する（`gh` v2.99.0以上）。画像・動画のみ、サイズ上限は10MB
+- 静止画で足りる場合はスクリーンショットにする。動画はアニメーション・ホバー・状態遷移など動きを見せないと判断できない場合に限り、Playwrightの`recordVideo`（`.webm`）のみで録画する（Playwright専用ffmpeg: `npx playwright-core install ffmpeg`）
+- 確認用ダッシュボードは上記のとおり本番と衝突しない別ポートで起動する
+- 録画・撮影は、承認・返信・新規作成・保存などの書き込み系ボタンを押さず、読み取り専用の操作のみで行う。秘匿情報が映り込んでいないことを確認してから添付する
 
 ## 確定済みの設計判断（変更時は要注意）
 

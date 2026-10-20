@@ -30,6 +30,11 @@
   animation: toastFade 0.22s ease;
 }
 
+.toastError {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
 .icon {
   flex-shrink: 0;
 }

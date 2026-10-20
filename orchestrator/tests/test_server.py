@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -139,6 +141,13 @@ def _get(server, path: str) -> tuple[int, dict]:
     host, port = server.server_address[0], server.server_address[1]
     with urllib.request.urlopen(f"http://{host}:{port}{path}") as response:
         return response.status, json.loads(response.read())
+
+
+def _get_allow_error(server, path: str) -> tuple[int, dict]:
+    try:
+        return _get(server, path)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
 
 
 def _post(server, path: str, payload: dict) -> tuple[int, dict]:
@@ -926,6 +935,72 @@ def test_instruct_concurrent_requests_to_different_issues_are_not_blocked() -> N
         server.shutdown()
 
 
+def test_requests_to_different_projects_are_processed_concurrently() -> None:
+    """あるプロジェクトの処理が長引いても、別プロジェクトのinstruct/create_issueは待たされない
+    （issue #212）。プロセス全体で共有するロックではなく、repo+issue単位・プロジェクト単位の
+    ロックのみで排他していることの確認。"""
+    project_b = Project(repo="nosetech/project-b", worktree_path="/tmp/project-b")
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_IN_REVIEW}, 2: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    review_merge = FakeReviewMerge(pr_number=33, branch="feature/issue-1-something")
+    creator = FakeIssueCreator()
+
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def blocking_merge_pr(repo: str, pr_number: int) -> None:
+        started_event.set()
+        release_event.wait(timeout=5)
+        review_merge.merge_pr(repo, pr_number)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A, project_b],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        create_issue=creator.create_issue,
+        list_linked_prs=review_merge.list_linked_prs,
+        merge_pr=blocking_merge_pr,
+        close_issue=review_merge.close_issue,
+        get_pr_branch=review_merge.get_pr_branch,
+        delete_branch=review_merge.delete_branch,
+        sync_worktree=review_merge.sync_worktree,
+    )
+
+    first_thread = threading.Thread(
+        target=lambda: _post(
+            server, "/api/projects/nosetech/project-a/issues/1/instruct", {"action": "approve"}
+        )
+    )
+    first_thread.start()
+    try:
+        assert started_event.wait(timeout=2)
+
+        status, _ = _post(
+            server, "/api/projects/nosetech/project-b/issues/2/instruct", {"action": "approve"}
+        )
+        assert status == 200
+
+        status, _ = _post(
+            server,
+            "/api/projects/nosetech/project-b/issues",
+            {"title": "t", "prompt": "p", "dispatch": "queued"},
+        )
+        assert status == 201
+        assert [c[0] for c in creator.created] == ["nosetech/project-b"]
+        # 別プロジェクトの処理が完了した時点でも、project-aのマージはまだ進行中。
+        assert first_thread.is_alive()
+    finally:
+        release_event.set()
+        first_thread.join(timeout=5)
+        server.shutdown()
+
+
 def test_instruct_approve_on_in_review_skips_worktree_sync_when_dispatch_running() -> None:
     """同じプロジェクトの別issueでAgent Runnerが実行中の場合、worktree同期をスキップする。
 
@@ -1700,6 +1775,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "comment_marker_instruction",
         "pr_instruction",
         "final_message_instruction",
+        "attachment_instruction",
         "approve_default_message",
         "user_name",
     ]
@@ -1868,3 +1944,136 @@ def test_put_prompt_storage_failure_returns_500(_isolated_prompts_path, monkeypa
 
     assert status == 500
     assert body["error"] == "書き込めません"
+
+
+def _issue_with_comments(number: int, labels: list[str], bodies: list[str]) -> IssueSummary:
+    return IssueSummary(
+        repo="nosetech/project-a",
+        number=number,
+        title="t",
+        labels=labels,
+        comments=[{"id": f"c{i}", "body": b} for i, b in enumerate(bodies)],
+        updated_at="2026-01-01T00:00:00Z",
+    )
+
+
+def test_dispatch_status_and_redispatch_flow() -> None:
+    """issue #215: 状態チェックで未処理指示を検知し、コメント再投稿なしで再実行できる。"""
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, event = _recording_dispatch_queue()
+    issues = [
+        _issue_with_comments(
+            1, [STATUS_NEEDS_HUMAN_DECISION], ["Agent Runner実行結果:\nx", "再開して"]
+        )
+    ]
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: issues,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues/1/dispatch-status")
+        assert status == 200
+        assert body["state"] == "not_dispatched"
+        assert body["pending_message"] == "再開して"
+        assert body["redispatchable"] is True
+
+        status, body = _post(server, "/api/projects/nosetech/project-a/issues/1/redispatch", {})
+        assert status == 200
+        assert event.wait(timeout=2)
+        assert calls == [("nosetech/project-a", 1, "再開して")]
+        assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
+        assert [c[2] for c in comments.posted] == [":repeat: ダッシュボードから再実行しました"]
+    finally:
+        server.shutdown()
+
+
+def test_redispatch_without_pending_instruction_returns_422() -> None:
+    store = StateStore()
+    labels = FakeLabels(initial={1: {STATUS_TODO}})
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=FakeComments().post_comment,
+        list_issues=lambda repo: [_issue_with_comments(1, [STATUS_TODO], [])],
+    )
+    try:
+        status, body = _post(server, "/api/projects/nosetech/project-a/issues/1/redispatch", {})
+        assert status == 422
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_streams_fetched_body_and_uses_token() -> None:
+    from orchestrator.attachments import AttachmentResponse
+
+    calls: list[tuple] = []
+
+    def fake_fetch(url: str, *, token: str | None, range_header: str | None):
+        calls.append((url, token, range_header))
+        return AttachmentResponse(
+            status=200, headers={"Content-Type": "image/png"}, body=io.BytesIO(b"PNGDATA")
+        )
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        github_token="ghp_x",
+        fetch_attachment_fn=fake_fetch,
+    )
+    try:
+        host, port = server.server_address[0], server.server_address[1]
+        url = "https://github.com/user-attachments/assets/07724aab-a5ec-4183-a942-845fccd103f1"
+        quoted = urllib.parse.quote(url, safe="")
+        with urllib.request.urlopen(f"http://{host}:{port}/api/attachment?url={quoted}") as r:
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/png"
+            assert r.read() == b"PNGDATA"
+        assert calls == [(url, "ghp_x", None)]
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_returns_error_status_from_fetch() -> None:
+    from orchestrator.attachments import AttachmentError
+
+    def fake_fetch(url: str, *, token: str | None, range_header: str | None):
+        raise AttachmentError("not found", status=404)
+
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        fetch_attachment_fn=fake_fetch,
+    )
+    try:
+        status, body = _get_allow_error(server, "/api/attachment?url=https%3A%2F%2Fgithub.com%2Fx")
+        assert status == 404
+        assert body == {"error": "not found"}
+    finally:
+        server.shutdown()
+
+
+def test_get_attachment_without_url_returns_400() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _get_allow_error(server, "/api/attachment")
+        assert status == 400
+    finally:
+        server.shutdown()

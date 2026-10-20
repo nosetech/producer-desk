@@ -164,6 +164,22 @@ def _load_positive_number(key: str, default: float, config_path: Path | None) ->
     return float(raw)
 
 
+def load_github_token(config_path: Path | None = None) -> str | None:
+    """`config/projects.yaml`のトップレベル`github_token`（省略可）。
+
+    Privateリポジトリを管理対象にするためのGitHubトークン（issue #218）。設定された
+    場合、オーケストレータは起動時に環境変数`GH_TOKEN`へ反映し、`gh`コマンド
+    （Agent Runner含む）と添付ファイルのプロキシ取得（attachments.py）が使う。
+    未設定または空文字なら`gh`の既存認証にそのまま委ねる。
+    """
+    raw = _load_yaml_data(config_path).get("github_token")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("config/projects.yamlのgithub_tokenは文字列である必要があります。")
+    return raw.strip() or None
+
+
 def load_polling_interval_seconds(config_path: Path | None = None) -> float:
     return _load_positive_number(
         "polling_interval_seconds", DEFAULT_POLLING_INTERVAL_SECONDS, config_path

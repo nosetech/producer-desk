@@ -10,7 +10,51 @@ projects:
     worktree_path: /Users/producer/worktrees/project-a
   - repo: nosetech/project-b
     worktree_path: /Users/producer/worktrees/project-b
+    # 自走タスク本体の実行手段（issue #148・#174・#176、SETUP.md 手順4）。
+    # 省略時は claude_code（Claude Code CLI直利用＋サブスクリプション）。
+    # litellm_proxy を選ぶ場合は litellm_model（config/litellm_config.yamlの
+    # model_listで定義したモデルエイリアス名）の指定が必須。
+    # execution_mode: litellm_proxy
+    # litellm_model: project-b-ollama-qwen
+    #
+    # 会話量・ターン数上限（issue #189）はここではなく、モデルごとの
+    # config/litellm_config.yaml（model_list[].model_info）で定義する
+    # （num_ctxと同じ「そのモデルがどれだけの会話量を扱えるか」という関心事の
+    # ため。config/litellm_config.yaml.example参照）。
+
+# GitHubトークン（任意、issue #218）。Privateリポジトリを管理対象にする場合や、
+# `gh auth login`の認証とは別のトークンを使いたい場合に記載する。設定すると
+# オーケストレータが起動時に環境変数GH_TOKENへ反映し、`gh`コマンド（Agent Runnerの
+# 子プロセス含む）と、コメント添付画像・動画のプロキシ配信（ダッシュボード表示用）が
+# このトークンを使う。repo権限（Privateリポジトリのissue・PR・添付ファイルの閲覧と
+# 操作）を持つトークンが必要。このファイルは.gitignore対象のためコミットされないが、
+# 平文で保存される点に注意し、ファイルの権限（chmod 600）を絞ること。
+# github_token: ghp_xxxxxxxxxxxxxxxxxxxx
 
 # logs/orchestrator.log・logs/<repo>/*.log（Agent Runner個別実行ログ）双方の
-# 保持日数（未設定時は7）。
+# 保持日数（未設定時は7）。orchestrator.logはこの日数分をTimedRotatingFileHandler
+# が世代管理し、Agent Runner個別実行ログはこの日数（mtime基準）より古いものが
+# 実行完了のたびに削除される（issue #114）。
 # log_retention_days: 7
+
+# --- タイミング系設定（issue #201）---
+# 以下はいずれも省略可。省略時は括弧内の既定値を使う。値は正の数値のみ
+# （0以下・数値以外は起動時エラー）。変更の反映にはオーケストレータの再起動が必要。
+#
+# オーケストレータがGitHubをポーリングする間隔（秒、既定300）
+# polling_interval_seconds: 300
+# CI完了待機（status:in-progressのままCI完了を待つ状態）のタイムアウト（時間、既定6）。
+# 超過するとneeds-human-decisionへ遷移する
+# ci_wait_timeout_hours: 6
+# LiteLLM Proxyのヘルスチェックのタイムアウト（秒、既定3）
+# litellm_health_timeout_seconds: 3
+# ollama-bench（ローカルLLM生成呼び出し）のタイムアウト（秒、既定300）
+# ollama_bench_timeout_seconds: 300
+#
+# ダッシュボード向け（GET /api/settings経由で配信。ダッシュボードのリロードで反映）
+# プロジェクト別issue一覧のクライアントキャッシュTTL（秒、既定60）
+# issue_cache_ttl_seconds: 60
+# 画面のポーリング間隔（秒、既定30）
+# dashboard_poll_interval_seconds: 30
+# 「N分前」表示の更新間隔（秒、既定30）
+# sync_tick_interval_seconds: 30

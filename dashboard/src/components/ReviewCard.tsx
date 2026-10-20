@@ -2,16 +2,15 @@
 
 import { useState } from "react";
 import { PrSelectionRequiredError, postInstruct } from "@/lib/api";
-import {
-  resolveStages,
-  useStageProgress,
-  type StageDef,
-} from "@/lib/stageProgress";
+import type { StageDef } from "@/lib/stageProgress";
+import { findIssueJob } from "@/lib/jobs";
 import { commentSummary, latestComment } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary, PrCandidate } from "@/lib/types";
-import { SpinnerIcon, StageList } from "./StageProgress";
+import { useApp } from "./AppContext";
+import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
+import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./ReviewCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の handle_instruct（STATUS_IN_REVIEW分岐）の
@@ -182,35 +181,28 @@ function WarningIcon() {
 
 export default function ReviewCard({
   review,
-  onApproved,
   onReply,
-  onToast,
-  locked,
 }: {
   review: IssueSummary;
-  onApproved: () => Promise<void>;
   onReply: (
     repo: string,
     issueNumber: number,
     title: string,
     comment?: IssueComment,
   ) => void;
-  onToast: (text: string) => void;
-  locked: boolean;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // 承認時に409（pr_selection_required）で返された最新の候補。ポーリング後に候補が
   // 変わった場合に、カードの`review.pr_candidates`より優先して選択UIに使う（issue #206）。
   const [candidatesOverride, setCandidatesOverride] = useState<
     PrCandidate[] | null
   >(null);
   const [pickedPr, setPickedPr] = useState<number | null>(null);
-  const stageProgress = useStageProgress();
-
-  const busy = approving || locked;
+  const { jobs, startJob, retryJob, dismissJob } = useApp();
+  // 実行中・失敗中の操作があるissueのみ操作を止める（別issue・別プロジェクトは妨げない）。
+  const job = findIssueJob(jobs, review.repo, review.number);
+  const busy = job !== undefined;
 
   const last = latestComment(review);
   const summary = last ? commentSummary(last) : null;
@@ -246,73 +238,60 @@ export default function ReviewCard({
 
   function openConfirm() {
     if (busy) return;
-    setError(null);
     setPickedPr(null);
     setConfirmOpen(true);
   }
 
   function closeConfirm() {
-    if (busy) return;
     setConfirmOpen(false);
-    setError(null);
     setCandidatesOverride(null);
     setPickedPr(null);
-    stageProgress.reset();
   }
 
+  // マージはバックグラウンドのジョブとして実行し、確認ダイアログは即座に閉じる。
+  // 進捗・失敗はカード内に表示する（issue #212）。
   function handleConfirmApprove() {
     if (approveBlocked) return;
-    setApproving(true);
-    setError(null);
-    const progressId = stageProgress.start();
-    postInstruct(
-      review.repo,
-      review.number,
-      "approve",
-      undefined,
-      progressId,
-      isPicker ? (pickedPr ?? undefined) : undefined,
-    )
-      .then(() => {
-        stageProgress.reset();
-        setConfirmOpen(false);
-        setCandidatesOverride(null);
+    const prNumber = isPicker ? (pickedPr ?? undefined) : undefined;
+    setConfirmOpen(false);
+    startJob({
+      kind: "merge",
+      repo: review.repo,
+      number: review.number,
+      title: review.title,
+      stages: MERGE_STAGES,
+      exec: (progressId) =>
+        postInstruct(
+          review.repo,
+          review.number,
+          "approve",
+          undefined,
+          progressId,
+          prNumber,
+        ),
+      successMessage: `${repoName} #${review.number} をマージ & クローズしました。`,
+      onFailure: (e) => {
+        if (!(e instanceof PrSelectionRequiredError)) return false;
+        // 候補が変わっていた（または特定できなかった）場合。自動マージはされて
+        // いないため、返された最新の候補で選び直させる。
+        setCandidatesOverride(e.candidates);
         setPickedPr(null);
-        onToast(`${repoName} #${review.number} をマージ & クローズしました。`);
-        return onApproved();
-      })
-      .catch((e) => {
-        stageProgress.stop();
-        if (e instanceof PrSelectionRequiredError) {
-          // 候補が変わっていた（または特定できなかった）場合。自動マージはされて
-          // いないため、返された最新の候補で選び直させる。
-          setCandidatesOverride(e.candidates);
-          setPickedPr(null);
-          return;
-        }
-        setError(e instanceof Error ? e.message : "承認に失敗しました");
-      })
-      .finally(() => setApproving(false));
+        setConfirmOpen(true);
+        return true;
+      },
+    });
   }
-
-  const resolvedStages =
-    approving || error
-      ? resolveStages(
-          MERGE_STAGES,
-          stageProgress.polledStage,
-          approving ? "busy" : "error",
-        )
-      : null;
 
   return (
     <div
-      className={styles.card}
-      aria-busy={busy}
-      style={
-        busy && !confirmOpen
-          ? { opacity: 0.6, pointerEvents: "none" }
-          : undefined
-      }
+      className={`${styles.card} ${
+        job?.status === "error"
+          ? styles.cardJobError
+          : job
+            ? styles.cardJobRunning
+            : ""
+      }`}
+      aria-busy={job?.status === "running"}
     >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
@@ -403,7 +382,15 @@ export default function ReviewCard({
         </div>
       )}
 
-      <div className={styles.actions}>
+      {job && (
+        <JobStatus
+          job={job}
+          onRetry={() => retryJob(job.key)}
+          onDismiss={() => dismissJob(job.key)}
+        />
+      )}
+
+      <div className={`${styles.actions} ${busy ? styles.actionsBusy : ""}`}>
         <button
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
@@ -425,6 +412,13 @@ export default function ReviewCard({
           返信
         </button>
       </div>
+
+      <DispatchDiagnosis
+        repo={review.repo}
+        number={review.number}
+        title={review.title}
+        busy={busy}
+      />
 
       {viewerOpen && last && (
         <CommentViewer
@@ -485,7 +479,7 @@ export default function ReviewCard({
                   {candidates.map((c) => {
                     const selected = c.number === pickedPr;
                     const pick = () => {
-                      if (!approving) setPickedPr(c.number);
+                      setPickedPr(c.number);
                     };
                     return (
                       <div
@@ -493,7 +487,7 @@ export default function ReviewCard({
                         role="radio"
                         tabIndex={0}
                         aria-checked={selected}
-                        className={`${styles.prRow} ${selected ? styles.prRowSelected : ""} ${approving ? styles.prRowDisabled : ""}`}
+                        className={`${styles.prRow} ${selected ? styles.prRowSelected : ""}`}
                         onClick={pick}
                         onKeyDown={(e) => {
                           if (
@@ -579,7 +573,7 @@ export default function ReviewCard({
                 </a>
               </div>
             )}
-            {!isEmpty && !approving && !error && (
+            {!isEmpty && (
               <div className={styles.warningBanner}>
                 <WarningIcon />
                 <div className={styles.warningText}>
@@ -589,52 +583,22 @@ export default function ReviewCard({
                 </div>
               </div>
             )}
-            {resolvedStages && <StageList stages={resolvedStages} />}
-            {error && (
-              <div className={styles.confirmErrorBanner}>
-                <svg
-                  className={styles.confirmErrorIcon}
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M12 7v6M12 16.5v.01" />
-                </svg>
-                <div>
-                  <div className={styles.confirmErrorHeading}>
-                    マージ処理に失敗しました
-                  </div>
-                  <div className={styles.confirmErrorDetail}>{error}</div>
-                </div>
-              </div>
-            )}
             <div className={styles.confirmActions}>
               <button
                 type="button"
                 className={styles.confirmCancelBtn}
                 onClick={closeConfirm}
-                disabled={busy}
               >
-                {error ? "閉じる" : "キャンセル"}
+                キャンセル
               </button>
               <button
                 type="button"
-                className={`${styles.confirmApproveBtn} ${approveBlocked && !approving ? styles.confirmApproveBtnBlocked : ""}`}
+                className={`${styles.confirmApproveBtn} ${approveBlocked ? styles.confirmApproveBtnBlocked : ""}`}
                 onClick={handleConfirmApprove}
-                disabled={busy || approveBlocked}
+                disabled={approveBlocked}
               >
-                {approving ? (
-                  <SpinnerIcon trackOpacity={0.34} />
-                ) : (
-                  <CheckIcon />
-                )}
-                {approving ? "マージ中…" : error ? "再試行" : "マージして承認"}
+                <CheckIcon />
+                マージして承認
               </button>
             </div>
           </div>

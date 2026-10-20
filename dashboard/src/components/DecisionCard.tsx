@@ -2,16 +2,15 @@
 
 import { useState } from "react";
 import { postInstruct } from "@/lib/api";
-import {
-  resolveStages,
-  useStageProgress,
-  type StageDef,
-} from "@/lib/stageProgress";
+import type { StageDef } from "@/lib/stageProgress";
+import { findIssueJob } from "@/lib/jobs";
 import { commentSummary, latestComment } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
-import { SpinnerIcon, StageList } from "./StageProgress";
+import { useApp } from "./AppContext";
+import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
+import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./DecisionCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の apply_instruction（コメント投稿は
@@ -60,29 +59,22 @@ function ReplyIcon() {
 
 export default function DecisionCard({
   decision,
-  onApproved,
   onReply,
-  onToast,
-  locked,
 }: {
   decision: IssueSummary;
-  onApproved: () => Promise<void>;
   onReply: (
     repo: string,
     issueNumber: number,
     title: string,
     comment?: IssueComment,
   ) => void;
-  onToast: (text: string) => void;
-  locked: boolean;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const stageProgress = useStageProgress();
-
-  const busy = approving || locked;
+  const { jobs, startJob, retryJob, dismissJob } = useApp();
+  // 実行中・失敗中の操作があるissueのみ操作を止める（別issue・別プロジェクトは妨げない）。
+  const job = findIssueJob(jobs, decision.repo, decision.number);
+  const busy = job !== undefined;
 
   const last = latestComment(decision);
   const summary = last ? commentSummary(last) : null;
@@ -93,59 +85,41 @@ export default function DecisionCard({
 
   function openConfirm() {
     if (busy) return;
-    setError(null);
     setConfirmOpen(true);
   }
 
-  function closeConfirm() {
-    if (busy) return;
-    setConfirmOpen(false);
-    setError(null);
-    stageProgress.reset();
-  }
-
+  // 承認はバックグラウンドのジョブとして実行し、確認ダイアログは即座に閉じる。
+  // 進捗・失敗はカード内に表示する（issue #212）。
   function handleConfirmApprove() {
-    setApproving(true);
-    setError(null);
-    const progressId = stageProgress.start();
-    postInstruct(
-      decision.repo,
-      decision.number,
-      "approve",
-      undefined,
-      progressId,
-    )
-      .then(() => {
-        stageProgress.reset();
-        setConfirmOpen(false);
-        onToast(`${repoName} #${decision.number} を承認しました。`);
-        return onApproved();
-      })
-      .catch((e) => {
-        stageProgress.stop();
-        setError(e instanceof Error ? e.message : "承認に失敗しました");
-      })
-      .finally(() => setApproving(false));
+    setConfirmOpen(false);
+    startJob({
+      kind: "approve",
+      repo: decision.repo,
+      number: decision.number,
+      title: decision.title,
+      stages: APPROVE_STAGES,
+      exec: (progressId) =>
+        postInstruct(
+          decision.repo,
+          decision.number,
+          "approve",
+          undefined,
+          progressId,
+        ),
+      successMessage: `${repoName} #${decision.number} を承認しました。`,
+    });
   }
-
-  const resolvedStages =
-    approving || error
-      ? resolveStages(
-          APPROVE_STAGES,
-          stageProgress.polledStage,
-          approving ? "busy" : "error",
-        )
-      : null;
 
   return (
     <div
-      className={styles.card}
-      aria-busy={busy}
-      style={
-        busy && !confirmOpen
-          ? { opacity: 0.6, pointerEvents: "none" }
-          : undefined
-      }
+      className={`${styles.card} ${
+        job?.status === "error"
+          ? styles.cardJobError
+          : job
+            ? styles.cardJobRunning
+            : ""
+      }`}
+      aria-busy={job?.status === "running"}
     >
       <div className={styles.topRow}>
         <div className={styles.repoGroup}>
@@ -207,7 +181,15 @@ export default function DecisionCard({
         </div>
       )}
 
-      <div className={styles.actions}>
+      {job && (
+        <JobStatus
+          job={job}
+          onRetry={() => retryJob(job.key)}
+          onDismiss={() => dismissJob(job.key)}
+        />
+      )}
+
+      <div className={`${styles.actions} ${busy ? styles.actionsBusy : ""}`}>
         <button
           type="button"
           className={`${styles.btn} ${styles.btnApprove}`}
@@ -230,6 +212,13 @@ export default function DecisionCard({
         </button>
       </div>
 
+      <DispatchDiagnosis
+        repo={decision.repo}
+        number={decision.number}
+        title={decision.title}
+        busy={busy}
+      />
+
       {viewerOpen && last && (
         <CommentViewer
           comment={last}
@@ -246,7 +235,10 @@ export default function DecisionCard({
       )}
 
       {confirmOpen && (
-        <div className={styles.confirmOverlay} onClick={closeConfirm}>
+        <div
+          className={styles.confirmOverlay}
+          onClick={() => setConfirmOpen(false)}
+        >
           <div
             className={styles.confirmDialog}
             role="alertdialog"
@@ -271,52 +263,21 @@ export default function DecisionCard({
               </span>{" "}
               — {decision.title}
             </p>
-            {resolvedStages && <StageList stages={resolvedStages} />}
-            {error && (
-              <div className={styles.confirmErrorBanner}>
-                <svg
-                  className={styles.confirmErrorIcon}
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M12 7v6M12 16.5v.01" />
-                </svg>
-                <div>
-                  <div className={styles.confirmErrorHeading}>
-                    承認処理に失敗しました
-                  </div>
-                  <div className={styles.confirmErrorDetail}>{error}</div>
-                </div>
-              </div>
-            )}
             <div className={styles.confirmActions}>
               <button
                 type="button"
                 className={styles.confirmCancelBtn}
-                onClick={closeConfirm}
-                disabled={busy}
+                onClick={() => setConfirmOpen(false)}
               >
-                {error ? "閉じる" : "キャンセル"}
+                キャンセル
               </button>
               <button
                 type="button"
                 className={styles.confirmApproveBtn}
                 onClick={handleConfirmApprove}
-                disabled={busy}
               >
-                {approving ? (
-                  <SpinnerIcon trackOpacity={0.34} />
-                ) : (
-                  <CheckIcon />
-                )}
-                {approving ? "承認中…" : error ? "再試行" : "承認する"}
+                <CheckIcon />
+                承認する
               </button>
             </div>
           </div>

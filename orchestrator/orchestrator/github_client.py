@@ -331,3 +331,19 @@ def close_issue(repo: str, issue_number: int, *, run: RunFn = subprocess.run) ->
         text=True,
         check=True,
     )
+
+
+# `gh issue comment --attach`（issue #218）が使える最小バージョン。
+GH_ATTACH_MIN_VERSION = (2, 99, 0)
+
+
+def gh_supports_attach(*, run: RunFn = subprocess.run) -> bool | None:
+    """実行ホストの`gh`が`--attach`に対応するバージョンか。バージョンを判定できなければNone。"""
+    try:
+        result = run(["gh", "--version"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    match = re.search(r"gh version (\d+)\.(\d+)\.(\d+)", result.stdout)
+    if match is None:
+        return None
+    return tuple(int(g) for g in match.groups()) >= GH_ATTACH_MIN_VERSION

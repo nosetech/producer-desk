@@ -15,6 +15,7 @@ import logging
 import re
 import subprocess
 import threading
+import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -27,9 +28,19 @@ from orchestrator.aggregation import (
     aggregate,
     build_project_issues,
 )
+from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
 from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
+from orchestrator.dispatch_status import (
+    IssueNotFoundError,
+    IssueNotManagedError,
+    NoPendingInstructionError,
+    RedispatchConflictError,
+    diagnose,
+    find_issue,
+    handle_redispatch,
+)
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
@@ -86,6 +97,13 @@ DEFAULT_PORT = 8787
 INSTRUCT_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/instruct$"
 )
+# 指示の処理状態チェック・再実行（issue #215）。
+DISPATCH_STATUS_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/dispatch-status$"
+)
+REDISPATCH_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/redispatch$"
+)
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
@@ -97,6 +115,8 @@ PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 # Agent Runnerプロンプト設定（issue #149）。
 PROMPTS_PATH = "/api/prompts"
+# issueコメント添付ファイルのプロキシ取得（issue #218）。クエリ`url`に添付ファイルのURLを渡す。
+ATTACHMENT_PATH = "/api/attachment"
 PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
 
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
@@ -112,6 +132,7 @@ MAX_PROMPT_BODY_BYTES = 256 * 1024
 DailyModelUsageFn = Callable[..., list[DailyModelUsage]]
 CurrentLimitStatusFn = Callable[..., LimitStatus | None]
 UpdateExecutionSettingsFn = Callable[..., Project]
+FetchAttachmentFn = Callable[..., AttachmentResponse]
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +260,8 @@ def _make_handler(
     sync_worktree: SyncWorktreeFn,
     dashboard_settings: dict[str, float],
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
+    github_token: str | None = None,
+    fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -296,10 +319,21 @@ def _make_handler(
             if self.path == PROMPTS_PATH:
                 self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
                 return
+            if urllib.parse.urlsplit(self.path).path == ATTACHMENT_PATH:
+                self._handle_attachment()
+                return
 
             progress_match = PROGRESS_PATH.match(self.path)
             if progress_match:
                 self._handle_progress(progress_match.group("progress_id"))
+                return
+
+            dispatch_status_match = DISPATCH_STATUS_PATH.match(self.path)
+            if dispatch_status_match:
+                self._handle_dispatch_status(
+                    dispatch_status_match.group("repo"),
+                    int(dispatch_status_match.group("issue_number")),
+                )
                 return
 
             list_issues_match = LIST_ISSUES_PATH.match(self.path)
@@ -395,6 +429,34 @@ def _make_handler(
         def _handle_progress(self, progress_id: str) -> None:
             self._send_json(200, {"stage": progress_store.get(progress_id)})
 
+        def _handle_attachment(self) -> None:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            urls = query.get("url", [])
+            if len(urls) != 1:
+                self._send_json(400, {"error": "urlクエリを1つ指定してください"})
+                return
+            try:
+                attachment = fetch_attachment_fn(
+                    urls[0], token=github_token, range_header=self.headers.get("Range")
+                )
+            except AttachmentError as e:
+                logger.warning("添付ファイルを取得できませんでした: %s", e)
+                self._send_json(e.status, {"error": str(e)})
+                return
+            try:
+                self.send_response(attachment.status)
+                for name, value in attachment.headers.items():
+                    self.send_header(name, value)
+                # 署名付きURL先の内容をそのまま中継するため、ブラウザ側での再利用は短時間に留める。
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.end_headers()
+                while chunk := attachment.body.read(64 * 1024):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # 動画のシーク等でブラウザが接続を切った
+            finally:
+                attachment.body.close()
+
         def _handle_state(self) -> None:
             self._send_json(200, self._state_payload(store.get()))
 
@@ -424,6 +486,13 @@ def _make_handler(
             if instruct_match:
                 self._handle_instruct(
                     instruct_match.group("repo"), int(instruct_match.group("issue_number"))
+                )
+                return
+
+            redispatch_match = REDISPATCH_PATH.match(self.path)
+            if redispatch_match:
+                self._handle_redispatch(
+                    redispatch_match.group("repo"), int(redispatch_match.group("issue_number"))
                 )
                 return
 
@@ -632,6 +701,90 @@ def _make_handler(
                 if progress_id:
                     progress_store.clear(progress_id)
 
+        def _fetch_issue(self, repo: str, issue_number: int) -> IssueSummary | None:
+            """対象issueを取得する。失敗時は応答を送信済みでNoneを返す。"""
+            try:
+                return find_issue(list_issues(repo), issue_number)
+            except IssueNotFoundError as e:
+                self._send_json(404, {"error": str(e)})
+            except subprocess.CalledProcessError as e:
+                logger.warning("issueの取得に失敗しました (%s#%s): %s", repo, issue_number, e)
+                self._send_json(502, {"error": f"{repo}#{issue_number} を取得できませんでした"})
+            return None
+
+        def _handle_dispatch_status(self, repo: str, issue_number: int) -> None:
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            issue = self._fetch_issue(repo, issue_number)
+            if issue is None:
+                return
+            status = diagnose(issue, dispatch_queue)
+            self._send_json(200, dataclasses.asdict(status))
+
+        def _handle_redispatch(self, repo: str, issue_number: int) -> None:
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+
+            if not instruct_locks.try_acquire(repo, issue_number):
+                message = f"{repo}#{issue_number} は他の操作を処理中です。しばらくお待ちください"
+                self._send_json(409, {"error": message})
+                return
+
+            progress_id: str | None = None
+            try:
+                try:
+                    try:
+                        payload = self._read_json_body()
+                        if not isinstance(payload, dict):
+                            payload = {}
+                        progress_id = payload.get("progressId")
+                        if not isinstance(progress_id, str):
+                            progress_id = None
+                    except ValueError:
+                        payload = {}
+                    on_stage = (
+                        (lambda stage: progress_store.set(progress_id, stage))
+                        if progress_id
+                        else (lambda _stage: None)
+                    )
+                    issue = self._fetch_issue(repo, issue_number)
+                    if issue is None:
+                        return
+                    status = handle_redispatch(
+                        issue,
+                        get_labels=get_labels,
+                        add_label=add_label,
+                        remove_label=remove_label,
+                        post_comment=post_comment,
+                        dispatch_queue=dispatch_queue,
+                        on_stage=on_stage,
+                    )
+                except RedispatchConflictError as e:
+                    self._send_json(409, {"error": str(e)})
+                    return
+                except NoPendingInstructionError as e:
+                    self._send_json(422, {"error": str(e)})
+                    return
+                except IssueNotManagedError as e:
+                    self._send_json(400, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+                finally:
+                    instruct_locks.release(repo, issue_number)
+
+                self._refresh_store()
+                self._send_json(
+                    200,
+                    {"dispatched": True, "comment": status.pending_message, "state": status.state},
+                )
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
         def _handle_create_issue(self, repo: str) -> None:
             if repo not in known_repos:
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
@@ -701,6 +854,8 @@ def make_server(
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
     dashboard_settings: dict[str, float] | None = None,
+    github_token: str | None = None,
+    fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -723,6 +878,8 @@ def make_server(
         list_issues=list_issues,
         sync_worktree=sync_worktree,
         update_execution_settings=update_execution_settings,
+        github_token=github_token,
+        fetch_attachment_fn=fetch_attachment_fn,
         dashboard_settings=(
             dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
         ),

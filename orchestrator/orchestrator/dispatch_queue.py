@@ -61,6 +61,11 @@ class DispatchQueue:
         with self._lock:
             return len(self._queues[repo])
 
+    def is_current(self, repo: str, issue_number: int) -> bool:
+        """指定issueが現在実行中（キュー待ちではなく）かどうかを返す（issue #215）。"""
+        with self._lock:
+            return self._current.get(repo) == issue_number
+
     def is_active(self, repo: str, issue_number: int) -> bool:
         """指定issueが現在ディスパッチ中（実行中 or キュー待ち）かどうかを返す（issue #50）。
 

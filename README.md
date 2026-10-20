@@ -10,7 +10,7 @@ producer-deskは、プロデューサー1名が複数プロジェクト（3〜5�
 
 - Node.js 20以降
 - Python 3.11以降
-- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること）
+- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。画像・動画の添付には v2.99.0 以上を推奨。Privateリポジトリを管理対象にする場合は `config/projects.yaml` の `github_token` も設定する。[SETUP](dist/SETUP.md)参照）
 - [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
 

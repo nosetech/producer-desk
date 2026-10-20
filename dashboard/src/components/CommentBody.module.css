@@ -12,6 +12,8 @@
   --heading-size: 13px;
   --mark-size: 12px;
   --code-size: 12px;
+  /* CommentViewerの.body(max-height 440px)からpadding(34px)とborder(2px)を引いた内側に収める */
+  --media-max-height: 400px;
 }
 
 .quote {
@@ -21,6 +23,7 @@
   --heading-size: 12px;
   --mark-size: 11px;
   --code-size: 11px;
+  --media-max-height: 200px;
 }
 
 .heading {
@@ -95,4 +98,26 @@
   padding: 10px 12px;
   overflow-x: auto;
   white-space: pre;
+}
+
+.media {
+  display: block;
+  max-width: 100%;
+  max-height: var(--media-max-height);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+}
+
+.fileLink {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+  color: var(--text-primary);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
 }

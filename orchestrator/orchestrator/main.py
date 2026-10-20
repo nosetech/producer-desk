@@ -22,6 +22,7 @@ from orchestrator.config import (
     Project,
     load_ci_wait_timeout_hours,
     load_dashboard_settings,
+    load_github_token,
     load_litellm_health_timeout_seconds,
     load_log_retention_days,
     load_polling_interval_seconds,
@@ -29,6 +30,7 @@ from orchestrator.config import (
 )
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
+from orchestrator.github_client import gh_supports_attach
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
@@ -69,6 +71,20 @@ def main() -> None:
     configure_logging(retention_days=log_retention_days)
 
     projects = load_projects()
+
+    # issue #218: Privateリポジトリを管理対象にするため、config/projects.yamlの
+    # github_tokenを`gh`コマンド（Agent Runnerの子プロセス含む）と添付ファイルの
+    # プロキシ取得に使う。環境変数GH_TOKENはghの既存認証より優先される。
+    github_token = load_github_token()
+    if github_token:
+        os.environ["GH_TOKEN"] = github_token
+        logger.info("config/projects.yamlのgithub_tokenを使用します")
+
+    if gh_supports_attach() is False:
+        logger.warning(
+            "ghコマンドがv2.99.0未満のため、Agent Runnerによる`gh issue comment --attach`"
+            "（画像・動画の添付、issue #218）は使えません。ghをアップデートしてください。"
+        )
 
     # タイミング系設定（issue #201）。不正値はここで起動時エラーにする。
     polling_interval_seconds = load_polling_interval_seconds()
@@ -158,6 +174,7 @@ def main() -> None:
         dispatch_queue=dispatch_queue,
         port=port,
         dashboard_settings=dashboard_settings,
+        github_token=github_token,
     )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",

@@ -307,7 +307,30 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
 )
 
 
-# issue #149: 上記4つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #218: UI変更のレビュー用に、実装結果の見た目をissueコメントへ画像・動画で添付
+# させる指示。`gh issue comment --attach`（gh v2.99.0以降）で添付したファイルは
+# ダッシュボードのコメント表示（CommentViewer・返信引用）でも見られる。
+AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
+    "UI変更のレビューに実装結果の見た目が必要なときは、"
+    "`gh issue comment {issue_number} --repo {repo} --attach <ファイル>` で"
+    "画像・動画をissueに添付できます（ghコマンドがv2.99.0以上であること）。\n"
+    "- 状態の比較や表示崩れの確認など静止画で足りる場合は、スクリーンショットを添付してください。"
+    "動画は、アニメーション・ホバー・状態遷移・複数画面にまたがる操作など、動きを見せないと"
+    "判断できない場合に限ります。無駄に動画を作らないでください。\n"
+    "- 動画を作る場合は、Playwrightの`recordVideo`で`.webm`を録画する方法のみを使ってください"
+    "（mp4/GIFへの変換、gif_creator、screencaptureは使いません）。録画にはPlaywright専用の"
+    "ffmpegが必要です（`npx playwright-core install ffmpeg`）。\n"
+    "- `--attach`で添付できるのは画像（png/jpg/jpeg/gif/svg）と動画（mp4/mov/webm）のみです。"
+    "サイズ上限は画像・動画とも10MBなので、動画は短く・解像度を絞ってください。\n"
+    "- 添付前に、APIキー・トークン・内部URLなどの秘匿情報が画面に映り込んでいないことを"
+    "確認してください。"
+    "Publicリポジトリでは誰でも添付ファイルを見られます。\n"
+    "- 録画・撮影は、承認・返信・新規作成・保存などの書き込み系ボタンを押さず、"
+    "読み取り専用の操作のみで行ってください。"
+)
+
+
+# issue #149: 上記5つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -367,6 +390,12 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
         default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
     ),
+    PromptSpec(
+        key="attachment_instruction",
+        title="画像・動画添付の指示",
+        description="UI変更のレビュー用に、スクリーンショットや録画をissueコメントへ添付させる指示",
+        default=AGENT_RUNNER_ATTACHMENT_INSTRUCTION,
+    ),
 )
 
 
@@ -390,7 +419,6 @@ def build_system_prompt(repo: str, issue_number: int, *, prompts_path: Path | No
 
 
 def build_claude_command(
-    message: str,
     *,
     session_id: str,
     resume: bool,
@@ -401,12 +429,14 @@ def build_claude_command(
     """docs/basic-design.md 3-1の起動パラメータに従いコマンドを組み立てる。
 
     worktreeディレクトリの指定は本関数の責務外（呼び出し側でsubprocessのcwdに渡す）。
+    プロンプト（指示内容）もコマンド引数には含めず、呼び出し側が子プロセスの標準入力に
+    渡す。先頭が`-`/`--`のプロンプトを位置引数で渡すと`claude`CLIがオプションと解釈し
+    `error: unknown option`で起動に失敗するため（issue #222）。
     """
     system_prompt = build_system_prompt(repo, issue_number)
     command = [
         "claude",
         "-p",
-        message,
         "--output-format",
         "stream-json",
         # issue #49: `stream-json`はツール呼び出し・メッセージ単位でNDJSON（1行1JSON）
@@ -966,7 +996,6 @@ def run_agent_runner(
     )
 
     command = build_claude_command(
-        message,
         session_id=session_id,
         resume=resume,
         repo=project.repo,
@@ -996,12 +1025,17 @@ def run_agent_runner(
     process = popen(
         command,
         cwd=str(worktree_path),
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
         env=env,
     )
+    # issue #222: プロンプトは標準入力で渡す。標準出力を読み始める前に閉じて、
+    # 子プロセスの入力待ちを解消する。
+    process.stdin.write(message)
+    process.stdin.close()
     stdout_text = _stream_process_output(process, log_path)
     returncode = process.wait()
 
