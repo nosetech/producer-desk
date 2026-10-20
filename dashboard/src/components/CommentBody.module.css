@@ -12,7 +12,8 @@
   --heading-size: 13px;
   --mark-size: 12px;
   --code-size: 12px;
-  --media-max-height: 420px;
+  /* CommentViewerの.body(max-height 440px)からpadding(34px)とborder(2px)を引いた内側に収める */
+  --media-max-height: 400px;
 }
 
 .quote {
