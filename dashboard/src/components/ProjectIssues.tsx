@@ -14,7 +14,7 @@ import {
   issueStatusText,
 } from "@/lib/issueList";
 import { shortRepoName } from "@/lib/projectStatus";
-import { statusCountMeta } from "@/lib/status";
+import { projectDotColorVar, statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { findIssueJob } from "@/lib/jobs";
@@ -219,7 +219,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
           {repos.map((r) => {
             const selected = r === repo;
-            const dot = statusCountMeta(
+            const dotColorVar = projectDotColorVar(
               statusByRepo.get(r)?.label ?? "status:todo",
             );
             return (
@@ -236,7 +236,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 >
                   <span
                     className={styles.tabDot}
-                    style={{ background: `var(${dot.colorVar})` }}
+                    style={{ background: `var(${dotColorVar})` }}
                   />
                   <span className={styles.tabName}>{shortRepoName(r)}</span>
                   {statusByRepo.get(r)?.is_orphaned && (

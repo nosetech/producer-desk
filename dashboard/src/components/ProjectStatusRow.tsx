@@ -3,8 +3,8 @@ import {
   STATUS_IN_REVIEW,
   STATUS_NEEDS_HUMAN_DECISION,
   STATUS_TODO,
+  projectDotColorVar,
   statusCountMeta,
-  statusMeta,
 } from "@/lib/status";
 import { useRouter } from "next/navigation";
 import type { ProjectStatus } from "@/lib/projectStatus";
@@ -89,7 +89,6 @@ export default function ProjectStatusRow({
       </div>
       <div className={styles.row}>
         {projects.map((project) => {
-          const meta = statusMeta(project.label);
           const countKeys = COUNT_ORDER.filter(
             (key) => project.counts[key] > 0,
           );
@@ -109,7 +108,9 @@ export default function ProjectStatusRow({
               <div className={styles.chipTop}>
                 <span
                   className={styles.dot}
-                  style={{ backgroundColor: `var(${meta.colorVar})` }}
+                  style={{
+                    backgroundColor: `var(${projectDotColorVar(project.label)})`,
+                  }}
                 />
                 <span className={styles.repoName} title={project.repo}>
                   {shortRepoName(project.repo)}
