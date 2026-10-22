@@ -1529,6 +1529,55 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
         server.shutdown()
 
 
+def test_get_issue_detail_returns_detail() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    calls: list[tuple[str, int]] = []
+
+    def fake_detail(repo: str, number: int) -> dict:
+        calls.append((repo, number))
+        return {"repo": repo, "number": number, "body": "本文", "comments": []}
+
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, get_issue_detail=fake_detail
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues/7")
+        assert status == 200
+        assert body["body"] == "本文"
+        assert calls == [("nosetech/project-a", 7)]
+    finally:
+        server.shutdown()
+
+
+def test_get_issue_detail_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _get_allow_error(server, "/api/projects/nosetech/unknown-repo/issues/7")
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_get_issue_detail_returns_502_when_gh_fails() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def failing(repo: str, number: int) -> dict:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, get_issue_detail=failing
+    )
+    try:
+        status, _ = _get_allow_error(server, "/api/projects/nosetech/project-a/issues/7")
+        assert status == 502
+    finally:
+        server.shutdown()
+
+
 def test_get_project_issues_unknown_repo_returns_404() -> None:
     store = StateStore()
     dispatch_queue, _, _ = _recording_dispatch_queue()

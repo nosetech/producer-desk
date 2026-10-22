@@ -4,6 +4,7 @@ import {
   commentSummary,
   parseAttachmentLine,
   parseCommentBlocks,
+  replyQuoteSource,
 } from "./comment";
 import type { IssueComment } from "./types";
 
@@ -97,5 +98,40 @@ describe("attachmentProxyUrl", () => {
     expect(attachmentProxyUrl(ASSET)).toBe(
       `/api/attachment?url=${encodeURIComponent(ASSET)}`,
     );
+  });
+});
+
+describe("replyQuoteSource", () => {
+  const base = {
+    repo: "o/r",
+    number: 1,
+    body: "issue本文",
+    author: { login: "owner" },
+    created_at: "2026-10-01T00:00:00Z",
+    url: "https://github.com/o/r/issues/1",
+  };
+
+  it("コメントがあれば最新コメントを返す", () => {
+    const comments = [comment("1件目"), comment("2件目")];
+    expect(replyQuoteSource({ ...base, comments })).toEqual({
+      comment: comments[1],
+      isIssueBody: false,
+    });
+  });
+
+  it("コメントが0件ならissue本文をIssueComment形式で返す", () => {
+    expect(replyQuoteSource({ ...base, comments: [] })).toEqual({
+      comment: {
+        body: "issue本文",
+        createdAt: "2026-10-01T00:00:00Z",
+        author: { login: "owner" },
+        url: "https://github.com/o/r/issues/1",
+      },
+      isIssueBody: true,
+    });
+  });
+
+  it("コメントも本文も空ならnullを返す", () => {
+    expect(replyQuoteSource({ ...base, body: " \n", comments: [] })).toBeNull();
   });
 });
