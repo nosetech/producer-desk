@@ -176,7 +176,7 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 `bin/start.sh`で起動した運用インスタンスを止めずに、機能追加・修正の動作確認用インスタンスを並行起動したい場合がある。この場合、以下3点を運用インスタンスと分離する必要がある。
 
 1. **ポート**: orchestratorは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）、dashboardは`next dev`/`next start`の`-p`オプション（既定: `3000`）でそれぞれ上書きする。開発用dashboardから開発用orchestratorを参照させる場合は、`ORCHESTRATOR_URL`環境変数も同じポートに合わせて設定する
-2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する
+2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する。**dashboardも同じ環境変数`PROJECTS_CONFIG_PATH`（`config/litellm_config.yaml`は`LITELLM_CONFIG_PATH`）を参照する**ため、dashboardを起動するシェルにも同じ値を設定すること（未設定時は`config/`配下の既定ファイル。相対パスはどちらもプロセスのcwd基準）
 3. **セッション永続化ファイル**: 環境変数 `SESSIONS_PATH`（既定: `config/sessions.json`）で、開発用インスタンスには別ファイルを指定する
 
 **開発用インスタンスの起動・停止には `bin/dev_instance.sh` を使う**（issue #238）。上記3点の分離（空きポートの自動採番・既定ポート8787/3000の拒否、`.dev-run/`配下の開発用`projects.yaml`・`sessions.json`等）をまとめて行い、起動したプロセスグループを`.dev-run/`（`.gitignore`対象）に記録する。
