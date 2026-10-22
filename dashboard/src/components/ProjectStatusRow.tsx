@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
-import { WarningIcon } from "./Icons";
+import { ExternalLinkIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectStatusRow.module.css";
@@ -151,6 +151,17 @@ export default function ProjectStatusRow({
                 >
                   <GearIcon />
                 </button>
+                <a
+                  className={styles.addButton}
+                  href={`https://github.com/${project.repo}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`${project.repo} をGitHubで開く`}
+                  title="GitHubで開く"
+                >
+                  <ExternalLinkIcon size={13} />
+                </a>
                 {project.executionSettings.execution_mode ===
                   "litellm_proxy" && (
                   <span
