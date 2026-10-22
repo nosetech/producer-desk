@@ -133,9 +133,6 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const requestSeq = useRef(0);
   const restartPoll = useRef<() => void>(() => {});
 
-  // 一覧だけでなくラベル（状態）別件数・更新時刻も最新化するため、オーケストレータの
-  // プロジェクト単位再取得（issue #197）で当該リポジトリ分のStateStoreを更新してから
-  // `refresh()` でダッシュボード側のstateに反映する。
   const openReplyWithQuote = useCallback(
     async (issueNumber: number, title: string) => {
       setReplyLoading((prev) => new Set(prev).add(issueNumber));
@@ -166,6 +163,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     [repo, openReply, showToast],
   );
 
+  // 一覧だけでなくラベル（状態）別件数・更新時刻も最新化するため、オーケストレータの
+  // プロジェクト単位再取得（issue #197）で当該リポジトリ分のStateStoreを更新してから
+  // `refresh()` でダッシュボード側のstateに反映する。
   const fetchIssues = useCallback(
     (mode: FetchMode) => {
       const seq = ++requestSeq.current;

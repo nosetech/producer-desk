@@ -141,9 +141,11 @@ function ReplyQuote({
             <span className={styles.quoteAuthor}>
               {comment.author?.login ?? "unknown"}
             </span>
-            <span className={styles.quoteAt}>
-              {formatCommentTime(comment.createdAt)}
-            </span>
+            {comment.createdAt && (
+              <span className={styles.quoteAt}>
+                {formatCommentTime(comment.createdAt)}
+              </span>
+            )}
           </span>
         </div>
         <a
