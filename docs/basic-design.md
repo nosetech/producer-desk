@@ -232,6 +232,7 @@ echo "<指示内容>" | claude -p \
 - `--output-format stream-json --verbose` により、実行結果をツール呼び出し・メッセージ単位のNDJSON（1行1JSON）として逐次標準出力に取得する。`--verbose` は `-p`（非対話モード）で `stream-json` を使う場合にCLIが必須とするフラグ。ストリームの最後に出力される `"type":"result"` のイベント（`result` フィールド等を含む）を3-2のissueコメント要約に利用する。当初は `--output-format json`（完了後に最終結果のみを一括出力）を使っていたが、この形式ではプロセス終了まで標準出力に一切何も書き出されず、実行時間の長いタスク（数十分〜）では「ログファイルが更新されない状態」が続き、実行中の進捗を外部から確認する手段が無かったため変更した（issue #49）。
 - `--append-system-prompt` により、[1章](#1-データモデル状態遷移設計)でAgent Runner自身の責務とした`needs-human-decision`・`status:in-review`へのラベル自己付与（対象issue番号・リポジトリ名・具体的な`gh issue edit`コマンドを含む）を、指示内容の文面によらず毎回明示する（`agent_runner.py`の`AGENT_RUNNER_LABEL_INSTRUCTION`）。当初この指示が無く、PR作成後もラベルが`status:in-progress`のまま遷移しない事例が発生したため導入した（issue #33）。
   - **CI完了待ちを誤って判断待ちにしないための追記**: PR作成後のCI完了待機中に、Agent Runnerが「CI完了を監視中」とissueコメントに書きつつ`needs-human-decision`へ遷移させてしまう事例が発生した（issue #152）。当初は`AGENT_RUNNER_LABEL_INSTRUCTION`に、CIが`PENDING`/`IN_PROGRESS`の間は`needs-human-decision`を使わず`gh pr view --json statusCheckRollup`をBashツールで`sleep`を挟みながら繰り返し確認するポーリングによりセッション内で待機を継続する旨を明記していたが、この指示手段自体がBashツールの長時間`sleep`チェーン検知でブロックされ実行不能であり、代替のMonitorツールにも20分のハードタイムアウトがあるため、CIがそれより長くかかると強制終了させられ、`run_agent_runner`側の正常終了時決定的フォールバック（後述）が意図しない`needs-human-decision`遷移を引き起こす形で同症状が再発した（issue #86実行ログでの実地確認、issue #173）。そのため「sleepポーリングで待つ」指示は撤回し、**CI完了検知・後続処理の自動再開はオーケストレータのポーリング（3-5節`orchestrator.ci_watcher`）に委ね、Agent Runner自身はCI待機のため意図的にターンを終了する際に機械可読マーカー（`agent_runner.CI_WAIT_MARKER_PREFIX`、対象PR番号を含む）を最終応答に埋め込むだけでよい**方式に変更した。同じ理由から`.claude/skills/fix-github-issue/SKILL.md`のCI完了待機ステップにも同内容を明記している。
+- 同様に`--append-system-prompt`で、動作確認用にorchestrator・dashboardを別インスタンスとして起動・停止する場合は`bin/dev_instance.sh start|stop`を使い、`pkill` / `killall` / ポートからPIDを探してのkillなど名前・ポート指定で止める操作をしないよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION`、issue #238）。運用インスタンス・他worktreeのインスタンスは`ps`上で見分けがつかず、そうした停止操作が運用中のプロセスを巻き込むため。`bin/dev_instance.sh`は起動したプロセスグループをworktree内の`.dev-run/`へ記録し、`stop`は記録とPGID・目印環境変数が一致するものだけをkillする。同内容はproducer-deskの`CLAUDE.md`にも記載している。
 - 同様に`--append-system-prompt`で、Agent Runnerが調査結果の報告等の目的で`gh issue comment`等を用いてissueに直接コメントを投稿する場合は、本文末尾に`github_client.BOT_COMMENT_MARKER`（`<!-- producer-desk:bot-comment -->`）を必ず付与するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）。オーケストレータ内部の通知処理（`github_client.post_comment`）はこのマーカーを自動付与するが、Agent Runner自身が`gh`コマンドを生で叩く経路はこの仕組みを経由しないため付与漏れが起こり得る。マーカーが無いと[2-3「共通仕様」](#共通仕様)のコメント監視処理（`comment_watcher.py`）が自分自身の投稿を人間からの新規指示と誤検知し、同一内容を無限に再ディスパッチしてしまう（ラベルも`needs-human-decision`→`status:in-progress`に巻き戻る。issue #43）。
 - 同じ指示（`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）内で、セッション終了時の最終応答は3-2の通り`run_agent_runner`が自動的に「Agent Runner実行結果:」というissueコメントとして無条件に投稿する旨も明示し、対応完了時にAgent Runner自身が重ねて完了報告コメントを投稿する必要はないことを伝える。能動的なissueコメント投稿は、長時間かかる作業の途中経過報告など、最終応答を待たずに人間へ可視化する価値がある場合に限定する。当初この案内が無かったため、AI自身の能動的な完了報告コメントと、オーケストレータによる無条件の自動投稿とがほぼ同時刻・同内容で重複して投稿される事例が複数のissueで発生した（issue #84）。
 - `DesignSync`が権限不足等で使えない場合はフォールバックしない。ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため`DesignSync`の代替にはせず、その旨を実行結果コメントに明記してその場で作業を停止し、`needs-human-decision`として人間の確認を仰ぐ。`DesignSync`で値を取得できた場合、実装後はブラウザ操作ツール（`mcp__claude-in-chrome__*`）で完成品とデザインのプレビューを並べて最終的な見た目の一致を確認する（これは数値の取得手段ではなく完成後のセルフレビュー用途）。
@@ -282,10 +283,10 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の5定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下7種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下8種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -294,6 +295,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `pr_instruction` | PR作成時の指示（現状はPR本文の`Closes #<issue番号>`記法） | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
   | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
+  | `dev_instance_instruction` | 動作確認用のorchestrator・dashboardを`bin/dev_instance.sh`経由で起動・停止させ、名前・ポート指定のkill（`pkill`等）を禁止する指示（issue #238） | なし |
   | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
   | `user_name` | ユーザーの呼称（既定「ユーザー」） | なし |
 

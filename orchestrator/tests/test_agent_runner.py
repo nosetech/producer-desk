@@ -2178,6 +2178,28 @@ def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> No
     assert spec.default not in prompt
 
 
+def test_build_claude_command_includes_dev_instance_instruction(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import (
+        AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION,
+        AGENT_RUNNER_PROMPT_SPECS,
+    )
+    from orchestrator.prompts import save_prompt_override
+
+    command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    prompt = _system_prompt_of(command)
+    assert AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION in prompt
+    assert "./bin/dev_instance.sh stop" in prompt
+    assert "pkill" in prompt
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "dev_instance_instruction")
+    save_prompt_override(spec, "独自の起動停止ルール")
+    overridden = _system_prompt_of(
+        build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "独自の起動停止ルール" in overridden
+    assert AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION not in overridden
+
+
 def test_build_claude_command_without_overrides_renders_placeholders() -> None:
     command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
 

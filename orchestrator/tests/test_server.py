@@ -1825,6 +1825,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "pr_instruction",
         "final_message_instruction",
         "attachment_instruction",
+        "dev_instance_instruction",
         "approve_default_message",
         "user_name",
     ]

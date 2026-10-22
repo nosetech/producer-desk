@@ -58,3 +58,6 @@ dist/orchestrator/.venv/
 dist/orchestrator/dist/
 
 .serena/
+
+# --- bin/dev_instance.sh の実行時記録（issue #238） ---
+.dev-run/
