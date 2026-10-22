@@ -179,6 +179,22 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する
 3. **セッション永続化ファイル**: 環境変数 `SESSIONS_PATH`（既定: `config/sessions.json`）で、開発用インスタンスには別ファイルを指定する
 
+**開発用インスタンスの起動・停止には `bin/dev_instance.sh` を使う**（issue #238）。上記3点の分離（空きポートの自動採番・既定ポート8787/3000の拒否、`.dev-run/`配下の開発用`projects.yaml`・`sessions.json`等）をまとめて行い、起動したプロセスグループを`.dev-run/`（`.gitignore`対象）に記録する。
+
+```bash
+./bin/dev_instance.sh start   # 採番したポートとURLが表示される
+./bin/dev_instance.sh status
+./bin/dev_instance.sh stop
+```
+
+- `stop`は、記録したPID・PGID・起動時に付与した目印がすべて一致するプロセスグループだけを止める（`npm`→`next-server`などの子孫を含む）。一致しなければkillせずエラー終了する
+- **`pkill` / `killall`、`lsof`等でポートからPIDを探してのkillは使わないこと。** 運用インスタンスや他worktreeのインスタンスは`ps`上で区別できず、巻き込んで停止してしまう
+- ポートを明示したい場合は`DEV_ORCHESTRATOR_PORT` / `DEV_DASHBOARD_PORT`を使う（運用インスタンスから継承した`ORCHESTRATOR_PORT`等は参照しない）
+- 開発者向けのため、`dist/`の配布tarballには含めない
+- dashboardに`node_modules`が必要（無ければ`dashboard`で`npm ci`）。開発用の`projects.yaml`は実在しないダミーのリポジトリを1件登録するだけで、実プロジェクトは対象にならない
+
+以下は`dev_instance.sh`が内部で行っている動作に相当する手動起動例（ヘルパーを使えない特殊な事情がある場合のみ。停止は起動時に控えたPIDを指定して行い、名前・ポートでの検索は使わない）。
+
 ```bash
 cd orchestrator
 ORCHESTRATOR_PORT=8788 \

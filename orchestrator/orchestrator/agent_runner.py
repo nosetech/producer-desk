@@ -330,7 +330,23 @@ AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
 )
 
 
-# issue #149: 上記5つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #238: 動作確認用にorchestrator・dashboardを別インスタンスで起動したAgent Runnerが、
+# 停止時に名前・ポート指定のkillで運用中の他プロセスまで巻き込む事故を防ぐ指示。
+# プロジェクトのCLAUDE.mdは対象リポジトリがproducer-desk以外だと読み込まれないため、
+# `--append-system-prompt`側にも書く。
+AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION = (
+    "動作確認のためにproducer-deskのorchestrator・dashboardを別インスタンスとして"
+    "起動・停止する場合は、必ず`./bin/dev_instance.sh start`と`./bin/dev_instance.sh stop`を"
+    "使ってください（producer-deskのworktreeでの作業時）。\n"
+    "- このヘルパーは、空きポートの自動採番（運用インスタンスの既定ポート8787/3000は拒否）と、"
+    "起動したプロセスグループの記録を行い、stopでは記録したプロセスグループだけを止めます。\n"
+    "- `pkill` / `killall`、`lsof`・`netstat`等でポートからPIDを探してのkillなど、"
+    "名前やポートでプロセスを探して止める操作は禁止します。運用インスタンスや他のworktreeの"
+    "インスタンスは`ps`上で見分けがつかず、巻き込んで停止してしまうためです。"
+)
+
+
+# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -395,6 +411,15 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         title="画像・動画添付の指示",
         description="UI変更のレビュー用に、スクリーンショットや録画をissueコメントへ添付させる指示",
         default=AGENT_RUNNER_ATTACHMENT_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="dev_instance_instruction",
+        title="動作確認用インスタンスの起動・停止の指示",
+        description=(
+            "動作確認用のorchestrator・dashboardをヘルパー経由で起動・停止させ、"
+            "名前・ポート指定のkillで運用中のプロセスを巻き込むのを禁止する指示"
+        ),
+        default=AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION,
     ),
 )
 

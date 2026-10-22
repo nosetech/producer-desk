@@ -80,7 +80,14 @@ Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため�
 
 ### Agent Runner自身が動作確認のためオーケストレータ・ダッシュボードを起動する場合
 
-Agent Runner（worktree内で作業しているClaude Code自身）が自分の変更を確認する目的でオーケストレータやダッシュボードを起動する際、**本番用に既に起動済みのインスタンスとポートが衝突しないよう、必ず別ポートで起動すること**。デフォルトポート（オーケストレータ8787・ダッシュボード3000）で起動すると、既存プロセスがいる場合に起動失敗、または意図せず同一プロセスに繋がってしまう。
+Agent Runner（worktree内で作業しているClaude Code自身）が自分の変更を確認する目的でオーケストレータやダッシュボードを起動・停止する際は、**必ず `./bin/dev_instance.sh start` / `./bin/dev_instance.sh stop` を使うこと**（`status`で状態確認も可能。issue #238）。
 
-- オーケストレータ: 環境変数 `ORCHESTRATOR_PORT` で上書きする（例: `ORCHESTRATOR_PORT=8788 python -m orchestrator.main`）
-- ダッシュボード: `next dev`/`next start` の `-p <port>` オプションで上書きする（例: `npm run dev -- -p 3001`）。この確認用ダッシュボードから確認用オーケストレータを参照させる場合は、`ORCHESTRATOR_URL` 環境変数もポートを合わせて設定する（例: `ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001`）
+- `start`は、空きポート（18000番台）の自動採番、dashboardの`ORCHESTRATOR_URL`の自動調整、`PROJECTS_CONFIG_PATH`・`SESSIONS_PATH`等の開発用ファイル（`.dev-run/`配下）への切替、起動したプロセスグループの記録（`.dev-run/`）を行う。既定ポート（8787/3000）の指定や使用中ポートは拒否される（`DEV_ORCHESTRATOR_PORT` / `DEV_DASHBOARD_PORT`で明示指定も可能）。起動後に標準出力されるURLで動作確認する
+- `stop`は、記録したプロセスグループ（PID・PGID・起動時に付与した目印）が一致する場合だけ停止する。名前・ポートからの検索はしない
+- **`pkill` / `killall` / `lsof`・`netstat`でポートからPIDを探してのkillなど、名前やポートでプロセスを探して止める操作は禁止する。** 運用インスタンスや他worktreeのインスタンスは`ps`上でほぼ同じ見た目（`python -m orchestrator.main` / `next-server`）で区別できず、巻き込んで運用中のプロセスを止めてしまうため
+- シェルには運用インスタンス由来の`ORCHESTRATOR_PORT=8787`等が継承されていることがあるが、`dev_instance.sh`はこれらを参照せず、子プロセスには採番した値で上書きして渡す
+
+以下の手動起動例は、`dev_instance.sh`が内部で行っている動作の説明であり、代替手段ではない（手動起動すると止め方を誤りやすいため使わない）。
+
+- オーケストレータ: 環境変数 `ORCHESTRATOR_PORT` でポートを上書きする（例: `ORCHESTRATOR_PORT=8788 python -m orchestrator.main`）
+- ダッシュボード: `next dev`/`next start` の `-p <port>` オプションでポートを上書きし、`ORCHESTRATOR_URL` 環境変数も確認用オーケストレータのポートに合わせる（例: `ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001`）
