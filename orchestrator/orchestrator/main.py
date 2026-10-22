@@ -20,6 +20,7 @@ from orchestrator.close_watcher import close_finished_issues
 from orchestrator.comment_watcher import CommentTracker, process_new_comments
 from orchestrator.config import (
     Project,
+    is_read_only,
     load_ci_wait_timeout_hours,
     load_dashboard_settings,
     load_github_token,
@@ -72,6 +73,14 @@ def main() -> None:
 
     projects = load_projects()
 
+    # issue #241: 動作確認用インスタンスが実プロジェクトを対象にしても、実issueへの
+    # ディスパッチ・ラベル変更・コメント投稿・Slack通知が起きないようにする。
+    read_only = is_read_only()
+    if read_only:
+        logger.warning(
+            "読み取り専用モードで起動します。ディスパッチ・GitHubへの書き込み・Slack通知は行いません"
+        )
+
     # issue #218: Privateリポジトリを管理対象にするため、config/projects.yamlの
     # github_tokenを`gh`コマンド（Agent Runnerの子プロセス含む）と添付ファイルの
     # プロキシ取得に使う。環境変数GH_TOKENはghの既存認証より優先される。
@@ -119,6 +128,8 @@ def main() -> None:
     review_notifier = ReviewNotifier()
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
+        if read_only:
+            return
         close_finished_issues(
             issues_by_repo,
             get_labels=gh_get_labels,
@@ -150,6 +161,8 @@ def main() -> None:
 
     def on_update(state: AggregatedState) -> None:
         store.set(state)
+        if read_only:
+            return
         decision_notifier.notify_new_decisions(state)
         review_notifier.notify_new_reviews(state)
 
@@ -175,6 +188,7 @@ def main() -> None:
         port=port,
         dashboard_settings=dashboard_settings,
         github_token=github_token,
+        read_only=read_only,
     )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",

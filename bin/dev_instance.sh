@@ -23,7 +23,14 @@
 #     値で上書きして渡す。
 #   - dashboardのORCHESTRATOR_URLは採番したorchestratorポートに自動で合わせる。
 #   - PROJECTS_CONFIG_PATH / SESSIONS_PATH等は.dev-run/配下の開発用ファイルを既定
-#     にする（環境変数で明示した場合はそちらを使う）。
+#     にする（環境変数で明示した場合はそちらを使う）。既定のprojects.yamlは
+#     nosetech/producer-desk（worktree_pathはこのworktree）を対象にして毎回生成する。
+#   - orchestratorは常に読み取り専用モード（ORCHESTRATOR_READ_ONLY=1、issue #241）で
+#     起動する。実リポジトリを対象にしても、ディスパッチ・ラベル変更・issueコメント
+#     投稿・Slack通知は一切行わない（環境変数で上書きできない）。
+#   - 運用shell由来のNODE_ENV（bin/start.shのproduction）は子プロセスから外す。
+#     `next dev`はNODE_ENV=productionだとglobals.cssのparseに失敗してHTTP 500になる。
+#   - 起動後にdashboardへアクセスし、HTTP 200でなければ警告する。
 #   - dashboardはnode_modulesが必要（無ければエラー終了する。dashboardで`npm ci`
 #     を実行しておくこと）。
 #
@@ -153,6 +160,8 @@ launch() {
     (
         cd "${cwd}" || exit 1
         export "${MARKER_ENV}=${marker}"
+        # 運用インスタンス由来のNODE_ENV=productionで`next dev`が500になるため外す。
+        unset NODE_ENV
         nohup python3 -I -c '
 import os, sys
 os.setsid()
@@ -178,6 +187,19 @@ os.execvp(sys.argv[1], sys.argv[1:])
 
 cleanup_records() {
     rm -f "$(record_file "$1" pid)" "$(record_file "$1" pgid)" "$(record_file "$1" marker)" "$(record_file "$1" cwd)"
+}
+
+# dashboardがHTTP 200を返すか確認する（初回のnext devはコンパイルに時間がかかる）。
+# 失敗しても起動自体は続行し、警告のみ出す。
+check_dashboard() {
+    local port="$1" code="" _
+    for _ in $(seq 1 60); do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+        [ "${code}" = "200" ] && return 0
+        sleep 1
+    done
+    err "警告: dashboardがHTTP 200を返しません（最後のステータス: ${code:-なし}）。画面を表示できない可能性があります。ログを確認してください: ${DEV_DIR}/dashboard.log"
+    return 0
 }
 
 cmd_start() {
@@ -243,15 +265,15 @@ cmd_start() {
     export SESSIONS_PATH="${SESSIONS_PATH:-${DEV_DIR}/sessions.json}"
     export EXECUTION_OVERRIDES_PATH="${EXECUTION_OVERRIDES_PATH:-${DEV_DIR}/execution_overrides.json}"
     export ORCHESTRATOR_PROMPTS_PATH="${ORCHESTRATOR_PROMPTS_PATH:-${DEV_DIR}/prompts.yaml}"
-    if [ ! -f "${PROJECTS_CONFIG_PATH}" ] && [ "${PROJECTS_CONFIG_PATH}" = "${DEV_DIR}/projects.yaml" ]; then
-        # 運用中の実プロジェクトを含めない（同一worktreeへの同時ディスパッチ防止）。
-        # orchestratorは起動時に1件以上のプロジェクトを要求するため、実在しない
-        # ダミーのリポジトリを1件だけ登録する（ポーリングはエラーログになるだけで無害）。
-        mkdir -p "${DEV_DIR}/placeholder-worktree"
-        printf 'projects:\n  - repo: nosetech/dev-instance-placeholder\n    worktree_path: %s\n' \
-            "${DEV_DIR}/placeholder-worktree" >"${PROJECTS_CONFIG_PATH}"
-        log "対象プロジェクトを含まない開発用設定を作成しました: ${PROJECTS_CONFIG_PATH}"
+    # 実リポジトリを書き込み不可で参照する（下記のORCHESTRATOR_READ_ONLY）。ファイルは
+    # 毎回生成し直す（古いプレースホルダ設定の持ち越しを防ぐ）。
+    if [ "${PROJECTS_CONFIG_PATH}" = "${DEV_DIR}/projects.yaml" ]; then
+        printf 'projects:\n  - repo: nosetech/producer-desk\n    worktree_path: %s\n' \
+            "${REPO_ROOT}" >"${PROJECTS_CONFIG_PATH}"
+        log "開発用の対象プロジェクト設定を作成しました（nosetech/producer-desk）: ${PROJECTS_CONFIG_PATH}"
     fi
+    # 読み取り専用モードは環境変数の継承・指定に関わらず常に有効にする。
+    export ORCHESTRATOR_READ_ONLY=1
 
     log "orchestrator を起動します（ポート${orch_port}）..."
     ORCHESTRATOR_PORT="${orch_port}" launch orchestrator "${ORCHESTRATOR_DIR}" "${DEV_DIR}/orchestrator.log" \
@@ -267,6 +289,8 @@ cmd_start() {
 
     echo "${orch_port}" >"${DEV_DIR}/orchestrator.port"
     echo "${dash_port}" >"${DEV_DIR}/dashboard.port"
+
+    check_dashboard "${dash_port}"
 
     log "起動完了"
     log "  orchestrator: http://127.0.0.1:${orch_port}  (PID $(cat "$(record_file orchestrator pid)"))  log: ${DEV_DIR}/orchestrator.log"
