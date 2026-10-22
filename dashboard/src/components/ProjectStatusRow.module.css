@@ -107,6 +107,7 @@
   background: var(--bg-panel);
   color: var(--text-secondary);
   cursor: pointer;
+  text-decoration: none;
   transition: all 0.12s;
 }
 
