@@ -13,22 +13,76 @@ interface ProjectEntry {
   litellm_model?: string | null;
 }
 
-const CONFIG_PATH = path.join(process.cwd(), "..", "config", "projects.yaml");
-const LITELLM_CONFIG_PATH = path.join(
-  process.cwd(),
-  "..",
-  "config",
-  "litellm_config.yaml",
-);
+export const PROJECTS_CONFIG_PATH_ENV = "PROJECTS_CONFIG_PATH";
+export const LITELLM_CONFIG_PATH_ENV = "LITELLM_CONFIG_PATH";
+
+/**
+ * 設定ファイルのパスを解決する。orchestratorと同じ環境変数（`PROJECTS_CONFIG_PATH` /
+ * `LITELLM_CONFIG_PATH`）があればそれを優先する（相対パスはorchestratorと同様にプロセスの
+ * cwd基準。どちらもリポジトリ直下の1階層下で起動するため同じファイルを指す）。
+ * リクエストごとに環境変数を読むため、ビルド時に値が焼き込まれない。
+ */
+export function resolveConfigPath(
+  envName: string,
+  fileName: string,
+): {
+  path: string;
+  explicit: boolean;
+} {
+  const fromEnv = process.env[envName];
+  if (fromEnv) {
+    return { path: path.resolve(fromEnv), explicit: true };
+  }
+  return {
+    path: path.join(process.cwd(), "..", "config", fileName),
+    explicit: false,
+  };
+}
+
+/**
+ * 設定ファイルを読む。存在しない（ENOENT）場合は`null`を返す（環境変数で明示した
+ * パスの場合は設定ミスに気づけるよう警告を出す）。それ以外の失敗はログに出して`null`。
+ */
+async function readConfigFile(
+  envName: string,
+  fileName: string,
+): Promise<string | null> {
+  const { path: configPath, explicit } = resolveConfigPath(envName, fileName);
+  try {
+    return await readFile(configPath, "utf-8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      if (explicit) {
+        console.warn(
+          `[projectsConfig] ${envName}で指定された設定ファイルが存在しません: ${configPath}`,
+        );
+      }
+    } else {
+      console.error(
+        `[projectsConfig] 設定ファイルを読み込めません: ${configPath}`,
+        e,
+      );
+    }
+    return null;
+  }
+}
+
+function parseConfigYaml<T>(raw: string, label: string): T | null {
+  try {
+    return parse(raw) as T | null;
+  } catch (e) {
+    console.error(`[projectsConfig] ${label}のYAMLを解釈できません`, e);
+    return null;
+  }
+}
 
 async function loadProjectEntries(): Promise<ProjectEntry[]> {
-  let raw: string;
-  try {
-    raw = await readFile(CONFIG_PATH, "utf-8");
-  } catch {
-    return [];
-  }
-  const data = parse(raw) as { projects?: ProjectEntry[] } | null;
+  const raw = await readConfigFile(PROJECTS_CONFIG_PATH_ENV, "projects.yaml");
+  if (raw === null) return [];
+  const data = parseConfigYaml<{ projects?: ProjectEntry[] }>(
+    raw,
+    "projects.yaml",
+  );
   return data?.projects ?? [];
 }
 
@@ -86,13 +140,15 @@ interface LiteLlmModelEntry {
 export async function loadLiteLlmModelsForRepo(
   repo: string,
 ): Promise<string[]> {
-  let raw: string;
-  try {
-    raw = await readFile(LITELLM_CONFIG_PATH, "utf-8");
-  } catch {
-    return [];
-  }
-  const data = parse(raw) as { model_list?: LiteLlmModelEntry[] } | null;
+  const raw = await readConfigFile(
+    LITELLM_CONFIG_PATH_ENV,
+    "litellm_config.yaml",
+  );
+  if (raw === null) return [];
+  const data = parseConfigYaml<{ model_list?: LiteLlmModelEntry[] }>(
+    raw,
+    "litellm_config.yaml",
+  );
   return (data?.model_list ?? [])
     .filter((m) => m.model_info?.repo === repo)
     .map((m) => m.model_name);

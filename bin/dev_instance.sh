@@ -25,6 +25,9 @@
 #   - PROJECTS_CONFIG_PATH / SESSIONS_PATH等は.dev-run/配下の開発用ファイルを既定
 #     にする（環境変数で明示した場合はそちらを使う）。既定のprojects.yamlは
 #     nosetech/producer-desk（worktree_pathはこのworktree）を対象にして毎回生成する。
+#   - dashboardもorchestratorと同じPROJECTS_CONFIG_PATH（設定があればLITELLM_CONFIG_PATHも）
+#     を環境変数で継承して読む（issue #244）。config/projects.yamlは読まない。
+#     projects.yamlが空・不在なら「0 プロジェクト」になるため起動を拒否する。
 #   - orchestratorは常に読み取り専用モード（ORCHESTRATOR_READ_ONLY=1、issue #241）で
 #     起動する。実リポジトリを対象にしても、ディスパッチ・ラベル変更・issueコメント
 #     投稿・Slack通知は一切行わない（環境変数で上書きできない）。
@@ -271,6 +274,13 @@ cmd_start() {
         printf 'projects:\n  - repo: nosetech/producer-desk\n    worktree_path: %s\n' \
             "${REPO_ROOT}" >"${PROJECTS_CONFIG_PATH}"
         log "開発用の対象プロジェクト設定を作成しました（nosetech/producer-desk）: ${PROJECTS_CONFIG_PATH}"
+    fi
+    # dashboardもorchestratorと同じPROJECTS_CONFIG_PATH（設定があればLITELLM_CONFIG_PATHも）
+    # を環境変数経由で読む（issue #244）。dashboardが「0 プロジェクト」になる構成では
+    # 起動しない。
+    if [ ! -s "${PROJECTS_CONFIG_PATH}" ] || ! grep -q '^[[:space:]]*-[[:space:]]*repo:' "${PROJECTS_CONFIG_PATH}"; then
+        err "PROJECTS_CONFIG_PATH（${PROJECTS_CONFIG_PATH}）が存在しない、またはプロジェクトが1件も登録されていません。dashboardが「0 プロジェクト」になるため起動しません。"
+        return 1
     fi
     # 読み取り専用モードは環境変数の継承・指定に関わらず常に有効にする。
     export ORCHESTRATOR_READ_ONLY=1

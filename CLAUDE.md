@@ -86,6 +86,7 @@ Agent Runner（worktree内で作業しているClaude Code自身）が自分の�
 - `stop`は、記録したプロセスグループ（PID・PGID・起動時に付与した目印）が一致する場合だけ停止する。名前・ポートからの検索はしない
 - **`pkill` / `killall` / `lsof`・`netstat`でポートからPIDを探してのkillなど、名前やポートでプロセスを探して止める操作は禁止する。** 運用インスタンスや他worktreeのインスタンスは`ps`上でほぼ同じ見た目（`python -m orchestrator.main` / `next-server`）で区別できず、巻き込んで運用中のプロセスを止めてしまうため
 - **確認用インスタンスは常に読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）で、`nosetech/producer-desk`を対象に起動する**（issue #241）。実issueに対するディスパッチ・ラベル変更・コメント投稿・Slack通知は一切行わず、書き込み系API・ボタン操作は失敗する（撮影・確認は読み取り専用の操作のみ）。見た目確認用の固定issue #242（`status:in-review`）が表示される。クローズ・編集・コメント追加はしない
+- dashboardもorchestratorと同じ環境変数`PROJECTS_CONFIG_PATH`（設定があれば`LITELLM_CONFIG_PATH`も）で設定ファイルを読む（issue #244）。**確認用ダッシュボードのために`config/projects.yaml`等を直接置いたり書き換えたりしない**（運用側のファイルを触らないため）。`dev_instance.sh`が`.dev-run/projects.yaml`を渡す
 - 運用インスタンス由来の`NODE_ENV=production`のままだと`next dev`が500になるため、`dev_instance.sh`は`NODE_ENV`を外して起動し、起動後にHTTP 200でなければ警告する。手動で`next dev`を起動する場合も`NODE_ENV`を外すこと
 - 画面の見た目を確認できなかった場合は、PRコメント・最終応答にその原因を明記する（確認できたと書かない）
 - シェルには運用インスタンス由来の`ORCHESTRATOR_PORT=8787`等が継承されていることがあるが、`dev_instance.sh`はこれらを参照せず、子プロセスには採番した値で上書きして渡す

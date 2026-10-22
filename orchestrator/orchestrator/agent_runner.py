@@ -348,6 +348,10 @@ AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION = (
     "- 確認用インスタンスは読み取り専用で、nosetech/producer-deskを対象にします。"
     "実issueには何も書き込まず（ディスパッチ・ラベル変更・コメント投稿・Slack通知なし）、"
     "書き込み系のボタン操作は失敗します。\n"
+    "- 確認用ダッシュボードの設定ファイルは、`config/projects.yaml`等を直接置いたり"
+    "書き換えたりせず、"
+    "`bin/dev_instance.sh`が渡す環境変数（`PROJECTS_CONFIG_PATH`等）経由で参照させてください"
+    "（運用インスタンスが読むファイルを触らないため）。\n"
     "- 画面の見た目を確認できなかった場合は、PRコメント・最終応答にその原因を明記してください。"
 )
 
