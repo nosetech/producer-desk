@@ -191,7 +191,11 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 - **`pkill` / `killall`、`lsof`等でポートからPIDを探してのkillは使わないこと。** 運用インスタンスや他worktreeのインスタンスは`ps`上で区別できず、巻き込んで停止してしまう
 - ポートを明示したい場合は`DEV_ORCHESTRATOR_PORT` / `DEV_DASHBOARD_PORT`を使う（運用インスタンスから継承した`ORCHESTRATOR_PORT`等は参照しない）
 - 開発者向けのため、`dist/`の配布tarballには含めない
-- dashboardに`node_modules`が必要（無ければ`dashboard`で`npm ci`）。開発用の`projects.yaml`は実在しないダミーのリポジトリを1件登録するだけで、実プロジェクトは対象にならない
+- dashboardに`node_modules`が必要（無ければ`dashboard`で`npm ci`）
+- 開発用の`projects.yaml`は`nosetech/producer-desk`（`worktree_path`はそのworktree自身）を対象に、起動のたびに生成する（issue #241）。実issueを画面に表示して見た目を確認できる
+- **確認用orchestratorは常に読み取り専用モード（環境変数`ORCHESTRATOR_READ_ONLY=1`）で起動する**（`dev_instance.sh`が強制する）。実issueを対象にしても、Agent Runnerのディスパッチ・ラベル変更・issueコメント投稿・Slack通知は一切行わず、参照系API（`GET /api/*`と再取得`POST /api/refresh`）だけを提供する。書き込み系API（指示・再実行・issue作成・設定変更など）は403を返すため、ダッシュボード上の承認・返信・新規作成・保存ボタンは失敗する。見た目の確認・撮影は読み取り専用の操作だけで行う
+- 運用shell由来の`NODE_ENV=production`は`dev_instance.sh`が子プロセスから外す。`next dev`は`NODE_ENV=production`のままだと`globals.css`のparseに失敗してHTTP 500になる。起動後にdashboardがHTTP 200を返さなければ警告を出す
+- 見た目確認用の固定issueとして **#242**（`status:in-review`、`status:todo`は付けない）を用意している。クローズ・編集・コメント追加をしないこと（運用インスタンスのコメント監視が反応するため）
 
 以下は`dev_instance.sh`が内部で行っている動作に相当する手動起動例（ヘルパーを使えない特殊な事情がある場合のみ。停止は起動時に控えたPIDを指定して行い、名前・ポートでの検索は使わない）。
 
@@ -213,6 +217,8 @@ ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
 ### 補足: `NODE_ENV`について
 
 `next build`は、呼び出し元のシェルで環境変数`NODE_ENV`に`production`/`development`/`test`以外の値が設定されていると、内部エラー（`<Html> should not be imported outside of pages/_document.`等）で失敗することがある（[vercel/next.js#77262](https://github.com/vercel/next.js/discussions/77262)参照）。`bin/start.sh`は起動前に常に`NODE_ENV=production`を設定するため通常は意識不要だが、`dashboard`ディレクトリで直接`npm run build`を実行する場合にビルドが失敗する場合は、シェルの`NODE_ENV`環境変数の値を確認すること。
+
+同様に、`next dev`も`NODE_ENV=production`のままだと`./src/app/globals.css`のparseに失敗してHTTP 500を返す。運用インスタンスから起動したshell（Agent Runnerを含む）は`NODE_ENV=production`を引き継ぐため、動作確認用に`next dev`を起動する場合は`NODE_ENV`を外す（`bin/dev_instance.sh`は自動で外す）。
 
 ## DBバックアップ（macOS launchd）
 

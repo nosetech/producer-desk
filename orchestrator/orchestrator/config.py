@@ -122,6 +122,16 @@ def validate_execution_settings(
         )
 
 
+# 読み取り専用モード（issue #241）。有効時は、Agent Runnerのディスパッチ、ラベル変更・
+# issueコメント投稿などGitHubへの書き込み、Slack通知を一切行わず、参照系APIだけを
+# 提供する。動作確認用インスタンス（bin/dev_instance.sh）が常にこのモードで起動する。
+READ_ONLY_ENV = "ORCHESTRATOR_READ_ONLY"
+
+
+def is_read_only() -> bool:
+    return os.environ.get(READ_ONLY_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _load_yaml_data(config_path: Path | None) -> dict:
     if config_path is None:
         config_path = Path(os.environ.get(CONFIG_PATH_ENV, str(DEFAULT_CONFIG_PATH)))

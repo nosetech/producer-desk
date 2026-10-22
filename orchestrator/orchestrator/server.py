@@ -117,6 +117,8 @@ LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh$")
 # 全プロジェクトの再取得（issue #197）。
 REFRESH_ALL_PATH = "/api/refresh"
+# 読み取り専用モード（issue #241）で書き込み系リクエストを拒否する際のメッセージ。
+READ_ONLY_ERROR = "読み取り専用モードのため、書き込み系の操作は実行できません"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 # Agent Runnerプロンプト設定（issue #149）。
@@ -269,6 +271,7 @@ def _make_handler(
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
+    read_only: bool = False,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -500,7 +503,14 @@ def _make_handler(
                 },
             )
 
+        def _reject_if_read_only(self) -> bool:
+            """読み取り専用モード（issue #241）なら403を返し、Trueを返す。"""
+            if read_only:
+                self._send_json(403, {"error": READ_ONLY_ERROR})
+            return read_only
+
         def do_POST(self) -> None:  # noqa: N802
+            # 再取得（GET相当の参照のみ）は読み取り専用モードでも許可する。
             if self.path == REFRESH_ALL_PATH:
                 self._handle_refresh_all()
                 return
@@ -508,6 +518,9 @@ def _make_handler(
             refresh_match = REFRESH_PROJECT_PATH.match(self.path)
             if refresh_match:
                 self._handle_refresh_project(refresh_match.group("repo"))
+                return
+
+            if self._reject_if_read_only():
                 return
 
             instruct_match = INSTRUCT_PATH.match(self.path)
@@ -532,6 +545,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             settings_match = PROJECT_SETTINGS_PATH.match(self.path)
             if settings_match:
                 self._handle_update_project_settings(settings_match.group("repo"))
@@ -540,6 +556,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_PUT(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_update_prompt(prompt_match.group("key"))
@@ -548,6 +567,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_DELETE(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_reset_prompt(prompt_match.group("key"))
@@ -885,6 +907,7 @@ def make_server(
     dashboard_settings: dict[str, float] | None = None,
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
+    read_only: bool = False,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -910,6 +933,7 @@ def make_server(
         update_execution_settings=update_execution_settings,
         github_token=github_token,
         fetch_attachment_fn=fetch_attachment_fn,
+        read_only=read_only,
         dashboard_settings=(
             dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
         ),
