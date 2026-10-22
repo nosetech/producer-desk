@@ -435,3 +435,17 @@ def test_load_github_token_rejects_non_string(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         load_github_token(config_path=config_path)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, False), ("", False), ("0", False), ("1", True), ("true", True), (" TRUE ", True)],
+)
+def test_is_read_only(monkeypatch, value, expected) -> None:
+    from orchestrator.config import READ_ONLY_ENV, is_read_only
+
+    if value is None:
+        monkeypatch.delenv(READ_ONLY_ENV, raising=False)
+    else:
+        monkeypatch.setenv(READ_ONLY_ENV, value)
+    assert is_read_only() is expected

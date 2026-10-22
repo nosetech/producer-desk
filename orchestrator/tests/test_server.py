@@ -2127,3 +2127,52 @@ def test_get_attachment_without_url_returns_400() -> None:
         assert status == 400
     finally:
         server.shutdown()
+
+
+def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
+    labels = FakeLabels({1: {STATUS_TODO}})
+    comments = FakeComments()
+    creator = FakeIssueCreator()
+    dispatch_queue, dispatch_calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        create_issue=creator.create_issue,
+        read_only=True,
+    )
+    try:
+        repo = PROJECT_A.repo
+        results = [
+            _post(server, f"/api/projects/{repo}/issues/1/instruct", {"action": "approve"}),
+            _post(server, f"/api/projects/{repo}/issues/1/redispatch", {}),
+            _post(server, f"/api/projects/{repo}/issues", {"title": "t", "body": "b"}),
+            _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
+            _put(server, "/api/prompts/anything", {"body": "x"}),
+            _delete(server, "/api/prompts/anything"),
+        ]
+        for status, body in results:
+            assert status == 403
+            assert "読み取り専用" in body["error"]
+        assert labels.labels_by_issue == {1: {STATUS_TODO}}
+        assert comments.posted == []
+        assert creator.created == []
+        assert dispatch_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_read_only_server_still_serves_read_apis() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue, read_only=True
+    )
+    try:
+        assert _get(server, "/api/settings")[0] == 200
+        assert _post(server, "/api/refresh", {})[0] == 200
+    finally:
+        server.shutdown()
