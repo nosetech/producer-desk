@@ -26,6 +26,8 @@ export interface IssueRef {
   title: string;
   /** 返信を開いた時点の最新コメント（返信欄で読み取り専用表示する）。 */
   comment?: IssueComment;
+  /** commentがコメントではなくissue本文の場合true（issue #231）。 */
+  isIssueBody?: boolean;
   /** 返信を開いた時点（ISO8601）。 */
   openedAt?: string;
 }
@@ -109,16 +111,19 @@ function ModelSelectRow({
 
 function ReplyQuote({
   comment,
+  isIssueBody,
   openedAt,
   open,
   onToggle,
 }: {
   comment: IssueComment;
+  isIssueBody?: boolean;
   openedAt?: string;
   open: boolean;
   onToggle: () => void;
 }) {
-  const label = open ? "コメントを折りたたむ" : "コメントを展開";
+  const noun = isIssueBody ? "issue本文" : "コメント";
+  const label = open ? `${noun}を折りたたむ` : `${noun}を展開`;
   const summary = commentSummary(comment);
   const openedTime = openedAt
     ? new Date(openedAt).toLocaleTimeString("ja-JP", {
@@ -131,7 +136,7 @@ function ReplyQuote({
       <div className={styles.quoteHeader}>
         <span className={styles.quoteAiTag}>AI</span>
         <div className={styles.quoteHeaderText}>
-          <span className={styles.quoteHeading}>返信先のコメント</span>
+          <span className={styles.quoteHeading}>返信先の{noun}</span>
           <span className={styles.quoteMeta}>
             <span className={styles.quoteAuthor}>
               {comment.author?.login ?? "unknown"}
@@ -146,8 +151,8 @@ function ReplyQuote({
           target="_blank"
           rel="noreferrer"
           className={styles.quoteIconBtn}
-          title="GitHubでコメントを開く"
-          aria-label="GitHubでコメントを開く"
+          title={`GitHubで${noun}を開く`}
+          aria-label={`GitHubで${noun}を開く`}
         >
           <svg
             width="12"
@@ -469,6 +474,7 @@ export default function ComposerBar({
             {replyTarget?.comment && (
               <ReplyQuote
                 comment={replyTarget.comment}
+                isIssueBody={replyTarget.isIssueBody}
                 openedAt={replyTarget.openedAt}
                 open={quoteOpen}
                 onToggle={() => setQuoteOpen((o) => !o)}

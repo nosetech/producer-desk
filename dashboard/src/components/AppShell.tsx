@@ -153,6 +153,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       issueNumber: number,
       title: string,
       comment?: IssueComment,
+      isIssueBody?: boolean,
     ) => {
       setComposerMode("reply");
       // 返信先コメントは返信を開いた時点のスナップショットを保持する（ポーリングで
@@ -162,6 +163,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         number: issueNumber,
         title,
         comment,
+        isIssueBody,
         openedAt: new Date().toISOString(),
       });
       setComposerOpen(true);

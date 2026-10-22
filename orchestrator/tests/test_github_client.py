@@ -10,6 +10,7 @@ from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     close_issue,
     delete_branch,
+    get_issue_detail,
     get_pr_branch,
     get_pr_status_check_rollup,
     list_issues,
@@ -324,3 +325,39 @@ def test_gh_supports_attach_returns_none_when_gh_missing() -> None:
         raise FileNotFoundError
 
     assert gh_supports_attach(run=run) is None
+
+
+def test_get_issue_detail_returns_body_and_comments() -> None:
+    run = _fake_run_raw(
+        {
+            "body": "本文",
+            "author": {"login": "nosetech"},
+            "createdAt": "2026-10-01T00:00:00Z",
+            "url": "https://github.com/nosetech/project-a/issues/3",
+            "comments": [{"body": "c1", "createdAt": "t", "author": {"login": "a"}, "url": "u"}],
+        }
+    )
+
+    detail = get_issue_detail("nosetech/project-a", 3, run=run)
+
+    assert detail == {
+        "repo": "nosetech/project-a",
+        "number": 3,
+        "body": "本文",
+        "author": {"login": "nosetech"},
+        "created_at": "2026-10-01T00:00:00Z",
+        "url": "https://github.com/nosetech/project-a/issues/3",
+        "comments": [{"body": "c1", "createdAt": "t", "author": {"login": "a"}, "url": "u"}],
+    }
+    cmd = run.calls[0]
+    assert cmd[:3] == ["gh", "issue", "view"]
+    assert "3" in cmd and "--repo" in cmd and "nosetech/project-a" in cmd
+
+
+def test_get_issue_detail_treats_null_body_as_empty() -> None:
+    run = _fake_run_raw({"body": None, "comments": []})
+
+    detail = get_issue_detail("nosetech/project-a", 3, run=run)
+
+    assert detail["body"] == ""
+    assert detail["comments"] == []

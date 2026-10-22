@@ -198,6 +198,17 @@ export interface ProjectIssue {
   is_orphaned: boolean;
 }
 
+/** GET /api/projects/{repo}/issues/{n} の応答（issue #231）。返信UIの引用表示用。 */
+export interface IssueDetail {
+  repo: string;
+  number: number;
+  body: string;
+  author: { login: string } | null;
+  created_at: string | null;
+  url: string | null;
+  comments: IssueComment[];
+}
+
 export interface ProjectIssuesResponse {
   repo: string;
   issues: ProjectIssue[];

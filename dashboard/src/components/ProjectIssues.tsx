@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { postRefreshProject } from "@/lib/api";
+import { fetchIssueDetail, postRefreshProject } from "@/lib/api";
+import { replyQuoteSource } from "@/lib/comment";
 import {
   FILTER_ALL,
   FILTER_ORPHAN,
@@ -125,12 +126,46 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const [showDone, setShowDone] = useState(false);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
   const [refreshing, setRefreshing] = useState(false);
+  // 「返信する」押下後、引用用のコメント・本文を取得中のissue番号（issue #231）。
+  const [replyLoading, setReplyLoading] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const requestSeq = useRef(0);
   const restartPoll = useRef<() => void>(() => {});
 
   // 一覧だけでなくラベル（状態）別件数・更新時刻も最新化するため、オーケストレータの
   // プロジェクト単位再取得（issue #197）で当該リポジトリ分のStateStoreを更新してから
   // `refresh()` でダッシュボード側のstateに反映する。
+  const openReplyWithQuote = useCallback(
+    async (issueNumber: number, title: string) => {
+      setReplyLoading((prev) => new Set(prev).add(issueNumber));
+      try {
+        const source = replyQuoteSource(
+          await fetchIssueDetail(repo, issueNumber),
+        );
+        openReply(
+          repo,
+          issueNumber,
+          title,
+          source?.comment,
+          source?.isIssueBody,
+        );
+      } catch (e) {
+        // 引用なしでも返信UIは開けるようにし、指示自体はブロックしない。
+        const message = e instanceof Error ? e.message : "不明なエラー";
+        showToast(`コメントの取得に失敗しました: ${message}`, true);
+        openReply(repo, issueNumber, title);
+      } finally {
+        setReplyLoading((prev) => {
+          const next = new Set(prev);
+          next.delete(issueNumber);
+          return next;
+        });
+      }
+    },
+    [repo, openReply, showToast],
+  );
+
   const fetchIssues = useCallback(
     (mode: FetchMode) => {
       const seq = ++requestSeq.current;
@@ -616,7 +651,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   done ? styles.cardDone : "",
                   issue.is_orphaned ? styles.cardOrphan : "",
                 ].join(" ");
-                const reply = () => openReply(repo, issue.number, issue.title);
+                const reply = () =>
+                  openReplyWithQuote(issue.number, issue.title);
+                const replyBusy = replyLoading.has(issue.number);
                 const job = findIssueJob(jobs, repo, issue.number);
                 return (
                   <div key={issue.number} className={styles.item}>
@@ -662,6 +699,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                                 type="button"
                                 className={styles.replyBtn}
                                 onClick={reply}
+                                disabled={replyBusy}
                               >
                                 <ReplyIcon size={13} />
                                 返信する
@@ -721,6 +759,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                                 type="button"
                                 className={styles.replyBtn}
                                 onClick={reply}
+                                disabled={replyBusy}
                               >
                                 <ReplyIcon size={14} />
                                 返信する

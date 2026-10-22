@@ -37,6 +37,8 @@ export interface AppContextValue {
     issueNumber: number,
     title: string,
     comment?: IssueComment,
+    /** commentがコメントではなくissue本文であることを示す（issue #231）。 */
+    isIssueBody?: boolean,
   ) => void;
   openNewTask: (repo: string) => void;
 }

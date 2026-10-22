@@ -7,6 +7,7 @@ import {
   type ExecutionMode,
   type InstructAction,
   type InstructResult,
+  type IssueDetail,
   type PrCandidate,
   type ProgressResponse,
   type ProjectIssuesResponse,
@@ -187,6 +188,16 @@ export function fetchProgress(progressId: string): Promise<ProgressResponse> {
   return fetch(`/api/progress/${progressId}`, { cache: "no-store" }).then(
     (res) => parseJsonOrThrow<ProgressResponse>(res),
   );
+}
+
+/** 単一issueの本文とコメントを取得する（issue #231）。 */
+export function fetchIssueDetail(
+  repo: string,
+  issueNumber: number,
+): Promise<IssueDetail> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}`, {
+    cache: "no-store",
+  }).then((res) => parseJsonOrThrow<IssueDetail>(res));
 }
 
 export function fetchProjectIssues(

@@ -724,6 +724,13 @@
   color: var(--accent-blue);
 }
 
+.replyBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+}
+
 .foot {
   padding: 11px 16px;
   border-top: 1px solid var(--border-subtle);

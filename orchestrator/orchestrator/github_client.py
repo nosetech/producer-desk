@@ -14,6 +14,8 @@ from orchestrator.aggregation import IssueSummary, PrCandidate
 
 ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state"
 
+ISSUE_DETAIL_FIELDS = "body,comments,author,url,createdAt"
+
 # 1リポジトリあたりの取得件数上限（docs/basic-design.md 2-2）。
 # クローズ済みissueも活動ログに表示するための --state all 取得と合わせ、
 # プロデューサー1名・3〜5プロジェクト同時進行というMVPの規模で十分な簡易的な上限。
@@ -38,6 +40,7 @@ DeleteBranchFn = Callable[[str, str], None]
 GetCurrentBranchFn = Callable[[str], str]
 FindOpenPrByBranchFn = Callable[[str, str], dict | None]
 AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
+GetIssueDetailFn = Callable[[str, int], dict]
 GetPrStatusCheckRollupFn = Callable[[str, int], list[dict]]
 
 
@@ -81,6 +84,39 @@ def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]
         )
         for issue in raw_issues
     ]
+
+
+def get_issue_detail(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> dict:
+    """単一issueの本文とコメントを取得する（`gh issue view --json ...`、issue #231）。
+
+    issue一覧には本文・コメント全文を載せないため、返信UIの引用表示用にオンデマンドで取得する。
+    `comments` は `gh issue list --json comments` と同形式（body/createdAt/author/url）。
+    """
+    result = run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            repo,
+            "--json",
+            ISSUE_DETAIL_FIELDS,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    raw = json.loads(result.stdout)
+    return {
+        "repo": repo,
+        "number": issue_number,
+        "body": raw.get("body") or "",
+        "author": raw.get("author"),
+        "created_at": raw.get("createdAt"),
+        "url": raw.get("url"),
+        "comments": raw.get("comments") or [],
+    }
 
 
 def post_comment(repo: str, issue_number: int, body: str, *, run: RunFn = subprocess.run) -> None:
