@@ -10,7 +10,8 @@
   --body-size: 13.5px;
   --body-line: 1.75;
   --heading-size: 13px;
-  --mark-size: 12px;
+  --h1-size: 16px;
+  --h2-size: 14.5px;
   --code-size: 12px;
   /* CommentViewerの.body(max-height 440px)からpadding(34px)とborder(2px)を引いた内側に収める */
   --media-max-height: 400px;
@@ -21,16 +22,10 @@
   --body-size: 12.5px;
   --body-line: 1.65;
   --heading-size: 12px;
-  --mark-size: 11px;
+  --h1-size: 14px;
+  --h2-size: 13px;
   --code-size: 11px;
   --media-max-height: 200px;
-}
-
-.heading {
-  font-size: var(--heading-size);
-  font-weight: 600;
-  line-height: 1.4;
-  margin-bottom: -3px;
 }
 
 .paragraph {
@@ -40,38 +35,7 @@
   overflow-wrap: anywhere;
   text-wrap: pretty;
   margin: 0;
-}
-
-.list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-}
-
-.listItem {
-  display: flex;
-  gap: 8px;
-  font-size: var(--body-size);
-  line-height: var(--body-line);
-}
-
-.mark {
-  flex: none;
-  min-width: 16px;
-  text-align: right;
-  font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: var(--mark-size);
-  color: var(--text-tertiary);
-}
-
-.itemText {
   min-width: 0;
-  overflow-wrap: anywhere;
-  text-wrap: pretty;
 }
 
 .inlineCode {
@@ -120,4 +84,108 @@
   color: var(--text-primary);
   text-decoration: underline;
   overflow-wrap: anywhere;
+}
+
+.mdH1,
+.mdH2,
+.mdH3 {
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 -3px;
+  overflow-wrap: anywhere;
+}
+
+.mdH1 {
+  font-size: var(--h1-size);
+}
+
+.mdH2 {
+  font-size: var(--h2-size);
+}
+
+.mdH3 {
+  font-size: var(--heading-size);
+}
+
+.paragraph strong {
+  font-weight: 600;
+}
+
+.mdList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 22px;
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+  overflow-wrap: anywhere;
+}
+
+/* チェックボックス付き項目はマーカーを出さない */
+.mdItem:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.mdItem::marker {
+  color: var(--text-tertiary);
+}
+
+.mdItem > p {
+  display: inline;
+}
+
+.checkbox {
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+}
+
+.link {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.blockCode {
+  font-family: inherit;
+}
+
+.tableWrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: var(--body-size);
+  line-height: 1.5;
+}
+
+.table th,
+.table td {
+  border: 1px solid var(--border-subtle);
+  padding: 4px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  font-weight: 600;
+  background: var(--bg-page);
+}
+
+.blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-subtle);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: 4px 0;
 }

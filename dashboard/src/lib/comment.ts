@@ -105,105 +105,36 @@ export function commentSummary(comment: IssueComment): string {
   return counts.length ? `${text} [${counts.join("・")}]`.trim() : text;
 }
 
-export interface InlineSegment {
-  text: string;
-  code: boolean;
-}
-
-export type CommentBlock =
-  | { kind: "heading"; text: string }
-  | { kind: "paragraph"; segs: InlineSegment[] }
-  | { kind: "list"; items: { mark: string; segs: InlineSegment[] }[] }
-  | { kind: "code"; text: string }
-  | { kind: "image"; alt: string; url: string }
-  | { kind: "video"; url: string }
-  | { kind: "file"; name: string; url: string };
-
-function inlineSegments(text: string): InlineSegment[] {
-  return text
-    .split(/(`[^`]+`)/)
-    .filter(Boolean)
-    .map((part) =>
-      part.length > 1 && part.startsWith("`") && part.endsWith("`")
-        ? { text: part.slice(1, -1), code: true }
-        : { text: part.replace(/\*\*/g, ""), code: false },
-    );
-}
+export type BodySegment = { kind: "markdown"; text: string } | AttachmentLine;
 
 /**
- * コメント本文を、見出し（行全体を**で囲んだ行）・段落・箇条書き・コードブロック・添付ファイル（画像・動画・ファイル）に
- * 分解する簡易Markdownパーサ（Claude Design ProducerDesk.dc.htmlの parseBlocks 相当）。
+ * コメント本文を、Markdownとして描画する区間と添付ファイル（画像・動画・ファイル）の行に分割する。
+ * react-markdownは単独行のURLや`<video>`を扱えないため、添付行だけを先に取り出す。
+ * コードブロック（```）内の行は添付として扱わない。
  */
-export function parseCommentBlocks(body: string): CommentBlock[] {
-  const blocks: CommentBlock[] = [];
-  let para: string[] = [];
-  let list: { mark: string; segs: InlineSegment[] }[] | null = null;
-  let code: string[] | null = null;
+export function splitAttachments(body: string): BodySegment[] {
+  const segments: BodySegment[] = [];
+  let buf: string[] = [];
+  let inCode = false;
 
-  const flushPara = () => {
-    if (para.length) {
-      blocks.push({ kind: "paragraph", segs: inlineSegments(para.join("\n")) });
-      para = [];
-    }
-  };
-  const flushList = () => {
-    if (list) {
-      blocks.push({ kind: "list", items: list });
-      list = null;
-    }
+  const flush = () => {
+    const text = buf.join("\n");
+    if (text.trim()) segments.push({ kind: "markdown", text });
+    buf = [];
   };
 
   for (const line of stripBotMarkers(body).split("\n")) {
-    if (code) {
-      if (line.trim().startsWith("```")) {
-        blocks.push({ kind: "code", text: code.join("\n") });
-        code = null;
-      } else {
-        code.push(line);
-      }
-      continue;
-    }
-    if (line.trim().startsWith("```")) {
-      flushPara();
-      flushList();
-      code = [];
-      continue;
-    }
-    const attachment = parseAttachmentLine(line);
+    if (line.trim().startsWith("```")) inCode = !inCode;
+    const attachment = inCode ? null : parseAttachmentLine(line);
     if (attachment) {
-      flushPara();
-      flushList();
-      blocks.push(attachment);
-      continue;
+      flush();
+      segments.push(attachment);
+    } else {
+      buf.push(line);
     }
-    const item = line.match(/^\s*(?:([-*・])|(\d+)\.)\s+(.*)$/);
-    if (item) {
-      flushPara();
-      (list ??= []).push({
-        mark: item[2] ? `${item[2]}.` : "•",
-        segs: inlineSegments(item[3]),
-      });
-      continue;
-    }
-    if (!line.trim()) {
-      flushPara();
-      flushList();
-      continue;
-    }
-    const heading = line.match(/^\*\*(.+)\*\*$/);
-    if (heading) {
-      flushPara();
-      flushList();
-      blocks.push({ kind: "heading", text: heading[1] });
-      continue;
-    }
-    flushList();
-    para.push(line);
   }
-  if (code) blocks.push({ kind: "code", text: code.join("\n") });
-  flushPara();
-  flushList();
-  return blocks;
+  flush();
+  return segments;
 }
 
 /** 「2026-10-05 12:58」形式（ローカルタイム）。 */
