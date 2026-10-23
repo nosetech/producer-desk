@@ -3,8 +3,8 @@ import {
   attachmentProxyUrl,
   commentSummary,
   parseAttachmentLine,
-  parseCommentBlocks,
   replyQuoteSource,
+  splitAttachments,
 } from "./comment";
 import type { IssueComment } from "./types";
 
@@ -16,55 +16,49 @@ function comment(body: string): IssueComment {
   return { body } as IssueComment;
 }
 
-describe("parseCommentBlocks（添付）", () => {
-  it("画像の Markdown 記法を image ブロックにする", () => {
-    expect(parseCommentBlocks(`![shot](${ASSET})`)).toEqual([
+describe("splitAttachments", () => {
+  it("画像の Markdown 記法を添付行として切り出す", () => {
+    expect(splitAttachments(`![shot](${ASSET})`)).toEqual([
       { kind: "image", alt: "shot", url: ASSET },
     ]);
   });
 
-  it("単独行の assets URL を video ブロックにする", () => {
-    expect(parseCommentBlocks(`録画です\n\n${ASSET}`)).toEqual([
-      { kind: "paragraph", segs: [{ text: "録画です", code: false }] },
+  it("単独行の assets URL を video として切り出す", () => {
+    expect(splitAttachments(`録画です\n\n${ASSET}`)).toEqual([
+      { kind: "markdown", text: "録画です\n" },
       { kind: "video", url: ASSET },
     ]);
   });
 
-  it("<video src> を video ブロックにする", () => {
-    expect(
-      parseCommentBlocks(`<video src="${ASSET}" controls></video>`),
-    ).toEqual([{ kind: "video", url: ASSET }]);
+  it("<video src> を video として切り出す", () => {
+    expect(splitAttachments(`<video src="${ASSET}" controls></video>`)).toEqual(
+      [{ kind: "video", url: ASSET }],
+    );
   });
 
-  it("files URL を file ブロックにする（名前はデコードする）", () => {
-    expect(parseCommentBlocks(FILE)).toEqual([
-      { kind: "file", name: "report v1.pdf", url: FILE },
+  it("files のURLを file として切り出す", () => {
+    expect(splitAttachments(FILE)).toEqual([
+      {
+        kind: "file",
+        name: "report v1.pdf",
+        url: FILE,
+      },
     ]);
   });
 
-  it("添付ファイル以外の画像・URL は通常の段落のまま", () => {
-    const blocks = parseCommentBlocks("![x](https://example.com/a.png)");
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe("paragraph");
+  it("添付ファイル以外の画像は Markdown 区間のまま", () => {
+    const text = "![x](https://example.com/a.png)";
+    expect(splitAttachments(text)).toEqual([{ kind: "markdown", text }]);
   });
 
   it("コードブロック内の添付記法は展開しない", () => {
-    expect(parseCommentBlocks(`\`\`\`\n![a](${ASSET})\n\`\`\``)).toEqual([
-      { kind: "code", text: `![a](${ASSET})` },
-    ]);
+    const text = `\`\`\`\n![a](${ASSET})\n\`\`\``;
+    expect(splitAttachments(text)).toEqual([{ kind: "markdown", text }]);
   });
 
-  it("添付のない既存コメントのパース結果は変わらない", () => {
-    expect(parseCommentBlocks("**見出し**\n- a\n- b\n\n本文")).toEqual([
-      { kind: "heading", text: "見出し" },
-      {
-        kind: "list",
-        items: [
-          { mark: "•", segs: [{ text: "a", code: false }] },
-          { mark: "•", segs: [{ text: "b", code: false }] },
-        ],
-      },
-      { kind: "paragraph", segs: [{ text: "本文", code: false }] },
+  it("BOTマーカーを除去する", () => {
+    expect(splitAttachments("本文\n\n<!-- m -->")).toEqual([
+      { kind: "markdown", text: "本文" },
     ]);
   });
 });

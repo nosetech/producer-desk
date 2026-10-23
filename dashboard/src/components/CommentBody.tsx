@@ -1,20 +1,115 @@
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   attachmentProxyUrl,
-  parseCommentBlocks,
-  type InlineSegment,
+  splitAttachments,
+  type AttachmentLine,
 } from "@/lib/comment";
 import styles from "./CommentBody.module.css";
 
-function Segments({ segs }: { segs: InlineSegment[] }) {
-  return segs.map((s, i) =>
-    s.code ? (
-      <code key={i} className={styles.inlineCode}>
-        {s.text}
-      </code>
+const REMARK_PLUGINS = [remarkGfm];
+
+// 添付ファイル（user-attachments/assets）以外の画像は描画しない（通常の文字列のまま見せる）
+const ASSET_URL =
+  /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-fA-F-]{36}$/;
+
+const SAFE_LINK = /^https?:\/\//i;
+
+const components: Components = {
+  h1: ({ children }) => <h1 className={styles.mdH1}>{children}</h1>,
+  h2: ({ children }) => <h2 className={styles.mdH2}>{children}</h2>,
+  h3: ({ children }) => <h3 className={styles.mdH3}>{children}</h3>,
+  h4: ({ children }) => <h4 className={styles.mdH3}>{children}</h4>,
+  h5: ({ children }) => <h5 className={styles.mdH3}>{children}</h5>,
+  h6: ({ children }) => <h6 className={styles.mdH3}>{children}</h6>,
+  p: ({ children }) => <p className={styles.paragraph}>{children}</p>,
+  ul: ({ children }) => <ul className={styles.mdList}>{children}</ul>,
+  ol: ({ children }) => <ol className={styles.mdList}>{children}</ol>,
+  li: ({ children }) => <li className={styles.mdItem}>{children}</li>,
+  input: ({ checked }) => (
+    <input
+      type="checkbox"
+      checked={!!checked}
+      disabled
+      readOnly
+      className={styles.checkbox}
+    />
+  ),
+  a: ({ href, children }) =>
+    href && SAFE_LINK.test(href) ? (
+      <a className={styles.link} href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
     ) : (
-      <span key={i}>{s.text}</span>
+      <span>{children}</span>
     ),
-  );
+  img: ({ src, alt }) =>
+    typeof src === "string" && ASSET_URL.test(src) ? (
+      // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        className={styles.media}
+        src={attachmentProxyUrl(src)}
+        alt={alt ?? ""}
+        loading="lazy"
+      />
+    ) : (
+      <span>{alt ?? ""}</span>
+    ),
+  pre: ({ children }) => <pre className={styles.code}>{children}</pre>,
+  code: ({ className, children }) => (
+    <code
+      className={
+        className ? `${className} ${styles.blockCode}` : styles.inlineCode
+      }
+    >
+      {children}
+    </code>
+  ),
+  table: ({ children }) => (
+    <div className={styles.tableWrap}>
+      <table className={styles.table}>{children}</table>
+    </div>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className={styles.blockquote}>{children}</blockquote>
+  ),
+  hr: () => <hr className={styles.hr} />,
+};
+
+function Attachment({ item }: { item: AttachmentLine }) {
+  switch (item.kind) {
+    case "image":
+      return (
+        // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          className={styles.media}
+          src={attachmentProxyUrl(item.url)}
+          alt={item.alt}
+          loading="lazy"
+        />
+      );
+    case "video":
+      return (
+        <video
+          className={styles.media}
+          src={attachmentProxyUrl(item.url)}
+          controls
+          preload="metadata"
+        />
+      );
+    case "file":
+      return (
+        <a
+          className={styles.fileLink}
+          href={attachmentProxyUrl(item.url)}
+          download={item.name}
+        >
+          {item.name}
+        </a>
+      );
+  }
 }
 
 /** コメント本文の読み取り専用レンダリング。`size`でモーダル用/返信欄用の文字サイズを切り替える。 */
@@ -25,77 +120,21 @@ export default function CommentBody({
   body: string;
   size: "viewer" | "quote";
 }) {
-  const blocks = parseCommentBlocks(body);
   return (
     <div className={`${styles.root} ${styles[size]}`}>
-      {blocks.map((b, i) => {
-        switch (b.kind) {
-          case "heading":
-            return (
-              <div key={i} className={styles.heading}>
-                {b.text}
-              </div>
-            );
-          case "paragraph":
-            return (
-              <p key={i} className={styles.paragraph}>
-                <Segments segs={b.segs} />
-              </p>
-            );
-          case "list":
-            return (
-              <ul key={i} className={styles.list}>
-                {b.items.map((it, j) => (
-                  <li key={j} className={styles.listItem}>
-                    <span className={styles.mark}>{it.mark}</span>
-                    <span className={styles.itemText}>
-                      <Segments segs={it.segs} />
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            );
-          case "code":
-            return (
-              <pre key={i} className={styles.code}>
-                {b.text}
-              </pre>
-            );
-          case "image":
-            return (
-              // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={i}
-                className={styles.media}
-                src={attachmentProxyUrl(b.url)}
-                alt={b.alt}
-                loading="lazy"
-              />
-            );
-          case "video":
-            return (
-              <video
-                key={i}
-                className={styles.media}
-                src={attachmentProxyUrl(b.url)}
-                controls
-                preload="metadata"
-              />
-            );
-          case "file":
-            return (
-              <a
-                key={i}
-                className={styles.fileLink}
-                href={attachmentProxyUrl(b.url)}
-                download={b.name}
-              >
-                {b.name}
-              </a>
-            );
-        }
-      })}
+      {splitAttachments(body).map((seg, i) =>
+        seg.kind === "markdown" ? (
+          <ReactMarkdown
+            key={i}
+            remarkPlugins={REMARK_PLUGINS}
+            components={components}
+          >
+            {seg.text}
+          </ReactMarkdown>
+        ) : (
+          <Attachment key={i} item={seg} />
+        ),
+      )}
     </div>
   );
 }
