@@ -6,8 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { DashboardIcon, IssuesIcon, PromptIcon, WarningIcon } from "./Icons";
 import styles from "./Sidebar.module.css";
 
-const DEFAULT_WIDTH = 208;
-const MIN_WIDTH = 180;
+const DEFAULT_WIDTH = 222;
+const MIN_WIDTH = 200;
 const MAX_WIDTH = 360;
 const COLLAPSED_WIDTH = 68;
 const HOVER_OPEN_DELAY_MS = 140;
@@ -159,7 +159,8 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
           <Link
             href="/"
             className={itemClass(onDashboard)}
-            title="ダッシュボード"
+            title="ダッシュボード (d)"
+            aria-keyshortcuts="d"
             aria-current={onDashboard ? "page" : undefined}
           >
             <DashboardIcon size={18} />
@@ -172,6 +173,9 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
                 >
                   {attentionCount}
                 </span>
+                <kbd aria-hidden="true" className={styles.navKbd}>
+                  D
+                </kbd>
               </>
             )}
             {collapsed && <span className={styles.attentionDot} />}
@@ -179,7 +183,8 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
           <Link
             href={ISSUES_NAV_HREF}
             className={itemClass(onIssues)}
-            title="issue一覧"
+            title="issue一覧 (i)"
+            aria-keyshortcuts="i"
             aria-current={onIssues ? "page" : undefined}
           >
             <IssuesIcon size={18} />
@@ -194,6 +199,9 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
                     <WarningIcon size={13} />
                   </span>
                 )}
+                <kbd aria-hidden="true" className={styles.navKbd}>
+                  I
+                </kbd>
               </>
             )}
             {collapsed && anyOrphan && (
@@ -205,12 +213,18 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
           <Link
             href={PROMPTS_NAV_HREF}
             className={itemClass(onPrompts)}
-            title="プロンプト設定"
+            title="プロンプト設定 (p)"
+            aria-keyshortcuts="p"
             aria-current={onPrompts ? "page" : undefined}
           >
             <PromptIcon size={18} />
             {!collapsed && (
-              <span className={styles.navLabel}>プロンプト設定</span>
+              <>
+                <span className={styles.navLabel}>プロンプト設定</span>
+                <kbd aria-hidden="true" className={styles.navKbd}>
+                  P
+                </kbd>
+              </>
             )}
           </Link>
         </nav>
