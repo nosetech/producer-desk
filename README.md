@@ -262,8 +262,8 @@ GitHub issueに直接コメントを書いても（ダッシュボードを介�
 各種ログはすべて展開先ルート直下の`logs/`ディレクトリに出力されます。
 
 - **Agent Runnerの実行ログ**: `logs/<repo>/<timestamp>.log`（`<repo>`は対象リポジトリ名、`<timestamp>`は日本時間基準の実行開始時刻）に、issueへのディスパッチ1回ごとに1ファイルとして記録されます。実行中も随時追記されるため、`tail -f logs/<repo>/<timestamp>.log`で進行状況をリアルタイムに確認できます。ダッシュボードの「プロジェクトの並行状況」で異常（実行中プロセスが見つからない等）が疑われる場合の一次切り分けにも使えます。古いログファイルは、`config/projects.yaml`の`log_retention_days`（既定7日）より更新日時が古くなった時点で、次回の実行完了時に自動削除されます。
-- **dashboardのログ**: `logs/dashboard.log`にNext.jsサーバー自体の標準出力・標準エラー出力が記録されます。
-- **orchestratorのログ**: `logs/orchestrator.log`に`時刻(JST) [レベル] メッセージ`形式で記録されます。日付単位でローテーションし、`log_retention_days`（既定7日）分保持されます。万一この仕組み自体が動き出す前にクラッシュした場合の記録は、フォールバックとして`logs/orchestrator.stderr.log`に残ります。
+- **dashboardのログ**: `logs/dashboard.log`にNext.jsサーバー自体の標準出力・標準エラー出力が記録されます。`orchestrator.log`と同様に日次（JST 0時）でローテーションし、`log_retention_days`分保持されます。
+- **orchestratorのログ**: `logs/orchestrator.log`に`時刻(JST) [レベル] メッセージ`形式で記録されます。日付単位でローテーションし、`log_retention_days`（既定7日）分保持されます。万一この仕組み自体が動き出す前にクラッシュした場合の記録は、フォールバックとして`logs/orchestrator.stderr.log`に残ります（同様に日次ローテーション）。
 
 ## システムの動作仕様（概要）
 
