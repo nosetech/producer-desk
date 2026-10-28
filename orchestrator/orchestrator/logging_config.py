@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from orchestrator.config import REPO_ROOT
@@ -46,6 +46,30 @@ class _JstFormatter(logging.Formatter):
         return f"{dt.strftime('%Y-%m-%d %H:%M:%S')},{int(record.msecs):03d}"
 
 
+class JstMidnightRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """日次ローテーションの0時判定・世代ファイル名の日付をJSTに固定する。
+
+    標準の`when="midnight"`は`time.localtime`（OSのタイムゾーン）で0時を判定する
+    ため、OSがJST以外だとログ内の時刻（`_JstFormatter`）とファイルの区切りが
+    ずれる（issue #254）。`orchestrator.log`・`dashboard.log`・
+    `orchestrator.stderr.log`の3ファイルで共有する。
+    """
+
+    def __init__(self, filename: Path | str, *, backup_count: int) -> None:
+        super().__init__(filename, when="midnight", backupCount=backup_count, encoding="utf-8")
+
+    def computeRollover(self, currentTime: int) -> int:
+        now = datetime.fromtimestamp(currentTime, tz=JST)
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(next_midnight.timestamp())
+
+    def rotation_filename(self, default_name: str) -> str:
+        # doRollover()はrolloverAtを更新する前にこれを呼ぶ。rolloverAtの1秒前が
+        # 「終わった日」（JST）にあたる。
+        ended_day = datetime.fromtimestamp(self.rolloverAt - 1, tz=JST)
+        return f"{self.baseFilename}.{ended_day.strftime('%Y-%m-%d')}"
+
+
 def configure_logging(
     *,
     log_path: Path = DEFAULT_LOG_PATH,
@@ -56,18 +80,16 @@ def configure_logging(
     `TimedRotatingFileHandler(when="midnight", backupCount=retention_days)`が
     日付単位でのローテーション・保持世代数の管理を標準機能でまかなうため、
     自前でのファイル走査・削除は実装しない。二重書き込みを避けるため、
-    コンソール向けの`StreamHandler`は追加しない（`bin/start.sh`側の生
-    リダイレクトが、ロガーを経由しない出力・未捕捉例外向けの最終フォール
-    バックとして別途残る）。
+    コンソール向けの`StreamHandler`は追加しない（`bin/start.sh`が本体の
+    stdout/stderrを`log_rotator.py`経由で`orchestrator.stderr.log`に書き出し、
+    ロガーを経由しない出力・未捕捉例外向けの最終フォールバックとする）。
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.get(ENV_VAR, "production")
     level = logging.DEBUG if env == DEVELOPMENT else logging.INFO
 
-    handler = logging.handlers.TimedRotatingFileHandler(
-        log_path, when="midnight", backupCount=retention_days, encoding="utf-8"
-    )
+    handler = JstMidnightRotatingFileHandler(log_path, backup_count=retention_days)
     handler.setFormatter(_JstFormatter("%(asctime)s [%(levelname)s] %(message)s"))
 
     root_logger = logging.getLogger()
