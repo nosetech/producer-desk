@@ -105,24 +105,44 @@ describe("replyQuoteSource", () => {
     url: "https://github.com/o/r/issues/1",
   };
 
-  it("コメントがあれば最新コメントを返す", () => {
-    const comments = [comment("1件目"), comment("2件目")];
+  it("コメントがあれば全件を古い→新しい順で返す", () => {
+    const comments = [comment("1件目"), comment("2件目"), comment("3件目")];
     expect(replyQuoteSource({ ...base, comments })).toEqual({
-      comment: comments[1],
+      comments,
+      isIssueBody: false,
+    });
+  });
+
+  it("コメントが1件でも配列で返す", () => {
+    const comments = [comment("唯一")];
+    expect(replyQuoteSource({ ...base, comments })).toEqual({
+      comments,
       isIssueBody: false,
     });
   });
 
   it("コメントが0件ならissue本文をIssueComment形式で返す", () => {
     expect(replyQuoteSource({ ...base, comments: [] })).toEqual({
-      comment: {
-        body: "issue本文",
-        createdAt: "2026-10-01T00:00:00Z",
-        author: { login: "owner" },
-        url: "https://github.com/o/r/issues/1",
-      },
+      comments: [
+        {
+          body: "issue本文",
+          createdAt: "2026-10-01T00:00:00Z",
+          author: { login: "owner" },
+          url: "https://github.com/o/r/issues/1",
+        },
+      ],
       isIssueBody: true,
     });
+  });
+
+  it("本文がBOTマーカーのみで空ならnullを返す", () => {
+    expect(
+      replyQuoteSource({
+        ...base,
+        body: "<!-- producer-desk:bot-comment -->",
+        comments: [],
+      }),
+    ).toBeNull();
   });
 
   it("コメントも本文も空ならnullを返す", () => {

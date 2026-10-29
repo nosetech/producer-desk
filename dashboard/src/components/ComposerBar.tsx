@@ -24,9 +24,9 @@ export interface IssueRef {
   repo: string;
   number: number;
   title: string;
-  /** 返信を開いた時点の最新コメント（返信欄で読み取り専用表示する）。 */
-  comment?: IssueComment;
-  /** commentがコメントではなくissue本文の場合true（issue #231）。 */
+  /** 返信を開いた時点のコメント一覧（古い→新しい順。返信欄で読み取り専用表示し、初期表示は末尾）。 */
+  comments?: IssueComment[];
+  /** commentsがコメントではなくissue本文の場合true（issue #231）。 */
   isIssueBody?: boolean;
   /** 返信を開いた時点（ISO8601）。 */
   openedAt?: string;
@@ -110,18 +110,24 @@ function ModelSelectRow({
 }
 
 function ReplyQuote({
-  comment,
+  comments,
+  index,
+  onIndexChange,
   isIssueBody,
   openedAt,
   open,
   onToggle,
 }: {
-  comment: IssueComment;
+  comments: IssueComment[];
+  index: number;
+  onIndexChange: (index: number) => void;
   isIssueBody?: boolean;
   openedAt?: string;
   open: boolean;
   onToggle: () => void;
 }) {
+  const comment = comments[index];
+  const total = comments.length;
   const noun = isIssueBody ? "issue本文" : "コメント";
   const label = open ? `${noun}を折りたたむ` : `${noun}を展開`;
   const summary = commentSummary(comment);
@@ -148,6 +154,55 @@ function ReplyQuote({
             )}
           </span>
         </div>
+        {total > 1 && (
+          <div className={styles.quoteNav}>
+            <button
+              type="button"
+              className={styles.quoteIconBtn}
+              onClick={() => onIndexChange(index - 1)}
+              disabled={index <= 0}
+              title="前（古い）のコメント"
+              aria-label="前（古い）のコメント"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="m18 15-6-6-6 6" />
+              </svg>
+            </button>
+            <span className={styles.quoteNavCount}>
+              {index + 1} / {total}件目
+            </span>
+            <button
+              type="button"
+              className={styles.quoteIconBtn}
+              onClick={() => onIndexChange(index + 1)}
+              disabled={index >= total - 1}
+              title="次（新しい）のコメント"
+              aria-label="次（新しい）のコメント"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+          </div>
+        )}
         <a
           href={comment.url}
           target="_blank"
@@ -307,9 +362,12 @@ export default function ComposerBar({
     : "";
   const [prevReplyKey, setPrevReplyKey] = useState(replyKey);
   const [quoteOpen, setQuoteOpen] = useState(true);
+  // 表示中の引用コメント。null は末尾（直近）を表す（返信を開き直すたびに末尾へ戻す）。
+  const [quoteIndex, setQuoteIndex] = useState<number | null>(null);
   if (replyKey !== prevReplyKey) {
     setPrevReplyKey(replyKey);
     setQuoteOpen(true);
+    setQuoteIndex(null);
     setReplyModel(MODEL_DEFAULT);
     setMessage((m) => applyModelDirective(m, MODEL_DEFAULT));
   }
@@ -323,6 +381,7 @@ export default function ComposerBar({
       setPrompt("");
       setReplyModel(MODEL_DEFAULT);
       setNewModel(MODEL_DEFAULT);
+      setQuoteIndex(null);
       setError(null);
     }
   }
@@ -473,9 +532,14 @@ export default function ComposerBar({
                 判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
               </div>
             )}
-            {replyTarget?.comment && (
+            {replyTarget?.comments && replyTarget.comments.length > 0 && (
               <ReplyQuote
-                comment={replyTarget.comment}
+                comments={replyTarget.comments}
+                index={Math.min(
+                  quoteIndex ?? replyTarget.comments.length - 1,
+                  replyTarget.comments.length - 1,
+                )}
+                onIndexChange={setQuoteIndex}
                 isIssueBody={replyTarget.isIssueBody}
                 openedAt={replyTarget.openedAt}
                 open={quoteOpen}

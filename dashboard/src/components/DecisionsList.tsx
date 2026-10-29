@@ -11,7 +11,7 @@ export default function DecisionsList({
     repo: string,
     issueNumber: number,
     title: string,
-    comment?: IssueComment,
+    comments?: IssueComment[],
   ) => void;
 }) {
   return (

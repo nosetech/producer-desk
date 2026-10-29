@@ -455,3 +455,25 @@
     height: 36px;
   }
 }
+
+.quoteNav {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.quoteNavCount {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.quoteIconBtn:disabled {
+  opacity: 0.32;
+  cursor: default;
+  pointer-events: none;
+}

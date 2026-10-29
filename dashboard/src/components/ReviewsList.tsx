@@ -11,7 +11,7 @@ export default function ReviewsList({
     repo: string,
     issueNumber: number,
     title: string,
-    comment?: IssueComment,
+    comments?: IssueComment[],
   ) => void;
 }) {
   return (

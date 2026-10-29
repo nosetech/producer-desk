@@ -5,26 +5,31 @@ export function latestComment(issue: IssueSummary): IssueComment | undefined {
 }
 
 export interface ReplyQuoteSource {
-  comment: IssueComment;
+  /** 引用候補（古い→新しい順）。issue本文の場合は1件のみ。 */
+  comments: IssueComment[];
   /** trueのとき引用元はコメントではなくissue本文（コメントが0件の場合）。 */
   isIssueBody: boolean;
 }
 
 /**
- * issue一覧からの返信で引用表示する内容を決める（issue #231）。最新コメントがあればそれを、
- * コメントが0件ならissue本文をIssueComment形式に変換して返す。本文も空なら引用なし（null）。
+ * issue一覧からの返信で引用表示する内容を決める（issue #231, #245）。コメントがあればその全件
+ * （古い→新しい順。初期表示は末尾）を、コメントが0件ならissue本文をIssueComment形式に変換した
+ * 1件を返す。本文も空なら引用なし（null）。
  */
 export function replyQuoteSource(detail: IssueDetail): ReplyQuoteSource | null {
-  const last = detail.comments[detail.comments.length - 1];
-  if (last) return { comment: last, isIssueBody: false };
+  if (detail.comments.length > 0) {
+    return { comments: detail.comments, isIssueBody: false };
+  }
   if (!stripBotMarkers(detail.body)) return null;
   return {
-    comment: {
-      body: detail.body,
-      createdAt: detail.created_at ?? "",
-      author: detail.author ?? undefined,
-      url: detail.url ?? "",
-    },
+    comments: [
+      {
+        body: detail.body,
+        createdAt: detail.created_at ?? "",
+        author: detail.author ?? undefined,
+        url: detail.url ?? "",
+      },
+    ],
     isIssueBody: true,
   };
 }
