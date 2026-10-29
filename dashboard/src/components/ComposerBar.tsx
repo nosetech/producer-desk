@@ -463,7 +463,9 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { jobs, startJob } = useApp();
-  const panelRef = usePersistedSize("composerPanel", ["width", "height"]);
+  const panelRef = usePersistedSize("composerPanel", ["width", "height"], {
+    keepMax: true,
+  });
   const textareaRef = usePersistedSize("composerTextarea", ["height"]);
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);

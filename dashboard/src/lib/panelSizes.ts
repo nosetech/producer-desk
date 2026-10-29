@@ -19,11 +19,27 @@ export const PANEL_STORAGE_KEY = "producer-desk:panel-sizes";
 export const MIN_PANEL_SIZE = 120;
 
 // viewport に対する余白。ウィンドウより大きくならないよう上限を設ける。
-const VIEWPORT_MARGIN = 24;
+export const VIEWPORT_MARGIN = 24;
 
-// 値を最小サイズ〜viewport 由来の上限に収める。上限が最小値を下回る小さい画面では最小値を優先する。
-export function clampSize(value: number, viewportSize: number): number {
-  const max = Math.max(MIN_PANEL_SIZE, viewportSize - VIEWPORT_MARGIN);
+// viewport 由来の上限。reserved は同じ親の中で他の要素が占める分（ヘッダ/フッタ等）。
+// 上限が最小値を下回る小さい画面では最小値を優先する。
+export function maxPanelSize(viewportSize: number, reserved = 0): number {
+  return Math.max(MIN_PANEL_SIZE, viewportSize - VIEWPORT_MARGIN - reserved);
+}
+
+// maxPanelSize と同じ値を CSS の max-width/max-height に使う式（ウィンドウ変更にも追従する）。
+export function maxPanelSizeCss(axis: "width" | "height", reserved = 0) {
+  const unit = axis === "width" ? "100vw" : "100dvh";
+  return `max(${MIN_PANEL_SIZE}px, calc(${unit} - ${VIEWPORT_MARGIN + reserved}px))`;
+}
+
+// 値を最小サイズ〜viewport 由来の上限に収める。
+export function clampSize(
+  value: number,
+  viewportSize: number,
+  reserved = 0,
+): number {
+  const max = maxPanelSize(viewportSize, reserved);
   return Math.min(max, Math.max(MIN_PANEL_SIZE, Math.round(value)));
 }
 

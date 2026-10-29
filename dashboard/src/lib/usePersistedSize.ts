@@ -4,6 +4,7 @@ import { useCallback, useRef } from "react";
 import {
   clampSize,
   loadPanelSizes,
+  maxPanelSizeCss,
   savePanelSize,
   type PanelKey,
 } from "./panelSizes";
@@ -20,7 +21,16 @@ type Axes = "width" | "height";
  * CSS の `resize` で変更した要素サイズを localStorage に保存し、マウント時に復元する。
  * 返り値は対象要素に付ける callback ref。保存はユーザーがドラッグしてサイズが変わったときだけ行う。
  */
-export function usePersistedSize(key: PanelKey, axes: readonly Axes[]) {
+export function usePersistedSize(
+  key: PanelKey,
+  axes: readonly Axes[],
+  {
+    // 親の中で自分以外が占める高さを上限から差し引く（親が overflow: hidden のモーダル本文用）。
+    fitParent = false,
+    // CSS 側の max-*（含む領域基準で viewport 内に収まるもの）をそのまま使う。
+    keepMax = false,
+  }: { fitParent?: boolean; keepMax?: boolean } = {},
+) {
   const cleanup = useRef<(() => void) | null>(null);
   const axesKey = axes.join(",");
 
@@ -31,10 +41,19 @@ export function usePersistedSize(key: PanelKey, axes: readonly Axes[]) {
       if (!el) return;
       const target = axesKey.split(",") as Axes[];
       const isMobile = () => window.innerWidth <= MOBILE_MAX_WIDTH;
+      const reserved = () =>
+        fitParent && el.parentElement
+          ? Math.max(0, el.parentElement.offsetHeight - el.offsetHeight)
+          : 0;
+      const setMax = (axis: Axes) => {
+        if (keepMax) return;
+        if (axis === "width") el.style.maxWidth = maxPanelSizeCss("width");
+        else el.style.maxHeight = maxPanelSizeCss("height", reserved());
+      };
       const active = () =>
         target.filter((axis) => axis === "height" || !isMobile());
 
-      // 保存値の復元。固定値の max-*/flex をインラインで外し、保存サイズを優先する。
+      // 保存値の復元。固定値の max-* は viewport 由来の上限に置き換え、flex は外して保存サイズを優先する。
       const saved = loadPanelSizes()[key];
       if (saved) {
         for (const axis of active()) {
@@ -42,15 +61,15 @@ export function usePersistedSize(key: PanelKey, axes: readonly Axes[]) {
           if (value === undefined) continue;
           const viewport =
             axis === "width" ? window.innerWidth : window.innerHeight;
-          el.style[axis] = `${clampSize(value, viewport)}px`;
-          if (axis === "width") el.style.maxWidth = "none";
-          else el.style.maxHeight = "none";
+          const extra = axis === "height" ? reserved() : 0;
+          el.style[axis] = `${clampSize(value, viewport, extra)}px`;
+          setMax(axis);
           el.style.flex = "none";
         }
       }
 
       // ドラッグ中は固定の max-*/flex が上限になってしまうため、押下時に現在の px 値を
-      // インラインで固定して上限を外す。サイズが変わらなかった場合は元のスタイルへ戻す。
+      // インラインで固定し、固定の max-* は viewport 由来の上限に置き換える。サイズが変わらなかった場合は元のスタイルへ戻す。
       const props = [
         "width",
         "height",
@@ -73,8 +92,7 @@ export function usePersistedSize(key: PanelKey, axes: readonly Axes[]) {
         start = { width: el.offsetWidth, height: el.offsetHeight, style };
         for (const axis of active()) {
           el.style[axis] = `${start[axis]}px`;
-          if (axis === "width") el.style.maxWidth = "none";
-          else el.style.maxHeight = "none";
+          setMax(axis);
         }
         el.style.flex = "none";
       };
@@ -98,6 +116,6 @@ export function usePersistedSize(key: PanelKey, axes: readonly Axes[]) {
         window.removeEventListener("pointerup", onUp);
       };
     },
-    [key, axesKey],
+    [key, axesKey, fitParent, keepMax],
   );
 }

@@ -67,7 +67,9 @@ export default function CommentViewer({
   // リサイズのドラッグをダイアログ外で離しても閉じないよう、押下がオーバーレイ上で始まったときだけ閉じる。
   const pressedOverlay = useRef(false);
   const resizeDialogRef = usePersistedSize("commentViewer", ["width"]);
-  const bodyRef = usePersistedSize("commentViewer", ["height"]);
+  const bodyRef = usePersistedSize("commentViewer", ["height"], {
+    fitParent: true,
+  });
   const total = comments.length;
   // 表示中のコメント。null は末尾（直近）を表す。
   const [pickedIndex, setPickedIndex] = useState<number | null>(null);
