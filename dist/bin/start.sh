@@ -46,11 +46,20 @@ DASHBOARD_PID_FILE="${LOG_DIR}/dashboard.pid"
 ORCHESTRATOR_LOG="${LOG_DIR}/orchestrator.log"
 DASHBOARD_LOG="${LOG_DIR}/dashboard.log"
 
-# orchestrator.pyのlogging（TimedRotatingFileHandler）が${ORCHESTRATOR_LOG}を
-# 直接管理するため、nohupのフォールバック出力先はPythonが管理するパスとは
-# 別ファイルに分離する（開発用bin/start.shと同じ設計、詳細はそちらのコメント
-# およびproducer-desk本体issue #114参照）。
+# orchestrator.pyのlogging（JstMidnightRotatingFileHandler）が${ORCHESTRATOR_LOG}を
+# 直接管理する。本体のstdout/stderrをシェルの`>>`でファイルへ向けると、日次
+# ローテーション（rename）後も旧inodeへ書き続け肥大化するため、出力は
+# orchestrator.log_rotator（日次ローテーション・log_retention_days世代保持・JST
+# 基準）へパイプする（開発用bin/start.shと同じ設計、詳細はそちらのコメントおよび
+# producer-desk本体issue #114・#254参照）。PIDファイルには本体のPIDを記録する。
 ORCHESTRATOR_FALLBACK_LOG="${LOG_DIR}/orchestrator.stderr.log"
+
+# 標準入力を日次ローテーション付きで$1へ書き出すローテータ。wheel版のREPO_ROOTは
+# カレントディレクトリ基準のため、配布物のルートで実行する。
+start_log_rotator() {
+    cd "${ROOT_DIR}" || return 1
+    exec nohup "${ORCHESTRATOR_DIR}/.venv/bin/python" -m orchestrator.log_rotator --path "$1" >/dev/null 2>&1
+}
 
 log() {
     echo "[start] $*"
@@ -125,7 +134,8 @@ fi
 log "orchestrator を起動します（ポート${ORCHESTRATOR_PORT}）..."
 (
     cd "${ROOT_DIR}"
-    nohup "${ORCHESTRATOR_DIR}/.venv/bin/orchestrator" >>"${ORCHESTRATOR_FALLBACK_LOG}" 2>&1 &
+    PYTHONUNBUFFERED=1 nohup "${ORCHESTRATOR_DIR}/.venv/bin/orchestrator" \
+        > >(start_log_rotator "${ORCHESTRATOR_FALLBACK_LOG}") 2>&1 &
     echo $! >"${ORCHESTRATOR_PID_FILE}"
 )
 
@@ -138,7 +148,7 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
     if [ -n "${DASHBOARD_BIND_HOST}" ]; then
         export HOSTNAME="${DASHBOARD_BIND_HOST}"
     fi
-    nohup node server.js >>"${DASHBOARD_LOG}" 2>&1 &
+    nohup node server.js > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
     echo $! >"${DASHBOARD_PID_FILE}"
 )
 

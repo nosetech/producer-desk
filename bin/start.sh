@@ -48,20 +48,29 @@ DASHBOARD_PID_FILE="${LOG_DIR}/dashboard.pid"
 ORCHESTRATOR_LOG="${LOG_DIR}/orchestrator.log"
 DASHBOARD_LOG="${LOG_DIR}/dashboard.log"
 
-# orchestrator.pyのlogging（TimedRotatingFileHandler）が${ORCHESTRATOR_LOG}を
+# orchestrator.pyのlogging（JstMidnightRotatingFileHandler）が${ORCHESTRATOR_LOG}を
 # 直接管理する（issue #114、orchestrator/orchestrator/logging_config.py参照）。
-# nohupのリダイレクト先を同じパスにすると、日付境界でのローテーション（rename
-# によりorchestrator.logをorchestrator.log.YYYY-MM-DDへ改名し、新規に
-# orchestrator.logを開き直す）が起きた後もこのシェルのファイルディスクリプタは
-# rename前のinodeを掴んだままになる。その結果、ロガーを経由しない出力
-# （configure_logging()呼び出し前のクラッシュや未捕捉例外のトレースバック等）
-# が、ローテーション後は新しいorchestrator.logに一切書き込まれなくなるばかり
-# か、そのバックアップファイルがTimedRotatingFileHandlerのbackupCountを超えて
-# unlinkされてもこのシェルのfdが開いたままなら削除されずディスク上に残り続け、
-# 「際限のない肥大化」というissue #114の解消対象を別の場所で再発させてしまう。
-# そのためnohupのフォールバック出力先はPythonが管理するパスとは別ファイルに
-# 分離する。
+# 本体のstdout/stderrを同じパスへ`>>`でリダイレクトすると、日次ローテーション
+# （rename後に開き直し）の後もシェルのfdが旧inodeを掴んだままになり、新しいログ
+# に書かれないばかりか、backupCount超過で削除されたファイルの実体も解放されず
+# 肥大化が再発する。そのためシェルの`>>`は使わず、本体の出力を
+# orchestrator/orchestrator/log_rotator.py（issue #254）へパイプし、ローテータ
+# 自身がファイルを開き直す方式にしている。
+#   - orchestrator.stderr.log: configure_logging()前のクラッシュ・未捕捉例外の
+#     トレースバックなど、ロガーを経由しない出力のフォールバック
+#   - dashboard.log: Next.jsのstdout/stderr
+# いずれも${ORCHESTRATOR_LOG}と同じく日次ローテーション・log_retention_days世代
+# 保持（JST基準）。PIDファイルには本体のPIDを記録する（プロセス置換の`$!`は本体を
+# 指す）。本体が終了するとパイプがEOFになり、ローテータも自然に終了する。
 ORCHESTRATOR_FALLBACK_LOG="${LOG_DIR}/orchestrator.stderr.log"
+
+# 標準入力を日次ローテーション付きで$1へ書き出すローテータ（orchestratorと同じ
+# 保持日数設定を読むため、venvのpythonで実行する）。標準入出力以外は本体と切り
+# 離す。
+start_log_rotator() {
+    cd "${ORCHESTRATOR_DIR}" || return 1
+    exec nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.log_rotator --path "$1" >/dev/null 2>&1
+}
 
 log() {
     echo "[start] $*"
@@ -164,7 +173,8 @@ log "dashboard をビルドします..."
 log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}、ポート${ORCHESTRATOR_PORT}）..."
 (
     cd "${ORCHESTRATOR_DIR}"
-    nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.main >>"${ORCHESTRATOR_FALLBACK_LOG}" 2>&1 &
+    PYTHONUNBUFFERED=1 nohup "${ORCHESTRATOR_PYTHON}" -m orchestrator.main \
+        > >(start_log_rotator "${ORCHESTRATOR_FALLBACK_LOG}") 2>&1 &
     echo $! >"${ORCHESTRATOR_PID_FILE}"
 )
 
@@ -172,9 +182,11 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 (
     cd "${DASHBOARD_DIR}"
     if [ -n "${DASHBOARD_BIND_HOST}" ]; then
-        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${DASHBOARD_BIND_HOST}" >>"${DASHBOARD_LOG}" 2>&1 &
+        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${DASHBOARD_BIND_HOST}" \
+            > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
     else
-        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" >>"${DASHBOARD_LOG}" 2>&1 &
+        nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" \
+            > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
     fi
     echo $! >"${DASHBOARD_PID_FILE}"
 )
