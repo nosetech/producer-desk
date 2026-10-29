@@ -357,6 +357,24 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     assert "実装詳細はユーザー向け報告に含めないでください" in instruction
 
 
+def test_build_claude_command_instructs_decision_points_section() -> None:
+    """issue #234: 判断事項セクションの固定書式がAIへの指示に含まれること。
+
+    ダッシュボード（dashboard/src/lib/comment.ts）が同じ見出し文言でパースするため、
+    見出し文言が変わると返信UIの判断事項表示が壊れる。
+    """
+    command = build_claude_command(
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "**判断が必要な事項**" in instruction
+    assert "1. 〇〇をA案／B案のどちらで進めるか" in instruction
+    assert "判断が不要な場合はこのセクションを出さない" in instruction
+
+
 def test_build_claude_command_uses_stream_json_output_format() -> None:
     """issue #49の再発防止テスト。
 

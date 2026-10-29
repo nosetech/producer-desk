@@ -10,7 +10,12 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
-import { commentSummary, formatCommentTime } from "@/lib/comment";
+import {
+  DECISION_POINTS_HEADING,
+  commentSummary,
+  extractDecisionPoints,
+  formatCommentTime,
+} from "@/lib/comment";
 import type {
   Dispatch,
   IssueComment,
@@ -109,6 +114,32 @@ function ModelSelectRow({
   );
 }
 
+// 判断事項本文のインライン`code`をコード表示にする（Claude Designの_segsに合わせる）。
+function InlineCode({ text }: { text: string }) {
+  return (
+    <>
+      {text
+        .split(/(`[^`]+`)/)
+        .filter(Boolean)
+        .map((part, i) =>
+          part.length > 1 && part.startsWith("`") && part.endsWith("`") ? (
+            <code key={i} className={styles.decCode}>
+              {part.slice(1, -1)}
+            </code>
+          ) : (
+            <span key={i}>{part.replace(/\*\*/g, "")}</span>
+          ),
+        )}
+    </>
+  );
+}
+
+// 「Foo: 説明」形式の選択肢は、先頭（12文字以内）をタグとして分けて表示する。
+function splitOptionTag(option: string): { tag: string; text: string } | null {
+  const m = option.match(/^([^:：\s]{1,12})\s*[:：]\s*(.+)$/);
+  return m ? { tag: m[1], text: m[2] } : null;
+}
+
 function ReplyQuote({
   comments,
   index,
@@ -131,6 +162,12 @@ function ReplyQuote({
   const noun = isIssueBody ? "issue本文" : "コメント";
   const label = open ? `${noun}を折りたたむ` : `${noun}を展開`;
   const summary = commentSummary(comment);
+  // 判断事項は返信先がコメントの場合のみ抽出する（issue本文は従来表示。issue #234）。
+  const decisions = isIssueBody ? null : extractDecisionPoints(comment.body);
+  // 「全文を見る」で全文表示に切り替えた対象のコメント（コメントを切り替えたら判断事項表示に戻る）。
+  const commentKey = `${index}:${comment.url}`;
+  const [fullKey, setFullKey] = useState<string | null>(null);
+  const showFull = !decisions || fullKey === commentKey;
   const openedTime = openedAt
     ? new Date(openedAt).toLocaleTimeString("ja-JP", {
         hour: "2-digit",
@@ -249,7 +286,91 @@ function ReplyQuote({
           </svg>
         </button>
       </div>
-      {open ? (
+      {open && decisions && !showFull && (
+        <>
+          <div className={styles.quoteBody}>
+            <div className={styles.decHeading}>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--accent-blue)"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flex: "none" }}
+              >
+                <path d="M9 11l3 3 8-8" />
+                <path d="M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+              </svg>
+              <span className={styles.decTitle}>{DECISION_POINTS_HEADING}</span>
+              <span className={styles.decCount}>{decisions.length}件</span>
+            </div>
+            <ol className={styles.decList}>
+              {decisions.map((d, i) => (
+                <li key={i} className={styles.decCard}>
+                  <div className={styles.decMain}>
+                    <span className={styles.decNum}>{i + 1}</span>
+                    <span className={styles.decText}>
+                      <InlineCode text={d.text} />
+                    </span>
+                  </div>
+                  {d.options.length > 0 && (
+                    <ul className={styles.decOptions} aria-label="選択肢">
+                      {d.options.map((o, j) => {
+                        const tagged = splitOptionTag(o);
+                        return (
+                          <li key={j} className={styles.decOption}>
+                            {tagged ? (
+                              <span className={styles.decOptionTag}>
+                                {tagged.tag}
+                              </span>
+                            ) : (
+                              <span className={styles.decBullet}>•</span>
+                            )}
+                            <span className={styles.decOptionText}>
+                              <InlineCode text={tagged ? tagged.text : o} />
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </div>
+          <div className={styles.quoteFoot}>
+            <span className={styles.quoteFootNote}>
+              {openedTime
+                ? `${openedTime} 時点のコメントから抽出`
+                : "コメントから抽出"}
+            </span>
+            <button
+              type="button"
+              className={styles.quoteFootBtn}
+              onClick={() => setFullKey(commentKey)}
+            >
+              全文を見る
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flex: "none" }}
+              >
+                <path d="m9 6 6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+        </>
+      )}
+      {open && showFull && (
         <div className={styles.quoteBody}>
           <CommentBody body={comment.body} size="quote" />
           {openedTime && (
@@ -271,8 +392,42 @@ function ReplyQuote({
             </div>
           )}
         </div>
-      ) : (
-        <div className={styles.quoteCollapsed}>{summary}</div>
+      )}
+      {open && decisions && showFull && (
+        <div className={styles.quoteFoot}>
+          <button
+            type="button"
+            className={styles.quoteFootBtn}
+            onClick={() => setFullKey(null)}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flex: "none" }}
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            判断事項に戻る
+          </button>
+          <span style={{ flex: 1 }} />
+          <span className={styles.quoteFootNote} style={{ flex: "none" }}>
+            {decisions.length}件の判断事項
+          </span>
+        </div>
+      )}
+      {!open && (
+        <div className={styles.quoteCollapsedRow}>
+          {decisions && (
+            <span className={styles.decCount}>判断 {decisions.length}件</span>
+          )}
+          <span className={styles.quoteCollapsedText}>{summary}</span>
+        </div>
       )}
     </div>
   );

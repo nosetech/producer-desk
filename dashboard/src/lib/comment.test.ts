@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentProxyUrl,
   commentSummary,
+  extractDecisionPoints,
   parseAttachmentLine,
   replyQuoteSource,
   splitAttachments,
@@ -147,5 +148,55 @@ describe("replyQuoteSource", () => {
 
   it("コメントも本文も空ならnullを返す", () => {
     expect(replyQuoteSource({ ...base, body: " \n", comments: [] })).toBeNull();
+  });
+});
+
+describe("extractDecisionPoints", () => {
+  it("番号付きリストと入れ子の選択肢を取り出す", () => {
+    const body = [
+      "作業報告です。",
+      "",
+      "**判断が必要な事項**",
+      "1. 〇〇をA案／B案のどちらで進めるか",
+      "   - A案: 速い",
+      "   - B案: 安全",
+      "2. PR #163をレビューし、問題なければマージする",
+      "",
+      "<!-- producer-desk:bot-comment -->",
+    ].join("\n");
+    expect(extractDecisionPoints(body)).toEqual([
+      {
+        text: "〇〇をA案／B案のどちらで進めるか",
+        options: ["A案: 速い", "B案: 安全"],
+      },
+      { text: "PR #163をレビューし、問題なければマージする", options: [] },
+    ]);
+  });
+
+  it("セクションが無ければnull", () => {
+    expect(extractDecisionPoints("1. これは判断事項ではない")).toBeNull();
+  });
+
+  it("リストが空ならnull", () => {
+    expect(
+      extractDecisionPoints("**判断が必要な事項**\n\n次の段落"),
+    ).toBeNull();
+  });
+
+  it("見出しの揺れ（コロン・##）を許容する", () => {
+    expect(extractDecisionPoints("## 判断が必要な事項\n1. a")?.length).toBe(1);
+    expect(extractDecisionPoints("**判断が必要な事項：**\n1. a")?.length).toBe(
+      1,
+    );
+  });
+
+  it("コードブロック内の同名見出しは対象外", () => {
+    const body = "```\n**判断が必要な事項**\n1. a\n```";
+    expect(extractDecisionPoints(body)).toBeNull();
+  });
+
+  it("次の見出し・段落でセクションが終わる", () => {
+    const body = "**判断が必要な事項**\n1. a\n\n**補足**\n1. 別のリスト";
+    expect(extractDecisionPoints(body)).toEqual([{ text: "a", options: [] }]);
   });
 });

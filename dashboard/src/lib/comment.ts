@@ -148,3 +148,64 @@ export function formatCommentTime(iso: string): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/** 判断事項セクションの見出し文言。書式仕様はdocs/basic-design.md 3-6、AIへの指示はagent_runner.pyと一致させる（issue #234）。 */
+export const DECISION_POINTS_HEADING = "判断が必要な事項";
+
+export interface DecisionPoint {
+  text: string;
+  /** 選択肢（入れ子の箇条書き）。無ければ空配列。 */
+  options: string[];
+}
+
+function isDecisionHeading(line: string): boolean {
+  const text = line
+    .trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^\*\*(.*?)\*\*$/, "$1")
+    .replace(/[:：]\s*$/, "")
+    .replace(/^\*\*(.*?)\*\*$/, "$1")
+    .trim();
+  return text === DECISION_POINTS_HEADING;
+}
+
+/**
+ * コメント本文から「判断が必要な事項」セクションの番号付きリストを取り出す（issue #234）。
+ * セクションが無い・リストが空・書式に従っていない場合はnull（従来の引用表示へフォールバック）。
+ * コードブロック内の同名見出しは対象外。
+ */
+export function extractDecisionPoints(body: string): DecisionPoint[] | null {
+  const lines = stripBotMarkers(body).split("\n");
+  let inCode = false;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
+    if (!inCode && isDecisionHeading(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  const points: DecisionPoint[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const item = line.match(/^\d+[.)]\s+(.+)$/);
+    if (item) {
+      points.push({ text: item[1].trim(), options: [] });
+      continue;
+    }
+    const current = points[points.length - 1];
+    if (!current || !/^\s+/.test(line)) break;
+    const option = line.match(/^\s+[-*+]\s+(.+)$/);
+    if (option) current.options.push(option[1].trim());
+    else if (current.options.length)
+      current.options[current.options.length - 1] += ` ${line.trim()}`;
+    else current.text += ` ${line.trim()}`;
+  }
+  return points.length ? points : null;
+}
