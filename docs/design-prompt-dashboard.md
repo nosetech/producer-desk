@@ -80,6 +80,7 @@
 - デザイン成果物（Artifact）ができたら、URLまたはコードをこのリポジトリの実装issueに添付し、Next.js実装のベースとする。
 - 本プロンプトでの初回デザイン後に指示入力欄の要件が追加された場合は、ゼロから作り直すのではなく [design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md) の差分プロンプトを使って既存デザインを更新すること。
 - 「プロジェクトの並行状況が分かる要素」（要素4）に状態別件数を追加し、「最近の活動ログ（タイムライン）」（要素2）を廃止する変更は [design-prompt-dashboard-diff-status-counts.md](./design-prompt-dashboard-diff-status-counts.md) の差分プロンプトを使うこと（issue #115）。
+- 各プロジェクトチップにディスパッチキュー（実行中＋待機中のタスク）のミニ図を追加する変更は [design-prompt-dashboard-diff-queue.md](./design-prompt-dashboard-diff-queue.md) の差分プロンプトを使うこと（issue #233）。
 - レビュー承認時のマージ対象PR選択UIの追加は [design-prompt-dashboard-diff-pr-picker.md](./design-prompt-dashboard-diff-pr-picker.md) の差分プロンプトを使うこと（issue #206）。
 - 判断待ち・レビュー待ちカードでのAIコメント全文表示と、返信入力欄内への返信先コメント表示の追加は [design-prompt-dashboard-diff-comment-viewer.md](./design-prompt-dashboard-diff-comment-viewer.md) の差分プロンプトを使うこと（issue #193）。
 - 返信UIの引用領域で、コメント中の「判断が必要な事項」を番号付きで列挙する表示の追加は [design-prompt-dashboard-diff-decision-points.md](./design-prompt-dashboard-diff-decision-points.md) の差分プロンプトを使うこと（issue #234）。
