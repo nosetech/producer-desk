@@ -168,6 +168,10 @@ function ReplyQuote({
   const commentKey = `${index}:${comment.url}`;
   const [fullKey, setFullKey] = useState<string | null>(null);
   const showFull = !decisions || fullKey === commentKey;
+  const changeIndex = (next: number) => {
+    setFullKey(null);
+    onIndexChange(next);
+  };
   const openedTime = openedAt
     ? new Date(openedAt).toLocaleTimeString("ja-JP", {
         hour: "2-digit",
@@ -196,7 +200,7 @@ function ReplyQuote({
             <button
               type="button"
               className={styles.quoteIconBtn}
-              onClick={() => onIndexChange(index - 1)}
+              onClick={() => changeIndex(index - 1)}
               disabled={index <= 0}
               title="前（古い）のコメント"
               aria-label="前（古い）のコメント"
@@ -220,7 +224,7 @@ function ReplyQuote({
             <button
               type="button"
               className={styles.quoteIconBtn}
-              onClick={() => onIndexChange(index + 1)}
+              onClick={() => changeIndex(index + 1)}
               disabled={index >= total - 1}
               title="次（新しい）のコメント"
               aria-label="次（新しい）のコメント"

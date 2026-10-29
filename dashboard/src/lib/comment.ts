@@ -194,7 +194,7 @@ export function extractDecisionPoints(body: string): DecisionPoint[] | null {
   for (let i = start; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim()) continue;
-    const item = line.match(/^\d+[.)]\s+(.+)$/);
+    const item = line.match(/^\s*\d+[.)]\s+(.+)$/);
     if (item) {
       points.push({ text: item[1].trim(), options: [] });
       continue;

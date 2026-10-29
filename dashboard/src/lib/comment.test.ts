@@ -173,6 +173,14 @@ describe("extractDecisionPoints", () => {
     ]);
   });
 
+  it("インデントされた番号付き項目も抽出する", () => {
+    const body = "**判断が必要な事項**\n  1. a\n     - A案: x\n  2. b";
+    expect(extractDecisionPoints(body)).toEqual([
+      { text: "a", options: ["A案: x"] },
+      { text: "b", options: [] },
+    ]);
+  });
+
   it("セクションが無ければnull", () => {
     expect(extractDecisionPoints("1. これは判断事項ではない")).toBeNull();
   });
