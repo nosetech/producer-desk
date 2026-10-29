@@ -226,7 +226,7 @@ export default function DecisionCard({
 
       {viewerOpen && last && (
         <CommentViewer
-          comment={last}
+          comments={decision.comments}
           label={`${repoName} #${decision.number}`}
           kindLabel="判断待ち"
           title={decision.title}

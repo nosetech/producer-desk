@@ -1,11 +1,28 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatCommentTime } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment } from "@/lib/types";
 import CommentBody from "./CommentBody";
 import styles from "./CommentViewer.module.css";
+
+function ChevronIcon({ up }: { up: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d={up ? "m18 15-6-6-6 6" : "m6 9 6 6 6-6"} />
+    </svg>
+  );
+}
 
 function ExternalIcon() {
   return (
@@ -27,7 +44,7 @@ function ExternalIcon() {
 
 /** カードの「全文を表示」から開く、AIコメント全文のモーダル。 */
 export default function CommentViewer({
-  comment,
+  comments,
   label,
   kindLabel,
   title,
@@ -35,7 +52,8 @@ export default function CommentViewer({
   onReply,
   replyDisabled,
 }: {
-  comment: IssueComment;
+  /** 表示候補のコメント一覧（古い→新しい順、初期表示は末尾）。 */
+  comments: IssueComment[];
   /** 例: `invoice-parser #142` */
   label: string;
   kindLabel: string;
@@ -45,6 +63,11 @@ export default function CommentViewer({
   replyDisabled?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const total = comments.length;
+  // 表示中のコメント。null は末尾（直近）を表す。
+  const [pickedIndex, setPickedIndex] = useState<number | null>(null);
+  const index = Math.min(pickedIndex ?? total - 1, total - 1);
+  const comment = comments[index];
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -112,6 +135,33 @@ export default function CommentViewer({
             {formatRelativeTime(comment.createdAt)}
           </span>
           <span className={styles.spacer} />
+          {total > 1 && (
+            <div className={styles.nav}>
+              <button
+                type="button"
+                className={styles.navBtn}
+                onClick={() => setPickedIndex(index - 1)}
+                disabled={index <= 0}
+                title="前（古い）のコメント"
+                aria-label="前（古い）のコメント"
+              >
+                <ChevronIcon up />
+              </button>
+              <span className={styles.navCount}>
+                {index + 1} / {total}件目
+              </span>
+              <button
+                type="button"
+                className={styles.navBtn}
+                onClick={() => setPickedIndex(index + 1)}
+                disabled={index >= total - 1}
+                title="次（新しい）のコメント"
+                aria-label="次（新しい）のコメント"
+              >
+                <ChevronIcon up={false} />
+              </button>
+            </div>
+          )}
           <a
             href={comment.url}
             target="_blank"
