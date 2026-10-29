@@ -27,6 +27,7 @@ from orchestrator.aggregation import (
     IssueSummary,
     aggregate,
     build_project_issues,
+    build_project_queue,
 )
 from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
 from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
@@ -412,6 +413,15 @@ def _make_handler(
                 }
             payload = dataclasses.asdict(state)
             payload.pop("issues_by_repo", None)  # 内部用データ。APIには含めない
+            # キューはポーリング周期より速く変化するため、集計時ではなくリクエスト時点の
+            # スナップショットを載せる（issue #233）。
+            for project in payload["project_status"]:
+                repo = project["repo"]
+                project["queue"] = dataclasses.asdict(
+                    build_project_queue(
+                        dispatch_queue.snapshot(repo), state.issues_by_repo.get(repo, [])
+                    )
+                )
             return payload
 
         def _handle_refresh_project(self, repo: str) -> None:

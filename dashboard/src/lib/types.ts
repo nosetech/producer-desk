@@ -55,6 +55,19 @@ export interface StatusCounts {
   untagged: number;
 }
 
+/** ディスパッチキュー上の1エントリ（issue #233）。issueが一覧に無ければtitle・labelともnull。 */
+export interface QueueEntry {
+  number: number;
+  title: string | null;
+  label: StatusLabel | null;
+}
+
+/** プロジェクトのディスパッチキュー状態（実行中1件＋待機中、待機はFIFO順）。 */
+export interface ProjectQueue {
+  running: QueueEntry | null;
+  waiting: QueueEntry[];
+}
+
 /**
  * GET /api/state の project_status 配列要素。オーケストレータのProjectStatus
  * （`aggregate()`）に対応する、プロジェクト（リポジトリ）単位の「並行状況」ウィジェット
@@ -73,6 +86,8 @@ export interface ProjectStatusSummary {
   counts: StatusCounts;
   /** オーケストレータが実際にGitHubからこのリポジトリを取得した時刻（ISO 8601、issue #197）。 */
   fetched_at: string | null;
+  /** リクエスト時点のディスパッチキュー状態（issue #233）。 */
+  queue: ProjectQueue;
 }
 
 export interface AggregatedState {

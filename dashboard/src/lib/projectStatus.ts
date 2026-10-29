@@ -3,6 +3,7 @@ import { STATUS_TODO, type StatusLabel } from "./status";
 import type {
   IssueSummary,
   ProjectExecutionSettings,
+  ProjectQueue,
   ProjectStatusSummary,
   StatusCounts,
 } from "./types";
@@ -14,6 +15,8 @@ export interface ProjectStatus {
   counts: StatusCounts;
   /** オーケストレータが最後にGitHubから取得した時刻（issue #197）。 */
   fetchedAt: string | null;
+  /** ディスパッチキューの状態（issue #233）。 */
+  queue: ProjectQueue;
   executionSettings: ProjectExecutionSettings;
 }
 
@@ -52,6 +55,7 @@ export function deriveProjectStatus(
     isOrphaned,
     counts,
     fetchedAt: status?.fetched_at ?? null,
+    queue: status?.queue ?? { running: null, waiting: [] },
     executionSettings: executionSettings ?? {
       execution_mode: "claude_code",
       litellm_model: null,

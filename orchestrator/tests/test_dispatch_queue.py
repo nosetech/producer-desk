@@ -166,3 +166,32 @@ def test_is_active_false_after_dispatch_completes() -> None:
         time.sleep(0.05)
 
     assert queue.is_active("nosetech/project-a", 1) is False
+
+
+def test_snapshot_returns_running_and_waiting_in_fifo_order_with_duplicates() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    queue.enqueue("nosetech/project-a", 1, "m1")
+    assert started.wait(timeout=2)
+    queue.enqueue("nosetech/project-a", 3, "m2")
+    queue.enqueue("nosetech/project-a", 2, "m3")
+    queue.enqueue("nosetech/project-a", 3, "m4")
+
+    snapshot = queue.snapshot("nosetech/project-a")
+    assert snapshot.running == 1
+    assert snapshot.waiting == [3, 2, 3]
+    release.set()
+
+
+def test_snapshot_of_idle_repo_is_empty() -> None:
+    queue = DispatchQueue(dispatch_fn=lambda repo, issue_number, message: None)
+
+    snapshot = queue.snapshot("nosetech/project-a")
+    assert snapshot.running is None
+    assert snapshot.waiting == []

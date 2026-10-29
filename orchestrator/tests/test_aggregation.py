@@ -9,7 +9,14 @@ import logging
 
 import pytest
 
-from orchestrator.aggregation import STATUS_COUNT_UNTAGGED, IssueSummary, aggregate
+from orchestrator.aggregation import (
+    STATUS_COUNT_UNTAGGED,
+    IssueSummary,
+    QueueEntry,
+    aggregate,
+    build_project_queue,
+)
+from orchestrator.dispatch_queue import QueueSnapshot
 from orchestrator.labels import (
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
@@ -519,3 +526,26 @@ def test_aggregate_project_status_counts_include_untagged_and_exclude_closed() -
 
     assert state.project_status[0].counts[STATUS_COUNT_UNTAGGED] == 1
     assert sum(state.project_status[0].counts.values()) == 1
+
+
+def test_build_project_queue_attaches_title_and_label_by_issue_number() -> None:
+    issues = [
+        _issue("a/b", 1, [STATUS_IN_PROGRESS], "2026-08-01T00:00:00Z", title="running"),
+        _issue("a/b", 2, [], "2026-08-01T00:00:00Z", title="no label"),
+    ]
+
+    queue = build_project_queue(QueueSnapshot(running=1, waiting=[2, 2, 9]), issues)
+
+    assert queue.running == QueueEntry(number=1, title="running", label=STATUS_IN_PROGRESS)
+    assert queue.waiting == [
+        QueueEntry(number=2, title="no label", label=None),
+        QueueEntry(number=2, title="no label", label=None),
+        QueueEntry(number=9),
+    ]
+
+
+def test_build_project_queue_empty_snapshot() -> None:
+    queue = build_project_queue(QueueSnapshot(), [])
+
+    assert queue.running is None
+    assert queue.waiting == []

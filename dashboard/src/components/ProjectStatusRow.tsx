@@ -11,6 +11,7 @@ import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
 import { ExternalLinkIcon, WarningIcon } from "./Icons";
+import ProjectQueue from "./ProjectQueue";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectStatusRow.module.css";
@@ -172,6 +173,7 @@ export default function ProjectStatusRow({
                   </span>
                 )}
               </div>
+              <ProjectQueue repo={project.repo} queue={project.queue} />
               <div className={styles.counts}>
                 {countKeys.map((key) => {
                   const cMeta = statusCountMeta(key);
