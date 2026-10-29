@@ -315,6 +315,18 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
   - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
 - **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
+- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints`）が返信UIの引用領域でパースして番号付きで列挙する。
+  ```
+  **判断が必要な事項**
+  1. 〇〇をA案／B案のどちらで進めるか
+     - A案: …
+     - B案: …
+  2. PR #163をレビューし、問題なければマージする
+  ```
+  - 見出しは行全体を`**`で囲んだ固定文言`判断が必要な事項`（末尾の`:`/`：`、`##`等のMarkdown見出し記法は許容）。文言を変える場合は`agent_runner.py`・`comment.ts`・本節を同時に更新する。
+  - 判断事項は行頭の`1.`形式の番号付きリスト、選択肢はその下にインデントした`-`箇条書き。セクションは、次の見出し行・番号付きでも箇条書きでもないインデント無しの行で終わる。コードブロック内の同名見出しは対象外。
+  - セクションが無い・リストが空・書式に従っていないコメント（過去の最終応答を含む）、およびissue本文は抽出せず、従来どおりの引用表示にフォールバックする（判断事項を推測で補わない）。
+  - 画面デザインは[design-prompt-dashboard-diff-decision-points.md](./design-prompt-dashboard-diff-decision-points.md)の依頼に基づく。
 - **将来拡張**: issue #148（モデルルーティング層）でモデルごとにプロンプトを出し分ける場合は、`prompts.yaml`のキー体系を拡張する（例: `models.<alias>.<key>`）。現状の`PromptSpec`・解決処理はキー単位のため拡張を妨げない。
 
 ## 4. モデルルーター設定設計
