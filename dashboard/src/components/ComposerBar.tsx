@@ -10,6 +10,7 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
+import { usePersistedSize } from "@/lib/usePersistedSize";
 import {
   DECISION_POINTS_HEADING,
   commentSummary,
@@ -157,6 +158,7 @@ function ReplyQuote({
   open: boolean;
   onToggle: () => void;
 }) {
+  const quoteBodyRef = usePersistedSize("composerQuote", ["height"]);
   const comment = comments[index];
   const total = comments.length;
   const noun = isIssueBody ? "issue本文" : "コメント";
@@ -292,7 +294,7 @@ function ReplyQuote({
       </div>
       {open && decisions && !showFull && (
         <>
-          <div className={styles.quoteBody}>
+          <div ref={quoteBodyRef} className={styles.quoteBody}>
             <div className={styles.decHeading}>
               <svg
                 width="14"
@@ -375,7 +377,7 @@ function ReplyQuote({
         </>
       )}
       {open && showFull && (
-        <div className={styles.quoteBody}>
+        <div ref={quoteBodyRef} className={styles.quoteBody}>
           <CommentBody body={comment.body} size="quote" />
           {openedTime && (
             <div className={styles.quoteSnapshot}>
@@ -461,6 +463,8 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { jobs, startJob } = useApp();
+  const panelRef = usePersistedSize("composerPanel", ["width", "height"]);
+  const textareaRef = usePersistedSize("composerTextarea", ["height"]);
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
   const [newModel, setNewModel] = useState(MODEL_DEFAULT);
@@ -602,7 +606,7 @@ export default function ComposerBar({
   return (
     <>
       <div className={styles.backdrop} onClick={onClose} />
-      <div className={styles.panel}>
+      <div ref={panelRef} className={styles.panel}>
         <div className={styles.panelHeader}>
           <div className={styles.panelTitle}>
             <span className={styles.panelTitleIcon}>
@@ -712,6 +716,7 @@ export default function ComposerBar({
               onChange={handleReplyModelChange}
             />
             <textarea
+              ref={textareaRef}
               className={styles.textarea}
               placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
               value={message}
@@ -779,6 +784,7 @@ export default function ComposerBar({
                 />
               </div>
               <textarea
+                ref={textareaRef}
                 className={`${styles.textarea} ${styles.textareaPrompt}`}
                 placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
                 value={prompt}

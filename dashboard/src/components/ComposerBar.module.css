@@ -34,7 +34,11 @@
   bottom: 18px;
   transform: translateX(-50%);
   width: min(564px, calc(100% - 44px));
-  overflow-y: auto;
+  max-width: calc(100% - 24px);
+  min-width: 280px;
+  min-height: 240px;
+  overflow: auto;
+  resize: both;
   display: flex;
   flex-direction: column;
   gap: 13px;
@@ -165,7 +169,7 @@
   width: 100%;
   flex: 1;
   min-height: 100px;
-  resize: none;
+  resize: vertical;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-page);
@@ -416,6 +420,8 @@
 
 .quoteBody {
   max-height: min(210px, 30vh);
+  min-height: 60px;
+  resize: vertical;
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
@@ -437,6 +443,10 @@
 }
 
 @media (max-width: 640px) {
+  .panel {
+    resize: vertical;
+  }
+
   .quoteBody {
     max-height: min(150px, 24vh);
   }
