@@ -422,7 +422,7 @@ export default function ReviewCard({
 
       {viewerOpen && last && (
         <CommentViewer
-          comment={last}
+          comments={review.comments}
           label={`${repoName} #${review.number}`}
           kindLabel="レビュー待ち"
           title={review.title}
