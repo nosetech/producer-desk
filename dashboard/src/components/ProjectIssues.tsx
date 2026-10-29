@@ -157,7 +157,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           repo,
           issueNumber,
           title,
-          source?.comment,
+          source?.comments,
           source?.isIssueBody,
         );
       } catch (e) {

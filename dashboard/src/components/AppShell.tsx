@@ -154,7 +154,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       repo: string,
       issueNumber: number,
       title: string,
-      comment?: IssueComment,
+      comments?: IssueComment[],
       isIssueBody?: boolean,
     ) => {
       setComposerMode("reply");
@@ -164,7 +164,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         repo,
         number: issueNumber,
         title,
-        comment,
+        comments,
         isIssueBody,
         openedAt: new Date().toISOString(),
       });
