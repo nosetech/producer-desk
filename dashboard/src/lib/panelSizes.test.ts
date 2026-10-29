@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MIN_PANEL_SIZE, clampSize, parsePanelSizes } from "./panelSizes";
+import {
+  MIN_PANEL_SIZE,
+  VIEWPORT_MARGIN,
+  clampSize,
+  maxPanelSize,
+  maxPanelSizeCss,
+  parsePanelSizes,
+} from "./panelSizes";
 
 describe("clampSize", () => {
   it("最小サイズを下回らない", () => {
@@ -54,5 +61,29 @@ describe("parsePanelSizes", () => {
 
   it("幅も高さもないエントリは捨てる", () => {
     expect(parsePanelSizes(JSON.stringify({ composerPanel: {} }))).toEqual({});
+  });
+});
+
+describe("maxPanelSize", () => {
+  it("viewport から余白を引いた値を返す", () => {
+    expect(maxPanelSize(800)).toBe(800 - VIEWPORT_MARGIN);
+  });
+
+  it("他の要素が占める分も差し引く", () => {
+    expect(maxPanelSize(800, 100)).toBe(800 - VIEWPORT_MARGIN - 100);
+  });
+
+  it("小さい画面では最小値を優先する", () => {
+    expect(maxPanelSize(100)).toBe(MIN_PANEL_SIZE);
+    expect(maxPanelSize(300, 250)).toBe(MIN_PANEL_SIZE);
+  });
+});
+
+describe("maxPanelSizeCss", () => {
+  it("幅は vw、高さは dvh で同じ余白を使う", () => {
+    expect(maxPanelSizeCss("width")).toBe("max(120px, calc(100vw - 24px))");
+    expect(maxPanelSizeCss("height", 80)).toBe(
+      "max(120px, calc(100dvh - 104px))",
+    );
   });
 });

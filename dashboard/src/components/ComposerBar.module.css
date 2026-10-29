@@ -35,6 +35,7 @@
   transform: translateX(-50%);
   width: min(564px, calc(100% - 44px));
   max-width: calc(100% - 24px);
+  max-height: calc(100% - 36px);
   min-width: 280px;
   min-height: 240px;
   overflow: auto;
