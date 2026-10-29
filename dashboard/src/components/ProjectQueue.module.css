@@ -1,0 +1,351 @@
+/* issue #233: Claude Design ProducerDesk.logic.jsのqueue*スタイル（laneStyle・queueRunDot等）に対応。
+   デザインのトークンは本アプリのものに読み替える（--surface→--bg-panel、--bg→--bg-page、
+   --border→--border-subtle、--dim→--text-secondary、--faint→--text-tertiary、
+   --working/--accent→--accent-blue）。 */
+.lane {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  cursor: default;
+  overflow: hidden;
+  min-width: 0;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.laneEmpty {
+  border-style: dashed;
+  background: transparent;
+}
+
+.lane:hover {
+  background: var(--bg-page);
+  border-color: var(--text-secondary);
+}
+
+.item {
+  display: inline-flex;
+  flex: none;
+}
+
+.sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border-subtle);
+  flex: none;
+  margin: 0 2px;
+}
+
+.slot,
+.taskButton {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slotInner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--text-tertiary);
+  box-sizing: border-box;
+}
+
+.taskButton {
+  position: relative;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  outline-offset: 1px;
+  transition: background 0.12s;
+}
+
+.taskButton:hover,
+.taskButtonActive {
+  background: var(--surface-2);
+}
+
+.taskButtonPinned {
+  box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+.runDot {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 2px var(--accent-blue-bg);
+}
+
+.runRing {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-blue);
+  box-sizing: border-box;
+  pointer-events: none;
+  animation: qring 1.8s ease-out infinite;
+}
+
+.waitIcon {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  box-sizing: border-box;
+  flex: none;
+  border: 1.5px solid var(--text-secondary);
+  background: transparent;
+}
+
+.waitIconUnknown {
+  border-style: dashed;
+}
+
+.taskButtonActive .waitIcon {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.more {
+  flex: none;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 1px 5px;
+  margin-left: 1px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  line-height: 1.4;
+  cursor: default;
+  white-space: nowrap;
+}
+
+@keyframes qring {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@keyframes tipFade {
+  from {
+    opacity: 0;
+    margin-top: 5px;
+  }
+  to {
+    opacity: 1;
+    margin-top: 0;
+  }
+}
+
+@keyframes posPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runRing,
+  .posDot {
+    animation: none;
+  }
+}
+
+/* モバイル幅はタップ領域を広げる（デザインのqBtnSz 32px・レーン38px）。 */
+@media (max-width: 640px) {
+  .lane {
+    gap: 2px;
+    height: 38px;
+    padding: 0 5px;
+  }
+  .slot,
+  .taskButton {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 58;
+  background: transparent;
+}
+
+.tip {
+  position: fixed;
+  z-index: 59;
+  width: 260px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  animation: tipFade 0.14s ease;
+}
+
+.tipPinned {
+  border-color: var(--accent-blue);
+  pointer-events: auto;
+}
+
+.arrow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--bg-panel);
+  transform: rotate(45deg);
+  border: 0 solid var(--border-subtle);
+}
+
+.tipPinned .arrow {
+  border-color: var(--accent-blue);
+}
+
+.arrowUp {
+  top: -6px;
+  border-left-width: 1px;
+  border-top-width: 1px;
+}
+
+.arrowDown {
+  bottom: -6px;
+  border-right-width: 1px;
+  border-bottom-width: 1px;
+}
+
+.tipHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tipNumber {
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  flex: none;
+}
+
+.pos {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 9px;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.posRunning {
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+  border-color: transparent;
+}
+
+.posDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  flex: none;
+  animation: posPulse 1.4s ease-in-out infinite;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.tipClose {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin: -6px -6px -6px 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0;
+}
+
+.tipClose:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.tipTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.tipMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tipBadge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.tipRepo {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}

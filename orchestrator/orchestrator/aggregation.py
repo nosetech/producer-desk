@@ -19,6 +19,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from orchestrator.dispatch_queue import QueueSnapshot
 from orchestrator.labels import (
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
@@ -49,6 +50,9 @@ STATUS_COUNT_KEYS: tuple[str, ...] = (
 # aggregationはDispatchQueueそのものに依存せず、この関数を注入させることで
 # orchestrator.dispatch_queueへの依存を避ける（他のFn型と同様の方針）。
 IsDispatchActiveFn = Callable[[str, int], bool]
+
+# `DispatchQueue.snapshot(repo)` と同じシグネチャの関数型（issue #233）。
+GetQueueSnapshotFn = Callable[[str], QueueSnapshot]
 
 
 @dataclass
@@ -102,6 +106,25 @@ class ProjectStatus:
     # オーケストレータが実際にGitHubからこのリポジトリのissueを取得した時刻（ISO 8601, UTC）。
     # ダッシュボードの「N分前に更新」表示の元（issue #197）。未取得ならNone。
     fetched_at: str | None = None
+
+
+@dataclass
+class QueueEntry:
+    """ディスパッチキュー上の1エントリ（issue #233）。表示用のissue情報を付与する。"""
+
+    number: int
+    # issueがissues_by_repoに無い（クローズ済み・取得失敗）場合はNone（番号のみ表示する）。
+    title: str | None = None
+    # 5つの状態ラベルのうち表示に採用する1つ。issueが無い・状態ラベル未付与の場合はNone。
+    label: str | None = None
+
+
+@dataclass
+class ProjectQueue:
+    """プロジェクトのディスパッチキュー状態（issue #233）。"""
+
+    running: QueueEntry | None = None
+    waiting: list[QueueEntry] = field(default_factory=list)
 
 
 @dataclass
@@ -270,4 +293,20 @@ def aggregate(
         status_counts=status_counts,
         last_polled_at=last_polled_at,
         issues_by_repo=issues_by_repo,
+    )
+
+
+def build_project_queue(snapshot: QueueSnapshot, issues: list[IssueSummary]) -> ProjectQueue:
+    """キューのスナップショットに、issue番号で引いたタイトル・状態ラベルを付与する（#233）。"""
+    by_number = {issue.number: issue for issue in issues}
+
+    def entry(number: int) -> QueueEntry:
+        issue = by_number.get(number)
+        if issue is None:
+            return QueueEntry(number=number)
+        return QueueEntry(number=number, title=issue.title, label=_current_status_label(issue))
+
+    return ProjectQueue(
+        running=entry(snapshot.running) if snapshot.running is not None else None,
+        waiting=[entry(n) for n in snapshot.waiting],
     )

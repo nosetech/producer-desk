@@ -271,6 +271,47 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
         server.shutdown()
 
 
+def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[ProjectStatus(repo="nosetech/project-a")],
+            issues_by_repo={
+                "nosetech/project-a": [
+                    IssueSummary(
+                        repo="nosetech/project-a",
+                        number=1,
+                        title="t1",
+                        labels=["status:in-progress"],
+                        comments=[],
+                        updated_at="2026-08-01T00:00:00Z",
+                    )
+                ]
+            },
+        )
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    dispatch_queue.enqueue("nosetech/project-a", 1, "m")
+    assert started.wait(timeout=2)
+    dispatch_queue.enqueue("nosetech/project-a", 7, "m")
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        _, body = _get(server, "/api/state")
+        queue = body["project_status"][0]["queue"]
+        assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
+        assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+    finally:
+        release.set()
+        server.shutdown()
+
+
 def test_get_api_usage_returns_daily_usage_and_no_current_limit() -> None:
     store = StateStore()
     dispatch_queue, _, _ = _recording_dispatch_queue()
