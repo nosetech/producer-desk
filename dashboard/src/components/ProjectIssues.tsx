@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { postRefreshProject } from "@/lib/api";
+import { fetchIssueDetail, postRefreshProject } from "@/lib/api";
+import { replyQuoteSource } from "@/lib/comment";
 import {
   FILTER_ALL,
   FILTER_ORPHAN,
@@ -13,8 +14,17 @@ import {
   issueStatusKey,
   issueStatusText,
 } from "@/lib/issueList";
+import {
+  DEFAULT_COLUMN_WIDTHS,
+  columnsToTemplate,
+  loadColumnWidths,
+  resizeColumn,
+  saveColumnWidths,
+  type ColumnWidths,
+  type ResizableColumn,
+} from "@/lib/issueColumns";
 import { shortRepoName } from "@/lib/projectStatus";
-import { statusCountMeta } from "@/lib/status";
+import { projectDotColorVar, statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { ProjectIssue } from "@/lib/types";
 import { findIssueJob } from "@/lib/jobs";
@@ -124,9 +134,47 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const [filter, setFilter] = useState<string>(FILTER_ALL);
   const [showDone, setShowDone] = useState(false);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
+  const [columns, setColumns] = useState<ColumnWidths>(DEFAULT_COLUMN_WIDTHS);
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  const listPanelRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // 「返信する」押下後、引用用のコメント・本文を取得中のissue番号（issue #231）。
+  const [replyLoading, setReplyLoading] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const requestSeq = useRef(0);
   const restartPoll = useRef<() => void>(() => {});
+
+  const openReplyWithQuote = useCallback(
+    async (issueNumber: number, title: string) => {
+      setReplyLoading((prev) => new Set(prev).add(issueNumber));
+      try {
+        const source = replyQuoteSource(
+          await fetchIssueDetail(repo, issueNumber),
+        );
+        openReply(
+          repo,
+          issueNumber,
+          title,
+          source?.comments,
+          source?.isIssueBody,
+        );
+      } catch (e) {
+        // 引用なしでも返信UIは開けるようにし、指示自体はブロックしない。
+        const message = e instanceof Error ? e.message : "不明なエラー";
+        showToast(`コメントの取得に失敗しました: ${message}`, true);
+        openReply(repo, issueNumber, title);
+      } finally {
+        setReplyLoading((prev) => {
+          const next = new Set(prev);
+          next.delete(issueNumber);
+          return next;
+        });
+      }
+    },
+    [repo, openReply, showToast],
+  );
 
   // 一覧だけでなくラベル（状態）別件数・更新時刻も最新化するため、オーケストレータの
   // プロジェクト単位再取得（issue #197）で当該リポジトリ分のStateStoreを更新してから
@@ -165,6 +213,64 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         });
     },
     [repo, refresh, showToast, storeIssues],
+  );
+
+  // SSRとのハイドレーション不一致を避けるため、保存済みの列幅はマウント後に反映する。
+  useEffect(() => {
+    setColumns(loadColumnWidths());
+  }, []);
+
+  const startColumnResize = useCallback(
+    (key: ResizableColumn, edge: "left" | "right") =>
+      (e: React.PointerEvent<HTMLSpanElement>) => {
+        e.preventDefault();
+        const handle = e.currentTarget;
+        handle.setPointerCapture(e.pointerId);
+        const startX = e.clientX;
+        const startWidth = columnsRef.current[key];
+        const containerWidth = listPanelRef.current?.clientWidth ?? 0;
+        // 左端のハンドルは左へ動かすほど列が広がる（タイトル列が縮む）。
+        const sign = edge === "right" ? 1 : -1;
+        const onMove = (ev: PointerEvent) => {
+          const next = resizeColumn(
+            columnsRef.current,
+            key,
+            startWidth + sign * (ev.clientX - startX),
+            containerWidth,
+          );
+          columnsRef.current = next;
+          setColumns(next);
+        };
+        const onEnd = () => {
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onEnd);
+          handle.removeEventListener("pointercancel", onEnd);
+          saveColumnWidths(columnsRef.current);
+        };
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onEnd);
+        handle.addEventListener("pointercancel", onEnd);
+      },
+    [],
+  );
+
+  const resetColumn = useCallback((key: ResizableColumn) => {
+    setColumns((c) => {
+      const next = { ...c, [key]: DEFAULT_COLUMN_WIDTHS[key] };
+      saveColumnWidths(next);
+      return next;
+    });
+  }, []);
+
+  const columnHandle = (key: ResizableColumn, edge: "left" | "right") => (
+    <span
+      className={`${styles.resizeHandle} ${edge === "left" ? styles.resizeHandleLeft : styles.resizeHandleRight}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="列幅を変更（ダブルクリックで既定に戻す）"
+      onPointerDown={startColumnResize(key, edge)}
+      onDoubleClick={() => resetColumn(key)}
+    />
   );
 
   useEffect(() => {
@@ -219,7 +325,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
           {repos.map((r) => {
             const selected = r === repo;
-            const dot = statusCountMeta(
+            const dotColorVar = projectDotColorVar(
               statusByRepo.get(r)?.label ?? "status:todo",
             );
             return (
@@ -236,7 +342,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 >
                   <span
                     className={styles.tabDot}
-                    style={{ background: `var(${dot.colorVar})` }}
+                    style={{ background: `var(${dotColorVar})` }}
                   />
                   <span className={styles.tabName}>{shortRepoName(r)}</span>
                   {statusByRepo.get(r)?.is_orphaned && (
@@ -303,7 +409,13 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         </div>
       )}
 
-      <div className={styles.listPanel}>
+      <div
+        className={styles.listPanel}
+        ref={listPanelRef}
+        style={
+          { "--issue-cols": columnsToTemplate(columns) } as React.CSSProperties
+        }
+      >
         <div className={styles.toolbar}>
           <div
             className={styles.filterRow}
@@ -591,14 +703,23 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         {ready && rows.length > 0 && (
           <>
             <div className={styles.head}>
-              <span>#</span>
-              <span>タイトル</span>
-              <span>状態</span>
-              <span className={styles.headIcon}>
-                <CommentIcon size={12} />
+              <span className={styles.headCell}>
+                #{columnHandle("number", "right")}
               </span>
-              <span>更新</span>
-              <span />
+              <span>タイトル</span>
+              <span className={styles.headCell}>
+                状態{columnHandle("status", "left")}
+              </span>
+              <span className={`${styles.headCell} ${styles.headIcon}`}>
+                <CommentIcon size={12} />
+                {columnHandle("comments", "left")}
+              </span>
+              <span className={styles.headCell}>
+                更新{columnHandle("updated", "left")}
+              </span>
+              <span className={styles.headCell}>
+                {columnHandle("actions", "left")}
+              </span>
             </div>
             <div className={styles.rows}>
               {rows.map((issue) => {
@@ -616,7 +737,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   done ? styles.cardDone : "",
                   issue.is_orphaned ? styles.cardOrphan : "",
                 ].join(" ");
-                const reply = () => openReply(repo, issue.number, issue.title);
+                const reply = () =>
+                  openReplyWithQuote(issue.number, issue.title);
+                const replyBusy = replyLoading.has(issue.number);
                 const job = findIssueJob(jobs, repo, issue.number);
                 return (
                   <div key={issue.number} className={styles.item}>
@@ -662,6 +785,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                                 type="button"
                                 className={styles.replyBtn}
                                 onClick={reply}
+                                disabled={replyBusy}
                               >
                                 <ReplyIcon size={13} />
                                 返信する
@@ -721,6 +845,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                                 type="button"
                                 className={styles.replyBtn}
                                 onClick={reply}
+                                disabled={replyBusy}
                               >
                                 <ReplyIcon size={14} />
                                 返信する

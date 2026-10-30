@@ -271,6 +271,47 @@ def test_get_api_state_returns_latest_aggregated_state() -> None:
         server.shutdown()
 
 
+def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
+    store = StateStore()
+    store.set(
+        AggregatedState(
+            project_status=[ProjectStatus(repo="nosetech/project-a")],
+            issues_by_repo={
+                "nosetech/project-a": [
+                    IssueSummary(
+                        repo="nosetech/project-a",
+                        number=1,
+                        title="t1",
+                        labels=["status:in-progress"],
+                        comments=[],
+                        updated_at="2026-08-01T00:00:00Z",
+                    )
+                ]
+            },
+        )
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    dispatch_queue.enqueue("nosetech/project-a", 1, "m")
+    assert started.wait(timeout=2)
+    dispatch_queue.enqueue("nosetech/project-a", 7, "m")
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        _, body = _get(server, "/api/state")
+        queue = body["project_status"][0]["queue"]
+        assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
+        assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+    finally:
+        release.set()
+        server.shutdown()
+
+
 def test_get_api_usage_returns_daily_usage_and_no_current_limit() -> None:
     store = StateStore()
     dispatch_queue, _, _ = _recording_dispatch_queue()
@@ -1529,6 +1570,55 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
         server.shutdown()
 
 
+def test_get_issue_detail_returns_detail() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    calls: list[tuple[str, int]] = []
+
+    def fake_detail(repo: str, number: int) -> dict:
+        calls.append((repo, number))
+        return {"repo": repo, "number": number, "body": "本文", "comments": []}
+
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, get_issue_detail=fake_detail
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues/7")
+        assert status == 200
+        assert body["body"] == "本文"
+        assert calls == [("nosetech/project-a", 7)]
+    finally:
+        server.shutdown()
+
+
+def test_get_issue_detail_unknown_repo_returns_404() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(store, projects=[PROJECT_A], dispatch_queue=dispatch_queue)
+    try:
+        status, _ = _get_allow_error(server, "/api/projects/nosetech/unknown-repo/issues/7")
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_get_issue_detail_returns_502_when_gh_fails() -> None:
+    store = StateStore()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+
+    def failing(repo: str, number: int) -> dict:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store, projects=[PROJECT_A], dispatch_queue=dispatch_queue, get_issue_detail=failing
+    )
+    try:
+        status, _ = _get_allow_error(server, "/api/projects/nosetech/project-a/issues/7")
+        assert status == 502
+    finally:
+        server.shutdown()
+
+
 def test_get_project_issues_unknown_repo_returns_404() -> None:
     store = StateStore()
     dispatch_queue, _, _ = _recording_dispatch_queue()
@@ -1776,6 +1866,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "pr_instruction",
         "final_message_instruction",
         "attachment_instruction",
+        "dev_instance_instruction",
         "approve_default_message",
         "user_name",
     ]
@@ -2075,5 +2166,54 @@ def test_get_attachment_without_url_returns_400() -> None:
     try:
         status, _ = _get_allow_error(server, "/api/attachment")
         assert status == 400
+    finally:
+        server.shutdown()
+
+
+def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
+    labels = FakeLabels({1: {STATUS_TODO}})
+    comments = FakeComments()
+    creator = FakeIssueCreator()
+    dispatch_queue, dispatch_calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        create_issue=creator.create_issue,
+        read_only=True,
+    )
+    try:
+        repo = PROJECT_A.repo
+        results = [
+            _post(server, f"/api/projects/{repo}/issues/1/instruct", {"action": "approve"}),
+            _post(server, f"/api/projects/{repo}/issues/1/redispatch", {}),
+            _post(server, f"/api/projects/{repo}/issues", {"title": "t", "body": "b"}),
+            _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
+            _put(server, "/api/prompts/anything", {"body": "x"}),
+            _delete(server, "/api/prompts/anything"),
+        ]
+        for status, body in results:
+            assert status == 403
+            assert "読み取り専用" in body["error"]
+        assert labels.labels_by_issue == {1: {STATUS_TODO}}
+        assert comments.posted == []
+        assert creator.created == []
+        assert dispatch_calls == []
+    finally:
+        server.shutdown()
+
+
+def test_read_only_server_still_serves_read_apis() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue, read_only=True
+    )
+    try:
+        assert _get(server, "/api/settings")[0] == 200
+        assert _post(server, "/api/refresh", {})[0] == 200
     finally:
         server.shutdown()

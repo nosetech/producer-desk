@@ -357,6 +357,24 @@ def test_build_claude_command_instructs_human_readable_final_message() -> None:
     assert "実装詳細はユーザー向け報告に含めないでください" in instruction
 
 
+def test_build_claude_command_instructs_decision_points_section() -> None:
+    """issue #234: 判断事項セクションの固定書式がAIへの指示に含まれること。
+
+    ダッシュボード（dashboard/src/lib/comment.ts）が同じ見出し文言でパースするため、
+    見出し文言が変わると返信UIの判断事項表示が壊れる。
+    """
+    command = build_claude_command(
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "**判断が必要な事項**" in instruction
+    assert "1. 〇〇をA案／B案のどちらで進めるか" in instruction
+    assert "判断が不要な場合はこのセクションを出さない" in instruction
+
+
 def test_build_claude_command_uses_stream_json_output_format() -> None:
     """issue #49の再発防止テスト。
 
@@ -2176,6 +2194,28 @@ def test_build_claude_command_uses_prompt_override(_isolated_prompts_path) -> No
     prompt = _system_prompt_of(command)
     assert "独自ルール: o/r #5" in prompt
     assert spec.default not in prompt
+
+
+def test_build_claude_command_includes_dev_instance_instruction(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import (
+        AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION,
+        AGENT_RUNNER_PROMPT_SPECS,
+    )
+    from orchestrator.prompts import save_prompt_override
+
+    command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    prompt = _system_prompt_of(command)
+    assert AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION in prompt
+    assert "./bin/dev_instance.sh stop" in prompt
+    assert "pkill" in prompt
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "dev_instance_instruction")
+    save_prompt_override(spec, "独自の起動停止ルール")
+    overridden = _system_prompt_of(
+        build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "独自の起動停止ルール" in overridden
+    assert AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION not in overridden
 
 
 def test_build_claude_command_without_overrides_renders_placeholders() -> None:

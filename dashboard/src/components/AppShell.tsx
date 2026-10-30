@@ -24,6 +24,7 @@ import Header from "./Header";
 import Sidebar from "./Sidebar";
 import BottomNav from "./BottomNav";
 import { useJobs } from "@/lib/useJobs";
+import { useGlobalShortcuts } from "@/lib/useGlobalShortcuts";
 import ComposerBar, { type ComposerMode, type IssueRef } from "./ComposerBar";
 import Toast from "./Toast";
 import styles from "./AppShell.module.css";
@@ -43,6 +44,7 @@ const EMPTY_STATE: AggregatedState = {
  * Claude Designに合わせ、サイドバー・ボトムナビを除いたコンテンツ領域に重ねて配置する。
  */
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  useGlobalShortcuts();
   const [state, setState] = useState<AggregatedState>(EMPTY_STATE);
   const [repos, setRepos] = useState<string[]>([]);
   const [projectSettings, setProjectSettings] = useState<
@@ -152,7 +154,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       repo: string,
       issueNumber: number,
       title: string,
-      comment?: IssueComment,
+      comments?: IssueComment[],
+      isIssueBody?: boolean,
     ) => {
       setComposerMode("reply");
       // 返信先コメントは返信を開いた時点のスナップショットを保持する（ポーリングで
@@ -161,7 +164,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         repo,
         number: issueNumber,
         title,
-        comment,
+        comments,
+        isIssueBody,
         openedAt: new Date().toISOString(),
       });
       setComposerOpen(true);

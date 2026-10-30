@@ -36,7 +36,10 @@ export interface AppContextValue {
     repo: string,
     issueNumber: number,
     title: string,
-    comment?: IssueComment,
+    /** 引用候補のコメント一覧（古い→新しい順、初期表示は末尾）。 */
+    comments?: IssueComment[],
+    /** commentsがコメントではなくissue本文であることを示す（issue #231）。 */
+    isIssueBody?: boolean,
   ) => void;
   openNewTask: (repo: string) => void;
 }

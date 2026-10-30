@@ -66,7 +66,7 @@ export default function DecisionCard({
     repo: string,
     issueNumber: number,
     title: string,
-    comment?: IssueComment,
+    comments?: IssueComment[],
   ) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -203,7 +203,12 @@ export default function DecisionCard({
           type="button"
           className={`${styles.btn} ${styles.btnReply}`}
           onClick={() =>
-            onReply(decision.repo, decision.number, decision.title, last)
+            onReply(
+              decision.repo,
+              decision.number,
+              decision.title,
+              decision.comments,
+            )
           }
           disabled={busy}
         >
@@ -221,14 +226,19 @@ export default function DecisionCard({
 
       {viewerOpen && last && (
         <CommentViewer
-          comment={last}
+          comments={decision.comments}
           label={`${repoName} #${decision.number}`}
           kindLabel="判断待ち"
           title={decision.title}
           onClose={() => setViewerOpen(false)}
           onReply={() => {
             setViewerOpen(false);
-            onReply(decision.repo, decision.number, decision.title, last);
+            onReply(
+              decision.repo,
+              decision.number,
+              decision.title,
+              decision.comments,
+            );
           }}
           replyDisabled={busy}
         />

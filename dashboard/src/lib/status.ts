@@ -22,6 +22,8 @@ export interface StatusMeta {
   bgVar: string;
 }
 
+// `status:closed`（緑）はフィルタのドット・状態バッジが共有して使う。プロジェクト名の
+// ドットでは使わない（`projectDotColorVar`で未着手と同じグレーに置き換える、issue #230）。
 const STATUS_META: Record<string, StatusMeta> = {
   [STATUS_TODO]: {
     text: "未着手",
@@ -58,6 +60,16 @@ const UNKNOWN_META: StatusMeta = {
 
 export function statusMeta(label: string): StatusMeta {
   return STATUS_META[label] ?? UNKNOWN_META;
+}
+
+/**
+ * プロジェクト名の前のドットの色トークンを返す。取りうる色は未着手・作業中・判断待ち・
+ * レビュー待ちの4種類のみで、完了（`status:closed`）は未着手と同じグレーにする。
+ */
+export function projectDotColorVar(label: string): string {
+  return label === STATUS_CLOSED
+    ? statusMeta(STATUS_TODO).colorVar
+    : statusMeta(label).colorVar;
 }
 
 export const STATUS_COUNT_UNTAGGED = "untagged";

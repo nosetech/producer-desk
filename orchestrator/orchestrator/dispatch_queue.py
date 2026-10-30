@@ -15,8 +15,21 @@ from __future__ import annotations
 import collections
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 DispatchFn = Callable[[str, int, str], None]
+
+
+@dataclass(frozen=True)
+class QueueSnapshot:
+    """あるリポジトリのキュー状態のスナップショット（issue #233）。
+
+    メッセージ本文は含まない（ダッシュボードの表示に不要なため）。
+    同一issueへの指示は重複して積まれうるので、`waiting`には同じ番号が複数並びうる。
+    """
+
+    running: int | None = None
+    waiting: list[int] = field(default_factory=list)
 
 
 class DispatchQueue:
@@ -60,6 +73,15 @@ class DispatchQueue:
     def queue_length(self, repo: str) -> int:
         with self._lock:
             return len(self._queues[repo])
+
+    def snapshot(self, repo: str) -> QueueSnapshot:
+        """実行中のissue番号と、待機中のissue番号（FIFO順）をロック配下で取得する（issue #233）。"""
+        with self._lock:
+            queue = self._queues.get(repo)
+            return QueueSnapshot(
+                running=self._current.get(repo),
+                waiting=[number for number, _ in queue] if queue else [],
+            )
 
     def is_current(self, repo: str, issue_number: int) -> bool:
         """指定issueが現在実行中（キュー待ちではなく）かどうかを返す（issue #215）。"""

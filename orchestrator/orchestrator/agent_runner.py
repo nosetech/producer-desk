@@ -302,6 +302,15 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
     "「何について・なぜ{user_name}の判断が必要か」と「{user_name}が具体的に何をすればよいか」"
     "（例:「PR #163をレビューし、問題なければマージしてください」"
     "「A案/B案のどちらで進めるか選んでください」）を明記してください。\n"
+    "- needs-human-decisionラベルを付与する場合は、{user_name}が答えるべき事項を、最終応答に"
+    "次の書式の「判断が必要な事項」セクションとして必ず含めてください"
+    "（ダッシュボードの返信画面がこのセクションをパースして番号付きで表示します。"
+    "見出し文言・書式は変えないでください）。判断が不要な場合はこのセクションを出さないでください。\n"
+    "  **判断が必要な事項**\n"
+    "  1. 〇〇をA案／B案のどちらで進めるか\n"
+    "     - A案: …\n"
+    "     - B案: …\n"
+    "  2. PR #163をレビューし、問題なければマージする\n"
     "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
     "作業手順上の実装詳細は{user_name}向け報告に含めないでください。"
 )
@@ -330,7 +339,33 @@ AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
 )
 
 
-# issue #149: 上記5つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #238: 動作確認用にorchestrator・dashboardを別インスタンスで起動したAgent Runnerが、
+# 停止時に名前・ポート指定のkillで運用中の他プロセスまで巻き込む事故を防ぐ指示。
+# プロジェクトのCLAUDE.mdは対象リポジトリがproducer-desk以外だと読み込まれないため、
+# `--append-system-prompt`側にも書く。
+AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION = (
+    "動作確認のためにproducer-deskのorchestrator・dashboardを別インスタンスとして"
+    "起動・停止する場合は、必ず`./bin/dev_instance.sh start`と`./bin/dev_instance.sh stop`を"
+    "使ってください（producer-deskのworktreeでの作業時）。\n"
+    "- このヘルパーは、空きポートの自動採番（運用インスタンスの既定ポート8787/3000は拒否）と、"
+    "起動したプロセスグループの記録を行い、stopでは記録したプロセスグループだけを止めます。\n"
+    "- `pkill` / `killall`、`lsof`・`netstat`等でポートからPIDを探してのkillなど、"
+    "名前やポートでプロセスを探して止める操作は禁止します。運用インスタンスや他のworktreeの"
+    "インスタンスは`ps`上で見分けがつかず、巻き込んで停止してしまうためです。\n"
+    "- 確認用ダッシュボードは`NODE_ENV`を外して起動します（ヘルパー経由なら自動。"
+    "`NODE_ENV=production`のままだと`next dev`が500になります）。\n"
+    "- 確認用インスタンスは読み取り専用で、nosetech/producer-deskを対象にします。"
+    "実issueには何も書き込まず（ディスパッチ・ラベル変更・コメント投稿・Slack通知なし）、"
+    "書き込み系のボタン操作は失敗します。\n"
+    "- 確認用ダッシュボードの設定ファイルは、`config/projects.yaml`等を直接置いたり"
+    "書き換えたりせず、"
+    "`bin/dev_instance.sh`が渡す環境変数（`PROJECTS_CONFIG_PATH`等）経由で参照させてください"
+    "（運用インスタンスが読むファイルを触らないため）。\n"
+    "- 画面の見た目を確認できなかった場合は、PRコメント・最終応答にその原因を明記してください。"
+)
+
+
+# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -395,6 +430,15 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         title="画像・動画添付の指示",
         description="UI変更のレビュー用に、スクリーンショットや録画をissueコメントへ添付させる指示",
         default=AGENT_RUNNER_ATTACHMENT_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="dev_instance_instruction",
+        title="動作確認用インスタンスの起動・停止の指示",
+        description=(
+            "動作確認用のorchestrator・dashboardをヘルパー経由で起動・停止させ、"
+            "名前・ポート指定のkillで運用中のプロセスを巻き込むのを禁止する指示"
+        ),
+        default=AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION,
     ),
 )
 

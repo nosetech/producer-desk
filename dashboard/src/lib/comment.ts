@@ -1,7 +1,37 @@
-import type { IssueComment, IssueSummary } from "./types";
+import type { IssueComment, IssueDetail, IssueSummary } from "./types";
 
 export function latestComment(issue: IssueSummary): IssueComment | undefined {
   return issue.comments[issue.comments.length - 1];
+}
+
+export interface ReplyQuoteSource {
+  /** 引用候補（古い→新しい順）。issue本文の場合は1件のみ。 */
+  comments: IssueComment[];
+  /** trueのとき引用元はコメントではなくissue本文（コメントが0件の場合）。 */
+  isIssueBody: boolean;
+}
+
+/**
+ * issue一覧からの返信で引用表示する内容を決める（issue #231, #245）。コメントがあればその全件
+ * （古い→新しい順。初期表示は末尾）を、コメントが0件ならissue本文をIssueComment形式に変換した
+ * 1件を返す。本文も空なら引用なし（null）。
+ */
+export function replyQuoteSource(detail: IssueDetail): ReplyQuoteSource | null {
+  if (detail.comments.length > 0) {
+    return { comments: detail.comments, isIssueBody: false };
+  }
+  if (!stripBotMarkers(detail.body)) return null;
+  return {
+    comments: [
+      {
+        body: detail.body,
+        createdAt: detail.created_at ?? "",
+        author: detail.author ?? undefined,
+        url: detail.url ?? "",
+      },
+    ],
+    isIssueBody: true,
+  };
 }
 
 // オーケストレータが投稿したコメントにはBOT_COMMENT_MARKER（HTMLコメント）が
@@ -80,105 +110,36 @@ export function commentSummary(comment: IssueComment): string {
   return counts.length ? `${text} [${counts.join("・")}]`.trim() : text;
 }
 
-export interface InlineSegment {
-  text: string;
-  code: boolean;
-}
-
-export type CommentBlock =
-  | { kind: "heading"; text: string }
-  | { kind: "paragraph"; segs: InlineSegment[] }
-  | { kind: "list"; items: { mark: string; segs: InlineSegment[] }[] }
-  | { kind: "code"; text: string }
-  | { kind: "image"; alt: string; url: string }
-  | { kind: "video"; url: string }
-  | { kind: "file"; name: string; url: string };
-
-function inlineSegments(text: string): InlineSegment[] {
-  return text
-    .split(/(`[^`]+`)/)
-    .filter(Boolean)
-    .map((part) =>
-      part.length > 1 && part.startsWith("`") && part.endsWith("`")
-        ? { text: part.slice(1, -1), code: true }
-        : { text: part.replace(/\*\*/g, ""), code: false },
-    );
-}
+export type BodySegment = { kind: "markdown"; text: string } | AttachmentLine;
 
 /**
- * コメント本文を、見出し（行全体を**で囲んだ行）・段落・箇条書き・コードブロック・添付ファイル（画像・動画・ファイル）に
- * 分解する簡易Markdownパーサ（Claude Design ProducerDesk.dc.htmlの parseBlocks 相当）。
+ * コメント本文を、Markdownとして描画する区間と添付ファイル（画像・動画・ファイル）の行に分割する。
+ * react-markdownは単独行のURLや`<video>`を扱えないため、添付行だけを先に取り出す。
+ * コードブロック（```）内の行は添付として扱わない。
  */
-export function parseCommentBlocks(body: string): CommentBlock[] {
-  const blocks: CommentBlock[] = [];
-  let para: string[] = [];
-  let list: { mark: string; segs: InlineSegment[] }[] | null = null;
-  let code: string[] | null = null;
+export function splitAttachments(body: string): BodySegment[] {
+  const segments: BodySegment[] = [];
+  let buf: string[] = [];
+  let inCode = false;
 
-  const flushPara = () => {
-    if (para.length) {
-      blocks.push({ kind: "paragraph", segs: inlineSegments(para.join("\n")) });
-      para = [];
-    }
-  };
-  const flushList = () => {
-    if (list) {
-      blocks.push({ kind: "list", items: list });
-      list = null;
-    }
+  const flush = () => {
+    const text = buf.join("\n");
+    if (text.trim()) segments.push({ kind: "markdown", text });
+    buf = [];
   };
 
   for (const line of stripBotMarkers(body).split("\n")) {
-    if (code) {
-      if (line.trim().startsWith("```")) {
-        blocks.push({ kind: "code", text: code.join("\n") });
-        code = null;
-      } else {
-        code.push(line);
-      }
-      continue;
-    }
-    if (line.trim().startsWith("```")) {
-      flushPara();
-      flushList();
-      code = [];
-      continue;
-    }
-    const attachment = parseAttachmentLine(line);
+    if (line.trim().startsWith("```")) inCode = !inCode;
+    const attachment = inCode ? null : parseAttachmentLine(line);
     if (attachment) {
-      flushPara();
-      flushList();
-      blocks.push(attachment);
-      continue;
+      flush();
+      segments.push(attachment);
+    } else {
+      buf.push(line);
     }
-    const item = line.match(/^\s*(?:([-*・])|(\d+)\.)\s+(.*)$/);
-    if (item) {
-      flushPara();
-      (list ??= []).push({
-        mark: item[2] ? `${item[2]}.` : "•",
-        segs: inlineSegments(item[3]),
-      });
-      continue;
-    }
-    if (!line.trim()) {
-      flushPara();
-      flushList();
-      continue;
-    }
-    const heading = line.match(/^\*\*(.+)\*\*$/);
-    if (heading) {
-      flushPara();
-      flushList();
-      blocks.push({ kind: "heading", text: heading[1] });
-      continue;
-    }
-    flushList();
-    para.push(line);
   }
-  if (code) blocks.push({ kind: "code", text: code.join("\n") });
-  flushPara();
-  flushList();
-  return blocks;
+  flush();
+  return segments;
 }
 
 /** 「2026-10-05 12:58」形式（ローカルタイム）。 */
@@ -186,4 +147,65 @@ export function formatCommentTime(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** 判断事項セクションの見出し文言。書式仕様はdocs/basic-design.md 3-6、AIへの指示はagent_runner.pyと一致させる（issue #234）。 */
+export const DECISION_POINTS_HEADING = "判断が必要な事項";
+
+export interface DecisionPoint {
+  text: string;
+  /** 選択肢（入れ子の箇条書き）。無ければ空配列。 */
+  options: string[];
+}
+
+function isDecisionHeading(line: string): boolean {
+  const text = line
+    .trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^\*\*(.*?)\*\*$/, "$1")
+    .replace(/[:：]\s*$/, "")
+    .replace(/^\*\*(.*?)\*\*$/, "$1")
+    .trim();
+  return text === DECISION_POINTS_HEADING;
+}
+
+/**
+ * コメント本文から「判断が必要な事項」セクションの番号付きリストを取り出す（issue #234）。
+ * セクションが無い・リストが空・書式に従っていない場合はnull（従来の引用表示へフォールバック）。
+ * コードブロック内の同名見出しは対象外。
+ */
+export function extractDecisionPoints(body: string): DecisionPoint[] | null {
+  const lines = stripBotMarkers(body).split("\n");
+  let inCode = false;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
+    if (!inCode && isDecisionHeading(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  const points: DecisionPoint[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const item = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (item) {
+      points.push({ text: item[1].trim(), options: [] });
+      continue;
+    }
+    const current = points[points.length - 1];
+    if (!current || !/^\s+/.test(line)) break;
+    const option = line.match(/^\s+[-*+]\s+(.+)$/);
+    if (option) current.options.push(option[1].trim());
+    else if (current.options.length)
+      current.options[current.options.length - 1] += ` ${line.trim()}`;
+    else current.text += ` ${line.trim()}`;
+  }
+  return points.length ? points : null;
 }

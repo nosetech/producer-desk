@@ -3,14 +3,15 @@ import {
   STATUS_IN_REVIEW,
   STATUS_NEEDS_HUMAN_DECISION,
   STATUS_TODO,
+  projectDotColorVar,
   statusCountMeta,
-  statusMeta,
 } from "@/lib/status";
 import { useRouter } from "next/navigation";
 import type { ProjectStatus } from "@/lib/projectStatus";
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StatusCounts } from "@/lib/types";
-import { WarningIcon } from "./Icons";
+import { ExternalLinkIcon, WarningIcon } from "./Icons";
+import ProjectQueue from "./ProjectQueue";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
 import styles from "./ProjectStatusRow.module.css";
@@ -89,7 +90,6 @@ export default function ProjectStatusRow({
       </div>
       <div className={styles.row}>
         {projects.map((project) => {
-          const meta = statusMeta(project.label);
           const countKeys = COUNT_ORDER.filter(
             (key) => project.counts[key] > 0,
           );
@@ -109,7 +109,9 @@ export default function ProjectStatusRow({
               <div className={styles.chipTop}>
                 <span
                   className={styles.dot}
-                  style={{ backgroundColor: `var(${meta.colorVar})` }}
+                  style={{
+                    backgroundColor: `var(${projectDotColorVar(project.label)})`,
+                  }}
                 />
                 <span className={styles.repoName} title={project.repo}>
                   {shortRepoName(project.repo)}
@@ -150,6 +152,17 @@ export default function ProjectStatusRow({
                 >
                   <GearIcon />
                 </button>
+                <a
+                  className={styles.addButton}
+                  href={`https://github.com/${project.repo}/issues`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`${project.repo} をGitHubで開く`}
+                  title="GitHubで開く"
+                >
+                  <ExternalLinkIcon size={13} />
+                </a>
                 {project.executionSettings.execution_mode ===
                   "litellm_proxy" && (
                   <span
@@ -160,6 +173,7 @@ export default function ProjectStatusRow({
                   </span>
                 )}
               </div>
+              <ProjectQueue repo={project.repo} queue={project.queue} />
               <div className={styles.counts}>
                 {countKeys.map((key) => {
                   const cMeta = statusCountMeta(key);

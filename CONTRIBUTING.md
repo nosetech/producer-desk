@@ -120,11 +120,11 @@ Slack Incoming WebhookのURLはリポジトリにコミットせず、環境変�
 
 Agent Runner（`claude -p`）の標準出力・標準エラー出力は `logs/<repo>/<timestamp>.log`（ファイル名の`<timestamp>`はJST基準）としてローカルに保存する（[`docs/basic-design.md` 3-2](./docs/basic-design.md#3-2-監視方法)）。`logs/` ディレクトリ自体はリポジトリに含めるが、中身のログファイルはコミットしない（`.gitignore` 参照）。ディレクトリが存在しない場合はオーケストレータが実行時に作成する想定。このAgent Runner個別実行ログは、書き込み中（実行中）のファイルを除き、`config/projects.yaml`の`log_retention_days`（既定7日、更新日時＝mtime基準）より古いものが実行完了のたびに自動削除される（issue #114）。
 
-`bin/start.sh`（後述）で起動したdashboardの標準出力・標準エラー出力は `logs/dashboard.log` に出力される（Next.js本体のサーバーログで、以下の仕組みの対象外）。上記のAgent Runner個別実行ログ（`logs/<repo>/`以下）とは別物なので混同しないこと。
+`bin/start.sh`（後述）で起動したdashboardの標準出力・標準エラー出力は `logs/dashboard.log` に出力される（Next.js本体のサーバーログ）。`orchestrator.log`と同様に日次（JST 0時）でローテーションされ、`dashboard.log.YYYY-MM-DD`として`log_retention_days`世代分保持される（issue #254）。上記のAgent Runner個別実行ログ（`logs/<repo>/`以下）とは別物なので混同しないこと。
 
 orchestrator自体のログは `logs/orchestrator.log` に、`logging`モジュールによる`時刻(JST) [レベル] メッセージ`形式で出力される。`TimedRotatingFileHandler`により日付単位でローテーション・`log_retention_days`世代分保持される。出力レベルは環境変数`ORCHESTRATOR_ENV`で切り替える（未設定時は`production`扱いで`INFO`以上のみ、`development`指定時は`DEBUG`以上の全レベルを出力する）。`bin/start.sh`はこの変数を明示的に設定しないため、運用時は常に`production`相当で起動する。
 
-`bin/start.sh`は`nohup ... orchestrator.main`の標準出力・標準エラー出力を `logs/orchestrator.log` ではなく別ファイル `logs/orchestrator.stderr.log` へリダイレクトする（`configure_logging()`呼び出し前のクラッシュ・未捕捉例外のトレースバック等、`logging`モジュールを経由しない出力を取りこぼさないための最終フォールバック）。`TimedRotatingFileHandler`はローテーション時に`orchestrator.log`を`orchestrator.log.YYYY-MM-DD`へrenameした上で新規に開き直すため、シェル側が同じパスに`>>`でリダイレクトすると、rename後もシェル側のファイルディスクリプタは旧inodeへ書き込み続けてしまい、際限のない肥大化が別の場所で再発する（issue #114）。そのため意図的に別ファイルへ分離している。
+`bin/start.sh`は`orchestrator.main`の標準出力・標準エラー出力を、`orchestrator/orchestrator/log_rotator.py`経由で別ファイル `logs/orchestrator.stderr.log` に書き出す（`configure_logging()`呼び出し前のクラッシュ・未捕捉例外のトレースバック等、`logging`モジュールを経由しない出力を取りこぼさないための最終フォールバック）。`dashboard.log`と同じく日次（JST 0時）でローテーションされ、`log_retention_days`世代分保持される（issue #254）。シェルの`>>`でリダイレクトすると、ローテーションでrenameされた後もシェルのファイルディスクリプタが旧inodeへ書き込み続け、際限のない肥大化が再発する（issue #114）ため、書き込み側のローテータ自身がファイルを開き直す方式にしている。`orchestrator.log`とは別ファイルなのは、同じパスを2つのプロセスが開くとローテーションが競合するため。
 
 ## 日常運用（開発環境でのバックグラウンド起動）
 
@@ -176,8 +176,28 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 `bin/start.sh`で起動した運用インスタンスを止めずに、機能追加・修正の動作確認用インスタンスを並行起動したい場合がある。この場合、以下3点を運用インスタンスと分離する必要がある。
 
 1. **ポート**: orchestratorは環境変数 `ORCHESTRATOR_PORT`（既定: `8787`）、dashboardは`next dev`/`next start`の`-p`オプション（既定: `3000`）でそれぞれ上書きする。開発用dashboardから開発用orchestratorを参照させる場合は、`ORCHESTRATOR_URL`環境変数も同じポートに合わせて設定する
-2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する
+2. **対象プロジェクトの設定ファイル**: 環境変数 `PROJECTS_CONFIG_PATH`（既定: `config/projects.yaml`）で、開発用インスタンスには運用中の実プロジェクトを含まない別ファイル（テスト用プロジェクトのみを記載したもの）を指定する。**dashboardも同じ環境変数`PROJECTS_CONFIG_PATH`（`config/litellm_config.yaml`は`LITELLM_CONFIG_PATH`）を参照する**ため、dashboardを起動するシェルにも同じ値を設定すること（未設定時は`config/`配下の既定ファイル。相対パスはどちらもプロセスのcwd基準）
 3. **セッション永続化ファイル**: 環境変数 `SESSIONS_PATH`（既定: `config/sessions.json`）で、開発用インスタンスには別ファイルを指定する
+
+**開発用インスタンスの起動・停止には `bin/dev_instance.sh` を使う**（issue #238）。上記3点の分離（空きポートの自動採番・既定ポート8787/3000の拒否、`.dev-run/`配下の開発用`projects.yaml`・`sessions.json`等）をまとめて行い、起動したプロセスグループを`.dev-run/`（`.gitignore`対象）に記録する。
+
+```bash
+./bin/dev_instance.sh start   # 採番したポートとURLが表示される
+./bin/dev_instance.sh status
+./bin/dev_instance.sh stop
+```
+
+- `stop`は、記録したPID・PGID・起動時に付与した目印がすべて一致するプロセスグループだけを止める（`npm`→`next-server`などの子孫を含む）。一致しなければkillせずエラー終了する
+- **`pkill` / `killall`、`lsof`等でポートからPIDを探してのkillは使わないこと。** 運用インスタンスや他worktreeのインスタンスは`ps`上で区別できず、巻き込んで停止してしまう
+- ポートを明示したい場合は`DEV_ORCHESTRATOR_PORT` / `DEV_DASHBOARD_PORT`を使う（運用インスタンスから継承した`ORCHESTRATOR_PORT`等は参照しない）
+- 開発者向けのため、`dist/`の配布tarballには含めない
+- dashboardに`node_modules`が必要（無ければ`dashboard`で`npm ci`）
+- 開発用の`projects.yaml`は`nosetech/producer-desk`（`worktree_path`はそのworktree自身）を対象に、起動のたびに生成する（issue #241）。実issueを画面に表示して見た目を確認できる
+- **確認用orchestratorは常に読み取り専用モード（環境変数`ORCHESTRATOR_READ_ONLY=1`）で起動する**（`dev_instance.sh`が強制する）。実issueを対象にしても、Agent Runnerのディスパッチ・ラベル変更・issueコメント投稿・Slack通知は一切行わず、参照系API（`GET /api/*`と再取得`POST /api/refresh`）だけを提供する。書き込み系API（指示・再実行・issue作成・設定変更など）は403を返すため、ダッシュボード上の承認・返信・新規作成・保存ボタンは失敗する。見た目の確認・撮影は読み取り専用の操作だけで行う
+- 運用shell由来の`NODE_ENV=production`は`dev_instance.sh`が子プロセスから外す。`next dev`は`NODE_ENV=production`のままだと`globals.css`のparseに失敗してHTTP 500になる。起動後にdashboardがHTTP 200を返さなければ警告を出す
+- 見た目確認用の固定issueとして **#242**（`status:in-review`、`status:todo`は付けない）を用意している。クローズ・編集・コメント追加をしないこと（運用インスタンスのコメント監視が反応するため）
+
+以下は`dev_instance.sh`が内部で行っている動作に相当する手動起動例（ヘルパーを使えない特殊な事情がある場合のみ。停止は起動時に控えたPIDを指定して行い、名前・ポートでの検索は使わない）。
 
 ```bash
 cd orchestrator
@@ -197,6 +217,8 @@ ORCHESTRATOR_URL=http://127.0.0.1:8788 npm run dev -- -p 3001
 ### 補足: `NODE_ENV`について
 
 `next build`は、呼び出し元のシェルで環境変数`NODE_ENV`に`production`/`development`/`test`以外の値が設定されていると、内部エラー（`<Html> should not be imported outside of pages/_document.`等）で失敗することがある（[vercel/next.js#77262](https://github.com/vercel/next.js/discussions/77262)参照）。`bin/start.sh`は起動前に常に`NODE_ENV=production`を設定するため通常は意識不要だが、`dashboard`ディレクトリで直接`npm run build`を実行する場合にビルドが失敗する場合は、シェルの`NODE_ENV`環境変数の値を確認すること。
+
+同様に、`next dev`も`NODE_ENV=production`のままだと`./src/app/globals.css`のparseに失敗してHTTP 500を返す。運用インスタンスから起動したshell（Agent Runnerを含む）は`NODE_ENV=production`を引き継ぐため、動作確認用に`next dev`を起動する場合は`NODE_ENV`を外す（`bin/dev_instance.sh`は自動で外す）。
 
 ## DBバックアップ（macOS launchd）
 

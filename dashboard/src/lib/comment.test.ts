@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentProxyUrl,
   commentSummary,
+  extractDecisionPoints,
   parseAttachmentLine,
-  parseCommentBlocks,
+  replyQuoteSource,
+  splitAttachments,
 } from "./comment";
 import type { IssueComment } from "./types";
 
@@ -15,55 +17,49 @@ function comment(body: string): IssueComment {
   return { body } as IssueComment;
 }
 
-describe("parseCommentBlocks（添付）", () => {
-  it("画像の Markdown 記法を image ブロックにする", () => {
-    expect(parseCommentBlocks(`![shot](${ASSET})`)).toEqual([
+describe("splitAttachments", () => {
+  it("画像の Markdown 記法を添付行として切り出す", () => {
+    expect(splitAttachments(`![shot](${ASSET})`)).toEqual([
       { kind: "image", alt: "shot", url: ASSET },
     ]);
   });
 
-  it("単独行の assets URL を video ブロックにする", () => {
-    expect(parseCommentBlocks(`録画です\n\n${ASSET}`)).toEqual([
-      { kind: "paragraph", segs: [{ text: "録画です", code: false }] },
+  it("単独行の assets URL を video として切り出す", () => {
+    expect(splitAttachments(`録画です\n\n${ASSET}`)).toEqual([
+      { kind: "markdown", text: "録画です\n" },
       { kind: "video", url: ASSET },
     ]);
   });
 
-  it("<video src> を video ブロックにする", () => {
-    expect(
-      parseCommentBlocks(`<video src="${ASSET}" controls></video>`),
-    ).toEqual([{ kind: "video", url: ASSET }]);
+  it("<video src> を video として切り出す", () => {
+    expect(splitAttachments(`<video src="${ASSET}" controls></video>`)).toEqual(
+      [{ kind: "video", url: ASSET }],
+    );
   });
 
-  it("files URL を file ブロックにする（名前はデコードする）", () => {
-    expect(parseCommentBlocks(FILE)).toEqual([
-      { kind: "file", name: "report v1.pdf", url: FILE },
+  it("files のURLを file として切り出す", () => {
+    expect(splitAttachments(FILE)).toEqual([
+      {
+        kind: "file",
+        name: "report v1.pdf",
+        url: FILE,
+      },
     ]);
   });
 
-  it("添付ファイル以外の画像・URL は通常の段落のまま", () => {
-    const blocks = parseCommentBlocks("![x](https://example.com/a.png)");
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe("paragraph");
+  it("添付ファイル以外の画像は Markdown 区間のまま", () => {
+    const text = "![x](https://example.com/a.png)";
+    expect(splitAttachments(text)).toEqual([{ kind: "markdown", text }]);
   });
 
   it("コードブロック内の添付記法は展開しない", () => {
-    expect(parseCommentBlocks(`\`\`\`\n![a](${ASSET})\n\`\`\``)).toEqual([
-      { kind: "code", text: `![a](${ASSET})` },
-    ]);
+    const text = `\`\`\`\n![a](${ASSET})\n\`\`\``;
+    expect(splitAttachments(text)).toEqual([{ kind: "markdown", text }]);
   });
 
-  it("添付のない既存コメントのパース結果は変わらない", () => {
-    expect(parseCommentBlocks("**見出し**\n- a\n- b\n\n本文")).toEqual([
-      { kind: "heading", text: "見出し" },
-      {
-        kind: "list",
-        items: [
-          { mark: "•", segs: [{ text: "a", code: false }] },
-          { mark: "•", segs: [{ text: "b", code: false }] },
-        ],
-      },
-      { kind: "paragraph", segs: [{ text: "本文", code: false }] },
+  it("BOTマーカーを除去する", () => {
+    expect(splitAttachments("本文\n\n<!-- m -->")).toEqual([
+      { kind: "markdown", text: "本文" },
     ]);
   });
 });
@@ -97,5 +93,118 @@ describe("attachmentProxyUrl", () => {
     expect(attachmentProxyUrl(ASSET)).toBe(
       `/api/attachment?url=${encodeURIComponent(ASSET)}`,
     );
+  });
+});
+
+describe("replyQuoteSource", () => {
+  const base = {
+    repo: "o/r",
+    number: 1,
+    body: "issue本文",
+    author: { login: "owner" },
+    created_at: "2026-10-01T00:00:00Z",
+    url: "https://github.com/o/r/issues/1",
+  };
+
+  it("コメントがあれば全件を古い→新しい順で返す", () => {
+    const comments = [comment("1件目"), comment("2件目"), comment("3件目")];
+    expect(replyQuoteSource({ ...base, comments })).toEqual({
+      comments,
+      isIssueBody: false,
+    });
+  });
+
+  it("コメントが1件でも配列で返す", () => {
+    const comments = [comment("唯一")];
+    expect(replyQuoteSource({ ...base, comments })).toEqual({
+      comments,
+      isIssueBody: false,
+    });
+  });
+
+  it("コメントが0件ならissue本文をIssueComment形式で返す", () => {
+    expect(replyQuoteSource({ ...base, comments: [] })).toEqual({
+      comments: [
+        {
+          body: "issue本文",
+          createdAt: "2026-10-01T00:00:00Z",
+          author: { login: "owner" },
+          url: "https://github.com/o/r/issues/1",
+        },
+      ],
+      isIssueBody: true,
+    });
+  });
+
+  it("本文がBOTマーカーのみで空ならnullを返す", () => {
+    expect(
+      replyQuoteSource({
+        ...base,
+        body: "<!-- producer-desk:bot-comment -->",
+        comments: [],
+      }),
+    ).toBeNull();
+  });
+
+  it("コメントも本文も空ならnullを返す", () => {
+    expect(replyQuoteSource({ ...base, body: " \n", comments: [] })).toBeNull();
+  });
+});
+
+describe("extractDecisionPoints", () => {
+  it("番号付きリストと入れ子の選択肢を取り出す", () => {
+    const body = [
+      "作業報告です。",
+      "",
+      "**判断が必要な事項**",
+      "1. 〇〇をA案／B案のどちらで進めるか",
+      "   - A案: 速い",
+      "   - B案: 安全",
+      "2. PR #163をレビューし、問題なければマージする",
+      "",
+      "<!-- producer-desk:bot-comment -->",
+    ].join("\n");
+    expect(extractDecisionPoints(body)).toEqual([
+      {
+        text: "〇〇をA案／B案のどちらで進めるか",
+        options: ["A案: 速い", "B案: 安全"],
+      },
+      { text: "PR #163をレビューし、問題なければマージする", options: [] },
+    ]);
+  });
+
+  it("インデントされた番号付き項目も抽出する", () => {
+    const body = "**判断が必要な事項**\n  1. a\n     - A案: x\n  2. b";
+    expect(extractDecisionPoints(body)).toEqual([
+      { text: "a", options: ["A案: x"] },
+      { text: "b", options: [] },
+    ]);
+  });
+
+  it("セクションが無ければnull", () => {
+    expect(extractDecisionPoints("1. これは判断事項ではない")).toBeNull();
+  });
+
+  it("リストが空ならnull", () => {
+    expect(
+      extractDecisionPoints("**判断が必要な事項**\n\n次の段落"),
+    ).toBeNull();
+  });
+
+  it("見出しの揺れ（コロン・##）を許容する", () => {
+    expect(extractDecisionPoints("## 判断が必要な事項\n1. a")?.length).toBe(1);
+    expect(extractDecisionPoints("**判断が必要な事項：**\n1. a")?.length).toBe(
+      1,
+    );
+  });
+
+  it("コードブロック内の同名見出しは対象外", () => {
+    const body = "```\n**判断が必要な事項**\n1. a\n```";
+    expect(extractDecisionPoints(body)).toBeNull();
+  });
+
+  it("次の見出し・段落でセクションが終わる", () => {
+    const body = "**判断が必要な事項**\n1. a\n\n**補足**\n1. 別のリスト";
+    expect(extractDecisionPoints(body)).toEqual([{ text: "a", options: [] }]);
   });
 });

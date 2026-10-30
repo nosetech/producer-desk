@@ -188,7 +188,7 @@ export default function ReviewCard({
     repo: string,
     issueNumber: number,
     title: string,
-    comment?: IssueComment,
+    comments?: IssueComment[],
   ) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -404,7 +404,7 @@ export default function ReviewCard({
           type="button"
           className={`${styles.btn} ${styles.btnReply}`}
           onClick={() =>
-            onReply(review.repo, review.number, review.title, last)
+            onReply(review.repo, review.number, review.title, review.comments)
           }
           disabled={busy}
         >
@@ -422,14 +422,14 @@ export default function ReviewCard({
 
       {viewerOpen && last && (
         <CommentViewer
-          comment={last}
+          comments={review.comments}
           label={`${repoName} #${review.number}`}
           kindLabel="レビュー待ち"
           title={review.title}
           onClose={() => setViewerOpen(false)}
           onReply={() => {
             setViewerOpen(false);
-            onReply(review.repo, review.number, review.title, last);
+            onReply(review.repo, review.number, review.title, review.comments);
           }}
           replyDisabled={busy}
         />

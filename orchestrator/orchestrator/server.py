@@ -27,6 +27,7 @@ from orchestrator.aggregation import (
     IssueSummary,
     aggregate,
     build_project_issues,
+    build_project_queue,
 )
 from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
 from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
@@ -45,6 +46,7 @@ from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
     DeleteBranchFn,
+    GetIssueDetailFn,
     GetPrBranchFn,
     ListLinkedPrsFn,
     MergePrFn,
@@ -53,6 +55,7 @@ from orchestrator.github_client import (
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import create_issue as gh_create_issue
 from orchestrator.github_client import delete_branch as gh_delete_branch
+from orchestrator.github_client import get_issue_detail as gh_get_issue_detail
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
@@ -104,6 +107,10 @@ DISPATCH_STATUS_PATH = re.compile(
 REDISPATCH_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/redispatch$"
 )
+# 単一issueの本文・コメント取得（issue #231）。返信UIの引用表示用。
+ISSUE_DETAIL_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)$"
+)
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
@@ -111,6 +118,8 @@ LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh$")
 # 全プロジェクトの再取得（issue #197）。
 REFRESH_ALL_PATH = "/api/refresh"
+# 読み取り専用モード（issue #241）で書き込み系リクエストを拒否する際のメッセージ。
+READ_ONLY_ERROR = "読み取り専用モードのため、書き込み系の操作は実行できません"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
 # Agent Runnerプロンプト設定（issue #149）。
@@ -258,10 +267,12 @@ def _make_handler(
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
     sync_worktree: SyncWorktreeFn,
+    get_issue_detail: GetIssueDetailFn,
     dashboard_settings: dict[str, float],
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
+    read_only: bool = False,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -336,6 +347,14 @@ def _make_handler(
                 )
                 return
 
+            issue_detail_match = ISSUE_DETAIL_PATH.match(self.path)
+            if issue_detail_match:
+                self._handle_issue_detail(
+                    issue_detail_match.group("repo"),
+                    int(issue_detail_match.group("issue_number")),
+                )
+                return
+
             list_issues_match = LIST_ISSUES_PATH.match(self.path)
             if list_issues_match:
                 self._handle_list_issues(list_issues_match.group("repo"))
@@ -343,6 +362,19 @@ def _make_handler(
 
             self.send_response(404)
             self.end_headers()
+
+        def _handle_issue_detail(self, repo: str, issue_number: int) -> None:
+            """単一issueの本文とコメントを返す（issue #231）。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                detail = get_issue_detail(repo, issue_number)
+            except subprocess.CalledProcessError as e:
+                logger.warning("issueの詳細取得に失敗しました (%s#%s): %s", repo, issue_number, e)
+                self._send_json(502, {"error": f"{repo}#{issue_number} を取得できませんでした"})
+                return
+            self._send_json(200, detail)
 
         def _handle_list_issues(self, repo: str) -> None:
             """プロジェクト別issue一覧（issue #116）。
@@ -381,6 +413,15 @@ def _make_handler(
                 }
             payload = dataclasses.asdict(state)
             payload.pop("issues_by_repo", None)  # 内部用データ。APIには含めない
+            # キューはポーリング周期より速く変化するため、集計時ではなくリクエスト時点の
+            # スナップショットを載せる（issue #233）。
+            for project in payload["project_status"]:
+                repo = project["repo"]
+                project["queue"] = dataclasses.asdict(
+                    build_project_queue(
+                        dispatch_queue.snapshot(repo), state.issues_by_repo.get(repo, [])
+                    )
+                )
             return payload
 
         def _handle_refresh_project(self, repo: str) -> None:
@@ -472,7 +513,14 @@ def _make_handler(
                 },
             )
 
+        def _reject_if_read_only(self) -> bool:
+            """読み取り専用モード（issue #241）なら403を返し、Trueを返す。"""
+            if read_only:
+                self._send_json(403, {"error": READ_ONLY_ERROR})
+            return read_only
+
         def do_POST(self) -> None:  # noqa: N802
+            # 再取得（GET相当の参照のみ）は読み取り専用モードでも許可する。
             if self.path == REFRESH_ALL_PATH:
                 self._handle_refresh_all()
                 return
@@ -480,6 +528,9 @@ def _make_handler(
             refresh_match = REFRESH_PROJECT_PATH.match(self.path)
             if refresh_match:
                 self._handle_refresh_project(refresh_match.group("repo"))
+                return
+
+            if self._reject_if_read_only():
                 return
 
             instruct_match = INSTRUCT_PATH.match(self.path)
@@ -504,6 +555,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             settings_match = PROJECT_SETTINGS_PATH.match(self.path)
             if settings_match:
                 self._handle_update_project_settings(settings_match.group("repo"))
@@ -512,6 +566,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_PUT(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_update_prompt(prompt_match.group("key"))
@@ -520,6 +577,9 @@ def _make_handler(
             self._send_json(404, {"error": "not found"})
 
         def do_DELETE(self) -> None:  # noqa: N802
+            if self._reject_if_read_only():
+                return
+
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_reset_prompt(prompt_match.group("key"))
@@ -852,10 +912,12 @@ def make_server(
     delete_branch: DeleteBranchFn = gh_delete_branch,
     list_issues: ListIssuesFn = gh_list_issues,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
+    get_issue_detail: GetIssueDetailFn = gh_get_issue_detail,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
     dashboard_settings: dict[str, float] | None = None,
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
+    read_only: bool = False,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -877,9 +939,11 @@ def make_server(
         delete_branch=delete_branch,
         list_issues=list_issues,
         sync_worktree=sync_worktree,
+        get_issue_detail=get_issue_detail,
         update_execution_settings=update_execution_settings,
         github_token=github_token,
         fetch_attachment_fn=fetch_attachment_fn,
+        read_only=read_only,
         dashboard_settings=(
             dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
         ),

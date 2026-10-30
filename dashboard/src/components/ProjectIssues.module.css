@@ -82,7 +82,22 @@
   font-weight: inherit;
 }
 
-.tabLink:focus-visible,
+.tabLink::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.tabLink:focus-visible {
+  outline: none;
+}
+
+.tab:has(.tabLink:focus-visible) {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
 .tabIconButton:focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
@@ -94,6 +109,7 @@
   align-items: center;
   gap: 8px;
   flex: none;
+  position: relative;
   padding: 8px 11px;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
@@ -153,6 +169,8 @@
 }
 
 .tabIconButton {
+  position: relative;
+  z-index: 1;
   width: 22px;
   height: 22px;
   flex: none;
@@ -563,7 +581,7 @@
 
 .head {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 142px;
+  grid-template-columns: var(--issue-cols);
   gap: 12px;
   align-items: center;
   padding: 8px 16px;
@@ -578,6 +596,45 @@
   color: var(--text-tertiary);
 }
 
+.headCell {
+  position: relative;
+}
+
+.resizeHandle {
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.resizeHandleLeft {
+  left: -11px;
+}
+
+.resizeHandleRight {
+  right: -11px;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.12s;
+}
+
+.resizeHandle:hover::after,
+.resizeHandle:active::after {
+  background: var(--accent-blue);
+}
+
 .headIcon {
   display: inline-flex;
   align-items: center;
@@ -586,7 +643,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 116px 44px 78px 142px;
+  grid-template-columns: var(--issue-cols);
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
@@ -722,6 +779,13 @@
 .replyBtn:hover {
   border-color: var(--accent-blue);
   color: var(--accent-blue);
+}
+
+.replyBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
 }
 
 .foot {
