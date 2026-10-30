@@ -29,7 +29,9 @@ export function usePersistedSize(
     fitParent = false,
     // CSS 側の max-*（含む領域基準で viewport 内に収まるもの）をそのまま使う。
     keepMax = false,
-  }: { fitParent?: boolean; keepMax?: boolean } = {},
+    // 保存値の復元だけを行い、標準リサイズハンドルのドラッグは扱わない（辺ドラッグ側で保存する場合）。
+    restoreOnly = false,
+  }: { fitParent?: boolean; keepMax?: boolean; restoreOnly?: boolean } = {},
 ) {
   const cleanup = useRef<(() => void) | null>(null);
   const axesKey = axes.join(",");
@@ -64,7 +66,7 @@ export function usePersistedSize(
           const extra = axis === "height" ? reserved() : 0;
           el.style[axis] = `${clampSize(value, viewport, extra)}px`;
           setMax(axis);
-          el.style.flex = "none";
+          el.style.flex = fitParent ? "0 1 auto" : "none";
         }
       }
 
@@ -109,6 +111,7 @@ export function usePersistedSize(
         for (const axis of active()) size[axis] = next[axis];
         savePanelSize(key, { ...loadPanelSizes()[key], ...size });
       };
+      if (restoreOnly) return;
       el.addEventListener("pointerdown", onDown);
       window.addEventListener("pointerup", onUp);
       cleanup.current = () => {
@@ -116,6 +119,6 @@ export function usePersistedSize(
         window.removeEventListener("pointerup", onUp);
       };
     },
-    [key, axesKey, fitParent, keepMax],
+    [key, axesKey, fitParent, keepMax, restoreOnly],
   );
 }

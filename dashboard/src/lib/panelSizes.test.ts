@@ -59,6 +59,19 @@ describe("parsePanelSizes", () => {
     });
   });
 
+  it("上端位置を読み込み、不正な値のエントリは捨てる", () => {
+    expect(
+      parsePanelSizes(
+        JSON.stringify({ composerPanel: { height: 400, top: 40.4 } }),
+      ),
+    ).toEqual({ composerPanel: { height: 400, top: 40 } });
+    expect(
+      parsePanelSizes(
+        JSON.stringify({ composerPanel: { height: 400, top: -3 } }),
+      ),
+    ).toEqual({});
+  });
+
   it("幅も高さもないエントリは捨てる", () => {
     expect(parsePanelSizes(JSON.stringify({ composerPanel: {} }))).toEqual({});
   });

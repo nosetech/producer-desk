@@ -39,7 +39,6 @@
   min-width: 280px;
   min-height: 240px;
   overflow: auto;
-  resize: both;
   display: flex;
   flex-direction: column;
   gap: 13px;
@@ -444,10 +443,6 @@
 }
 
 @media (max-width: 640px) {
-  .panel {
-    resize: vertical;
-  }
-
   .quoteBody {
     max-height: min(150px, 24vh);
   }

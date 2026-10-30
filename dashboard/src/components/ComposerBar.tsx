@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchProjectSettings, postCreateIssue, postInstruct } from "@/lib/api";
 import {
   MODEL_DEFAULT,
@@ -10,6 +10,7 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
+import { useEdgeResize } from "@/lib/useEdgeResize";
 import { usePersistedSize } from "@/lib/usePersistedSize";
 import {
   DECISION_POINTS_HEADING,
@@ -463,9 +464,20 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { jobs, startJob } = useApp();
-  const panelRef = usePersistedSize("composerPanel", ["width", "height"], {
-    keepMax: true,
-  });
+  const pressedBackdrop = useRef(false);
+  const restorePanelRef = usePersistedSize(
+    "composerPanel",
+    ["width", "height"],
+    { keepMax: true, restoreOnly: true },
+  );
+  const edgePanelRef = useEdgeResize("composerPanel", { keepMax: true });
+  const panelRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      restorePanelRef(el);
+      edgePanelRef(el);
+    },
+    [restorePanelRef, edgePanelRef],
+  );
   const textareaRef = usePersistedSize("composerTextarea", ["height"]);
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
@@ -607,8 +619,23 @@ export default function ComposerBar({
 
   return (
     <>
-      <div className={styles.backdrop} onClick={onClose} />
-      <div ref={panelRef} className={styles.panel}>
+      <div
+        className={styles.backdrop}
+        onMouseDown={() => {
+          pressedBackdrop.current = true;
+        }}
+        onClick={() => {
+          // 辺のドラッグをバックドロップ上で離しても閉じないよう、押下もバックドロップ上だったときだけ閉じる。
+          if (pressedBackdrop.current) onClose();
+        }}
+      />
+      <div
+        ref={panelRef}
+        className={styles.panel}
+        onMouseDown={() => {
+          pressedBackdrop.current = false;
+        }}
+      >
         <div className={styles.panelHeader}>
           <div className={styles.panelTitle}>
             <span className={styles.panelTitleIcon}>

@@ -40,7 +40,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  resize: horizontal;
   outline: none;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
@@ -195,7 +194,6 @@
   min-height: 0;
   max-height: 440px;
   min-height: 80px;
-  resize: vertical;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
@@ -277,10 +275,6 @@
 @media (max-width: 640px) {
   .overlay {
     padding: 12px;
-  }
-
-  .dialog {
-    resize: none;
   }
 
   .body {

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { formatCommentTime } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment } from "@/lib/types";
+import { useEdgeResize } from "@/lib/useEdgeResize";
 import { usePersistedSize } from "@/lib/usePersistedSize";
 import CommentBody from "./CommentBody";
 import styles from "./CommentViewer.module.css";
@@ -66,9 +67,16 @@ export default function CommentViewer({
   const dialogRef = useRef<HTMLDivElement>(null);
   // リサイズのドラッグをダイアログ外で離しても閉じないよう、押下がオーバーレイ上で始まったときだけ閉じる。
   const pressedOverlay = useRef(false);
-  const resizeDialogRef = usePersistedSize("commentViewer", ["width"]);
-  const bodyRef = usePersistedSize("commentViewer", ["height"], {
+  const bodyElRef = useRef<HTMLDivElement | null>(null);
+  const restoreDialogRef = usePersistedSize("commentViewer", ["width"], {
+    restoreOnly: true,
+  });
+  const edgeDialogRef = useEdgeResize("commentViewer", {
+    heightTarget: () => bodyElRef.current,
+  });
+  const restoreBodyRef = usePersistedSize("commentViewer", ["height"], {
     fitParent: true,
+    restoreOnly: true,
   });
   const total = comments.length;
   // 表示中のコメント。null は末尾（直近）を表す。
@@ -102,7 +110,8 @@ export default function CommentViewer({
       <div
         ref={(el) => {
           dialogRef.current = el;
-          resizeDialogRef(el);
+          restoreDialogRef(el);
+          edgeDialogRef(el);
         }}
         tabIndex={-1}
         className={styles.dialog}
@@ -190,7 +199,13 @@ export default function CommentViewer({
             <ExternalIcon />
           </a>
         </div>
-        <div ref={bodyRef} className={styles.body}>
+        <div
+          ref={(el) => {
+            bodyElRef.current = el;
+            restoreBodyRef(el);
+          }}
+          className={styles.body}
+        >
           <CommentBody body={comment.body} size="viewer" />
         </div>
         <div className={styles.footer}>
