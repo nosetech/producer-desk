@@ -1,0 +1,144 @@
+/* 辺ハンドルは透明で、カーソル形状のみで示す。タッチでは指でつかめるよう太くする。 */
+.handle {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+
+.top,
+.bottom {
+  left: 14px;
+  right: 14px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.left,
+.right {
+  top: 14px;
+  bottom: 14px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.top {
+  top: -3px;
+}
+
+.bottom {
+  bottom: -3px;
+}
+
+.left {
+  left: -3px;
+}
+
+.right {
+  right: -3px;
+}
+
+.topLeft,
+.topRight,
+.bottomLeft,
+.bottomRight {
+  width: 14px;
+  height: 14px;
+}
+
+.topLeft {
+  top: -3px;
+  left: -3px;
+  cursor: nwse-resize;
+}
+
+.topRight {
+  top: -3px;
+  right: -3px;
+  cursor: nesw-resize;
+}
+
+.bottomLeft {
+  bottom: -3px;
+  left: -3px;
+  cursor: nesw-resize;
+}
+
+.bottomRight {
+  bottom: -3px;
+  right: -3px;
+  cursor: nwse-resize;
+}
+
+@media (pointer: coarse) {
+  .top,
+  .bottom {
+    height: 20px;
+  }
+
+  .left,
+  .right {
+    width: 20px;
+  }
+
+  .top {
+    top: -8px;
+  }
+
+  .bottom {
+    bottom: -8px;
+  }
+
+  .left {
+    left: -8px;
+  }
+
+  .right {
+    right: -8px;
+  }
+
+  .topLeft,
+  .topRight,
+  .bottomLeft,
+  .bottomRight {
+    width: 24px;
+    height: 24px;
+  }
+
+  .topLeft {
+    top: -8px;
+    left: -8px;
+  }
+
+  .topRight {
+    top: -8px;
+    right: -8px;
+  }
+
+  .bottomLeft {
+    bottom: -8px;
+    left: -8px;
+  }
+
+  .bottomRight {
+    bottom: -8px;
+    right: -8px;
+  }
+}
+
+/* モバイル幅は縦方向のみ（BottomNav に切り替わる幅と同じ）。 */
+@media (max-width: 640px) {
+  .top,
+  .bottom {
+    left: 0;
+    right: 0;
+  }
+
+  .left,
+  .right,
+  .topLeft,
+  .topRight,
+  .bottomLeft,
+  .bottomRight {
+    display: none;
+  }
+}

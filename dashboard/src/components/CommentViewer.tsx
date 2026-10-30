@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCommentTime } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment } from "@/lib/types";
 import { useEdgeResize } from "@/lib/useEdgeResize";
 import { usePersistedSize } from "@/lib/usePersistedSize";
 import CommentBody from "./CommentBody";
+import EdgeHandles from "./EdgeHandles";
 import styles from "./CommentViewer.module.css";
 
 function ChevronIcon({ up }: { up: boolean }) {
@@ -78,6 +79,22 @@ export default function CommentViewer({
     fitParent: true,
     restoreOnly: true,
   });
+  // ref を毎レンダー呼び直すとドラッグ中の状態が消えるため、安定した参照にする。
+  const dialogCallbackRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      dialogRef.current = el;
+      restoreDialogRef(el);
+      edgeDialogRef(el);
+    },
+    [restoreDialogRef, edgeDialogRef],
+  );
+  const bodyCallbackRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      bodyElRef.current = el;
+      restoreBodyRef(el);
+    },
+    [restoreBodyRef],
+  );
   const total = comments.length;
   // 表示中のコメント。null は末尾（直近）を表す。
   const [pickedIndex, setPickedIndex] = useState<number | null>(null);
@@ -108,11 +125,7 @@ export default function CommentViewer({
       }}
     >
       <div
-        ref={(el) => {
-          dialogRef.current = el;
-          restoreDialogRef(el);
-          edgeDialogRef(el);
-        }}
+        ref={dialogCallbackRef}
         tabIndex={-1}
         className={styles.dialog}
         role="dialog"
@@ -199,13 +212,7 @@ export default function CommentViewer({
             <ExternalIcon />
           </a>
         </div>
-        <div
-          ref={(el) => {
-            bodyElRef.current = el;
-            restoreBodyRef(el);
-          }}
-          className={styles.body}
-        >
+        <div ref={bodyCallbackRef} className={styles.body}>
           <CommentBody body={comment.body} size="viewer" />
         </div>
         <div className={styles.footer}>
@@ -238,6 +245,7 @@ export default function CommentViewer({
             このコメントに返信
           </button>
         </div>
+        <EdgeHandles />
       </div>
     </div>
   );

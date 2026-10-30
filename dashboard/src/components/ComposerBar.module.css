@@ -38,16 +38,25 @@
   max-height: calc(100% - 36px);
   min-width: 280px;
   min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.38);
+  animation: composerRise 0.22s ease;
+}
+
+/* パネルは辺ハンドルを持つため overflow を切らず、スクロールは内側のこの要素が担う。 */
+.panelScroll {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 13px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
   padding: 16px 18px 18px;
-  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.38);
-  animation: composerRise 0.22s ease;
+  border-radius: inherit;
 }
 
 .panelHeader {

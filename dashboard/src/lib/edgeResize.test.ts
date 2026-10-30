@@ -1,43 +1,13 @@
 import { describe, expect, it } from "vitest";
-import {
-  EDGE_ZONE,
-  clampTop,
-  detectEdges,
-  edgeCursor,
-  resizeByEdges,
-} from "./edgeResize";
+import { clampTop, parseEdges, resizeByEdges } from "./edgeResize";
 import { MIN_PANEL_SIZE } from "./panelSizes";
 
-const rect = { left: 100, right: 500, top: 50, bottom: 450 };
-
-describe("detectEdges", () => {
-  it("中央は辺ではない", () => {
-    expect(detectEdges(rect, 300, 250)).toEqual([]);
-  });
-
-  it("各辺と角を判定する", () => {
-    expect(detectEdges(rect, 100 + 2, 250)).toEqual(["left"]);
-    expect(detectEdges(rect, 500 - 2, 250)).toEqual(["right"]);
-    expect(detectEdges(rect, 300, 50 + 2)).toEqual(["top"]);
-    expect(detectEdges(rect, 300, 450 - 2)).toEqual(["bottom"]);
-    expect(detectEdges(rect, 500 - 1, 450 - 1)).toEqual(["bottom", "right"]);
-    expect(detectEdges(rect, 101, 51)).toEqual(["top", "left"]);
-  });
-
-  it("辺の幅を超えた内側と、枠の外は対象外", () => {
-    expect(detectEdges(rect, 100 + EDGE_ZONE + 1, 250)).toEqual([]);
-    expect(detectEdges(rect, 99, 250)).toEqual([]);
-    expect(detectEdges(rect, 300, 451)).toEqual([]);
-  });
-});
-
-describe("edgeCursor", () => {
-  it("辺と角のカーソルを返す", () => {
-    expect(edgeCursor([])).toBe("");
-    expect(edgeCursor(["left"])).toBe("w-resize");
-    expect(edgeCursor(["bottom"])).toBe("s-resize");
-    expect(edgeCursor(["top", "right"])).toBe("ne-resize");
-    expect(edgeCursor(["bottom", "left"])).toBe("sw-resize");
+describe("parseEdges", () => {
+  it("辺と角を読み取り、不明な値は捨てる", () => {
+    expect(parseEdges(undefined)).toEqual([]);
+    expect(parseEdges("left")).toEqual(["left"]);
+    expect(parseEdges("bottom right")).toEqual(["bottom", "right"]);
+    expect(parseEdges("top foo")).toEqual(["top"]);
   });
 });
 

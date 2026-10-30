@@ -1,16 +1,8 @@
 "use client";
 
 import { useCallback, useRef } from "react";
+import { clampTop, parseEdges, resizeByEdges, type Edge } from "./edgeResize";
 import {
-  EDGE_ZONE,
-  clampTop,
-  detectEdges,
-  edgeCursor,
-  resizeByEdges,
-  type Edge,
-} from "./edgeResize";
-import {
-  VIEWPORT_MARGIN,
   loadPanelSizes,
   maxPanelSizeCss,
   savePanelSize,
@@ -20,9 +12,6 @@ import {
 // BottomNav に切り替わる幅。この幅以下では左右の辺のリサイズを無効にする。
 const MOBILE_MAX_WIDTH = 640;
 
-// 親の中で上下に確保する余白（返信UIパネルの top/bottom の既定値に合わせる）。
-const PARENT_MARGIN = VIEWPORT_MARGIN / 2;
-
 type Options = {
   // 指定すると、上下の辺のドラッグはこの要素の高さを変える（要素の中心を保つので対称に広がる）。
   // 指定しなければ要素自身の高さと上端位置を変える。
@@ -31,10 +20,28 @@ type Options = {
   keepMax?: boolean;
 };
 
+type Drag = {
+  edges: Edge[];
+  horizontal: boolean;
+  vertical: boolean;
+  pointerId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  reserved: number;
+  target: HTMLElement;
+  // 最初に動いたときにインラインの固定値へ切り替えたか。クリックだけではスタイルを変えない。
+  fixed: boolean;
+  result: { width?: number; height?: number; top?: number };
+};
+
 /**
- * 要素の上下左右の辺・角をドラッグしてサイズ変更できるようにし、結果を localStorage に保存する。
- * 左右の辺は中央固定の要素を前提に、反対側の辺も同じだけ動く。
+ * 要素内の `EdgeHandles`（`data-edge` を持つ要素）をドラッグして、上下左右の辺・角でサイズ変更できるようにし、
+ * 結果を localStorage に保存する。左右の辺は中央固定の要素を前提に、反対側の辺も同じだけ動く。
  * 復元は `usePersistedSize(..., { restoreOnly: true })` と併用する（ここでは上端位置のみ復元する）。
+ * 返り値は対象要素に付ける callback ref。再レンダーで呼び直されないよう、安定した参照で渡すこと。
  */
 export function useEdgeResize(key: PanelKey, options: Options = {}) {
   const cleanup = useRef<(() => void) | null>(null);
@@ -48,16 +55,19 @@ export function useEdgeResize(key: PanelKey, options: Options = {}) {
       cleanup.current = null;
       if (!el) return;
 
+      let drag: Drag | null = null;
       const isMobile = () => window.innerWidth <= MOBILE_MAX_WIDTH;
+      // 親の中で上下に空ける余白は、要素の CSS（bottom）から読む。
       const parentBounds = () => {
         const parent = el.offsetParent as HTMLElement | null;
         const height = parent?.clientHeight ?? window.innerHeight;
-        return { top: PARENT_MARGIN, bottom: height - PARENT_MARGIN };
+        const margin = parseFloat(getComputedStyle(el).bottom) || 0;
+        return { top: margin, bottom: height - margin };
       };
 
       // 自前の高さ・上端位置を持つ要素だけ、保存した上端位置を親の範囲に収めて反映する。
       const applyTop = () => {
-        if (heightTarget.current) return;
+        if (drag || heightTarget.current) return;
         const saved = loadPanelSizes()[key];
         if (saved?.top === undefined || saved.height === undefined) return;
         el.style.top = `${clampTop(saved.top, el.offsetHeight, parentBounds())}px`;
@@ -65,90 +75,71 @@ export function useEdgeResize(key: PanelKey, options: Options = {}) {
       applyTop();
       window.addEventListener("resize", applyTop);
 
-      const findEdges = (e: PointerEvent): Edge[] => {
-        const rect = el.getBoundingClientRect();
-        let edges = detectEdges(rect, e.clientX, e.clientY, EDGE_ZONE);
+      const onDown = (e: PointerEvent) => {
+        if (e.button !== 0) return;
+        const handle = (e.target as Element).closest<HTMLElement>(
+          "[data-edge]",
+        );
+        if (!handle || !el.contains(handle)) return;
+        let edges = parseEdges(handle.dataset.edge);
         if (isMobile()) {
           edges = edges.filter((edge) => edge === "top" || edge === "bottom");
         }
-        // 縦スクロールバーが右端にあるときは、スクロールバー操作を優先する。
-        const hasScrollbar =
-          el.offsetWidth - el.clientWidth > 2 &&
-          el.scrollHeight > el.clientHeight;
-        if (hasScrollbar) edges = edges.filter((edge) => edge !== "right");
-        return edges;
-      };
-
-      let drag: {
-        edges: Edge[];
-        pointerId: number;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-        top: number;
-        reserved: number;
-        target: HTMLElement;
-        result: { width?: number; height?: number; top?: number };
-      } | null = null;
-
-      const onHover = (e: PointerEvent) => {
-        if (drag) return;
-        el.style.cursor = edgeCursor(findEdges(e));
-      };
-
-      const onDown = (e: PointerEvent) => {
-        if (e.button !== 0) return;
-        const edges = findEdges(e);
         if (edges.length === 0) return;
         const target = heightTarget.current?.() ?? el;
-        const reserved =
-          target === el
-            ? 0
-            : Math.max(0, el.offsetHeight - target.offsetHeight);
         e.preventDefault();
         el.setPointerCapture(e.pointerId);
         drag = {
           edges,
+          horizontal: edges.some((edge) => edge === "left" || edge === "right"),
+          vertical: edges.some((edge) => edge === "top" || edge === "bottom"),
           pointerId: e.pointerId,
           x: e.clientX,
           y: e.clientY,
           width: el.offsetWidth,
           height: target.offsetHeight,
           top: el.offsetTop,
-          reserved,
+          reserved:
+            target === el
+              ? 0
+              : Math.max(0, el.offsetHeight - target.offsetHeight),
           target,
+          fixed: false,
           result: {},
         };
-        // 固定の max-*/flex が上限にならないよう、現在の px 値で固定して viewport 由来の上限へ置き換える。
-        const horizontal = edges.some(
-          (edge) => edge === "left" || edge === "right",
-        );
-        const vertical = edges.some(
-          (edge) => edge === "top" || edge === "bottom",
-        );
-        if (horizontal) {
-          el.style.width = `${drag.width}px`;
+      };
+
+      // 固定の max-*/flex が上限にならないよう、現在の px 値で固定して viewport 由来の上限へ置き換える。
+      const fixStyles = (d: Drag) => {
+        d.fixed = true;
+        if (d.horizontal) {
+          el.style.width = `${d.width}px`;
           if (!keepMax) el.style.maxWidth = maxPanelSizeCss("width");
         }
-        if (vertical) {
-          target.style.height = `${drag.height}px`;
+        if (d.vertical) {
+          d.target.style.height = `${d.height}px`;
           if (!keepMax) {
-            target.style.maxHeight = maxPanelSizeCss("height", reserved);
+            d.target.style.maxHeight = maxPanelSizeCss("height", d.reserved);
           }
           // 親に収まらないときは縮められるようにする（ダイアログのフッタが切れないように）。
-          target.style.flex = target === el ? "none" : "0 1 auto";
+          d.target.style.flex = d.target === el ? "none" : "0 1 auto";
         }
       };
 
       const onMove = (e: PointerEvent) => {
         if (!drag || e.pointerId !== drag.pointerId) return;
+        const dx = e.clientX - drag.x;
+        const dy = e.clientY - drag.y;
+        if (!drag.fixed) {
+          if (dx === 0 && dy === 0) return;
+          fixStyles(drag);
+        }
         const symmetricY = drag.target !== el;
         const next = resizeByEdges(
           { width: drag.width, height: drag.height, top: drag.top },
           drag.edges,
-          e.clientX - drag.x,
-          e.clientY - drag.y,
+          dx,
+          dy,
           {
             viewportWidth: window.innerWidth,
             viewportHeight: window.innerHeight,
@@ -157,17 +148,11 @@ export function useEdgeResize(key: PanelKey, options: Options = {}) {
             bounds: symmetricY ? undefined : parentBounds(),
           },
         );
-        const horizontal = drag.edges.some(
-          (edge) => edge === "left" || edge === "right",
-        );
-        const vertical = drag.edges.some(
-          (edge) => edge === "top" || edge === "bottom",
-        );
-        if (horizontal) {
+        if (drag.horizontal) {
           el.style.width = `${next.width}px`;
           drag.result.width = next.width;
         }
-        if (vertical) {
+        if (drag.vertical) {
           drag.target.style.height = `${next.height}px`;
           drag.result.height = next.height;
           if (!symmetricY) {
@@ -181,21 +166,18 @@ export function useEdgeResize(key: PanelKey, options: Options = {}) {
         if (!drag || e.pointerId !== drag.pointerId) return;
         const { result, target } = drag;
         drag = null;
+        if (Object.keys(result).length === 0) return;
         // 親に収まるよう縮んでいる場合があるので、実際の高さを保存する。
         if (result.height !== undefined) result.height = target.offsetHeight;
-        el.style.cursor = "";
-        if (Object.keys(result).length === 0) return;
         savePanelSize(key, { ...loadPanelSizes()[key], ...result });
       };
 
-      el.addEventListener("pointermove", onHover);
       el.addEventListener("pointerdown", onDown);
       el.addEventListener("pointermove", onMove);
       el.addEventListener("pointerup", onEnd);
       el.addEventListener("pointercancel", onEnd);
       cleanup.current = () => {
         window.removeEventListener("resize", applyTop);
-        el.removeEventListener("pointermove", onHover);
         el.removeEventListener("pointerdown", onDown);
         el.removeEventListener("pointermove", onMove);
         el.removeEventListener("pointerup", onEnd);

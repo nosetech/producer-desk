@@ -70,6 +70,8 @@ export function usePersistedSize(
         }
       }
 
+      if (restoreOnly) return;
+
       // ドラッグ中は固定の max-*/flex が上限になってしまうため、押下時に現在の px 値を
       // インラインで固定し、固定の max-* は viewport 由来の上限に置き換える。サイズが変わらなかった場合は元のスタイルへ戻す。
       const props = [
@@ -111,7 +113,6 @@ export function usePersistedSize(
         for (const axis of active()) size[axis] = next[axis];
         savePanelSize(key, { ...loadPanelSizes()[key], ...size });
       };
-      if (restoreOnly) return;
       el.addEventListener("pointerdown", onDown);
       window.addEventListener("pointerup", onUp);
       cleanup.current = () => {

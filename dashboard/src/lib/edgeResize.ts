@@ -2,33 +2,11 @@ import { MIN_PANEL_SIZE, clampSize } from "./panelSizes";
 
 export type Edge = "top" | "bottom" | "left" | "right";
 
-// 辺としてつかめる、枠線の内側の幅（px）。
-export const EDGE_ZONE = 6;
-
-type Rect = { left: number; right: number; top: number; bottom: number };
-
-// 押下位置が枠の辺（角なら2辺）に当たっているかを返す。
-export function detectEdges(
-  rect: Rect,
-  x: number,
-  y: number,
-  zone = EDGE_ZONE,
-): Edge[] {
-  if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-    return [];
-  }
-  const edges: Edge[] = [];
-  if (y - rect.top <= zone) edges.push("top");
-  else if (rect.bottom - y <= zone) edges.push("bottom");
-  if (x - rect.left <= zone) edges.push("left");
-  else if (rect.right - x <= zone) edges.push("right");
-  return edges;
-}
-
-export function edgeCursor(edges: readonly Edge[]): string {
-  const v = edges.includes("top") ? "n" : edges.includes("bottom") ? "s" : "";
-  const h = edges.includes("left") ? "w" : edges.includes("right") ? "e" : "";
-  return v || h ? `${v}${h}-resize` : "";
+// `data-edge="top left"` のような属性値を辺の配列にする（不明な値は無視する）。
+export function parseEdges(value: string | undefined): Edge[] {
+  return (value ?? "")
+    .split(" ")
+    .filter((v): v is Edge => ["top", "bottom", "left", "right"].includes(v));
 }
 
 export type EdgeStart = { width: number; height: number; top: number };

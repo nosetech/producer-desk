@@ -33,6 +33,7 @@
 }
 
 .dialog {
+  position: relative;
   width: 100%;
   max-width: 640px;
   min-width: min(360px, 100%);
