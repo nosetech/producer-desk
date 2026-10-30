@@ -37,7 +37,8 @@
   max-width: calc(100% - 24px);
   max-height: calc(100% - 36px);
   min-width: 280px;
-  min-height: 240px;
+  /* この高さ以上なら、内容が収まりスクロールバーが出ない（新規作成モードの最小内容高に合わせる）。 */
+  min-height: min(400px, calc(100% - 36px));
   display: flex;
   flex-direction: column;
   background: var(--bg-panel);
@@ -178,7 +179,7 @@
   width: 100%;
   flex: 1;
   min-height: 100px;
-  resize: vertical;
+  resize: none;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-page);
@@ -339,7 +340,9 @@
 }
 
 .quoteBox {
-  flex: none;
+  /* コメント部分の高さが変わると、残りを埋める入力欄が追従する。収まらないときはコメント部分が縮む。 */
+  flex: 0 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-card);

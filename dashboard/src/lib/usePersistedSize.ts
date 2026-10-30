@@ -25,7 +25,7 @@ export function usePersistedSize(
   key: PanelKey,
   axes: readonly Axes[],
   {
-    // 親の中で自分以外が占める高さを上限から差し引く（親が overflow: hidden のモーダル本文用）。
+    // 親の中で自分以外が占める高さを上限から差し引き、親に収まらないときは縮められるようにする（親が overflow: hidden のモーダル本文・引用部用）。
     fitParent = false,
     // CSS 側の max-*（含む領域基準で viewport 内に収まるもの）をそのまま使う。
     keepMax = false,
@@ -98,7 +98,7 @@ export function usePersistedSize(
           el.style[axis] = `${start[axis]}px`;
           setMax(axis);
         }
-        el.style.flex = "none";
+        el.style.flex = fitParent ? "0 1 auto" : "none";
       };
       const onUp = () => {
         if (!start) return;

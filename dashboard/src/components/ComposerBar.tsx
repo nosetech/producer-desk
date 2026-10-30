@@ -160,7 +160,9 @@ function ReplyQuote({
   open: boolean;
   onToggle: () => void;
 }) {
-  const quoteBodyRef = usePersistedSize("composerQuote", ["height"]);
+  const quoteBodyRef = usePersistedSize("composerQuote", ["height"], {
+    fitParent: true,
+  });
   const comment = comments[index];
   const total = comments.length;
   const noun = isIssueBody ? "issue本文" : "コメント";
@@ -478,7 +480,6 @@ export default function ComposerBar({
     },
     [restorePanelRef, edgePanelRef],
   );
-  const textareaRef = usePersistedSize("composerTextarea", ["height"]);
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
   const [newModel, setNewModel] = useState(MODEL_DEFAULT);
@@ -731,7 +732,6 @@ export default function ComposerBar({
                 onChange={handleReplyModelChange}
               />
               <textarea
-                ref={textareaRef}
                 className={styles.textarea}
                 placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
                 value={message}
@@ -799,7 +799,6 @@ export default function ComposerBar({
                   />
                 </div>
                 <textarea
-                  ref={textareaRef}
                   className={`${styles.textarea} ${styles.textareaPrompt}`}
                   placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
                   value={prompt}

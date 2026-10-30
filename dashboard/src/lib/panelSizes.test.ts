@@ -50,7 +50,7 @@ describe("parsePanelSizes", () => {
     const raw = JSON.stringify({
       composerPanel: { width: "wide" },
       composerQuote: { height: 10 },
-      composerTextarea: { height: NaN },
+      composerTextarea: { height: 300 },
       commentViewer: { width: 640, height: 360 },
       unknown: { width: 500 },
     });
