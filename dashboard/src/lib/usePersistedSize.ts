@@ -25,11 +25,13 @@ export function usePersistedSize(
   key: PanelKey,
   axes: readonly Axes[],
   {
-    // 親の中で自分以外が占める高さを上限から差し引く（親が overflow: hidden のモーダル本文用）。
+    // 親の中で自分以外が占める高さを上限から差し引き、親に収まらないときは縮められるようにする（親が overflow: hidden のモーダル本文・引用部用）。
     fitParent = false,
     // CSS 側の max-*（含む領域基準で viewport 内に収まるもの）をそのまま使う。
     keepMax = false,
-  }: { fitParent?: boolean; keepMax?: boolean } = {},
+    // 保存値の復元だけを行い、標準リサイズハンドルのドラッグは扱わない（辺ドラッグ側で保存する場合）。
+    restoreOnly = false,
+  }: { fitParent?: boolean; keepMax?: boolean; restoreOnly?: boolean } = {},
 ) {
   const cleanup = useRef<(() => void) | null>(null);
   const axesKey = axes.join(",");
@@ -64,9 +66,11 @@ export function usePersistedSize(
           const extra = axis === "height" ? reserved() : 0;
           el.style[axis] = `${clampSize(value, viewport, extra)}px`;
           setMax(axis);
-          el.style.flex = "none";
+          el.style.flex = fitParent ? "0 1 auto" : "none";
         }
       }
+
+      if (restoreOnly) return;
 
       // ドラッグ中は固定の max-*/flex が上限になってしまうため、押下時に現在の px 値を
       // インラインで固定し、固定の max-* は viewport 由来の上限に置き換える。サイズが変わらなかった場合は元のスタイルへ戻す。
@@ -94,7 +98,7 @@ export function usePersistedSize(
           el.style[axis] = `${start[axis]}px`;
           setMax(axis);
         }
-        el.style.flex = "none";
+        el.style.flex = fitParent ? "0 1 auto" : "none";
       };
       const onUp = () => {
         if (!start) return;
@@ -116,6 +120,6 @@ export function usePersistedSize(
         window.removeEventListener("pointerup", onUp);
       };
     },
-    [key, axesKey, fitParent, keepMax],
+    [key, axesKey, fitParent, keepMax, restoreOnly],
   );
 }

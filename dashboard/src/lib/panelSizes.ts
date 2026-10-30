@@ -1,15 +1,13 @@
 // 返信UI・コメント全文モーダルのユーザー指定サイズ。localStorage に1つのJSONで保存する。
-export type PanelKey =
-  "composerPanel" | "composerQuote" | "composerTextarea" | "commentViewer";
+export type PanelKey = "composerPanel" | "composerQuote" | "commentViewer";
 
-export type PanelSize = { width?: number; height?: number };
+export type PanelSize = { width?: number; height?: number; top?: number };
 
 export type PanelSizes = Partial<Record<PanelKey, PanelSize>>;
 
 export const PANEL_KEYS: readonly PanelKey[] = [
   "composerPanel",
   "composerQuote",
-  "composerTextarea",
   "commentViewer",
 ];
 
@@ -53,6 +51,12 @@ function parseSize(raw: unknown): PanelSize | null {
     if (typeof value !== "number" || !Number.isFinite(value)) return null;
     if (value < MIN_PANEL_SIZE) return null;
     size[axis] = Math.round(value);
+  }
+  if (record.top !== undefined) {
+    const top = record.top;
+    if (typeof top !== "number" || !Number.isFinite(top) || top < 0)
+      return null;
+    size.top = Math.round(top);
   }
   return size.width === undefined && size.height === undefined ? null : size;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchProjectSettings, postCreateIssue, postInstruct } from "@/lib/api";
 import {
   MODEL_DEFAULT,
@@ -10,6 +10,7 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
+import { useEdgeResize } from "@/lib/useEdgeResize";
 import { usePersistedSize } from "@/lib/usePersistedSize";
 import {
   DECISION_POINTS_HEADING,
@@ -24,6 +25,7 @@ import type {
 } from "@/lib/types";
 import CommentBody from "./CommentBody";
 import { useApp } from "./AppContext";
+import EdgeHandles from "./EdgeHandles";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -158,7 +160,9 @@ function ReplyQuote({
   open: boolean;
   onToggle: () => void;
 }) {
-  const quoteBodyRef = usePersistedSize("composerQuote", ["height"]);
+  const quoteBodyRef = usePersistedSize("composerQuote", ["height"], {
+    fitParent: true,
+  });
   const comment = comments[index];
   const total = comments.length;
   const noun = isIssueBody ? "issue本文" : "コメント";
@@ -463,10 +467,19 @@ export default function ComposerBar({
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { jobs, startJob } = useApp();
-  const panelRef = usePersistedSize("composerPanel", ["width", "height"], {
-    keepMax: true,
-  });
-  const textareaRef = usePersistedSize("composerTextarea", ["height"]);
+  const restorePanelRef = usePersistedSize(
+    "composerPanel",
+    ["width", "height"],
+    { keepMax: true, restoreOnly: true },
+  );
+  const edgePanelRef = useEdgeResize("composerPanel", { keepMax: true });
+  const panelRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      restorePanelRef(el);
+      edgePanelRef(el);
+    },
+    [restorePanelRef, edgePanelRef],
+  );
 
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
   const [newModel, setNewModel] = useState(MODEL_DEFAULT);
@@ -609,236 +622,237 @@ export default function ComposerBar({
     <>
       <div className={styles.backdrop} onClick={onClose} />
       <div ref={panelRef} className={styles.panel}>
-        <div className={styles.panelHeader}>
-          <div className={styles.panelTitle}>
-            <span className={styles.panelTitleIcon}>
-              {isReply ? (
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M9 17 4 12l5-5" />
-                  <path d="M4 12h11a5 5 0 0 1 0 10" />
-                </svg>
-              ) : (
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              )}
-            </span>
-            {isReply ? "既存issueへ返信" : "新規タスク作成"}
-          </div>
-          <button
-            type="button"
-            className={styles.closeBtn}
-            onClick={onClose}
-            title="閉じる"
-            aria-label="閉じる"
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+        <div className={styles.panelScroll}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitle}>
+              <span className={styles.panelTitleIcon}>
+                {isReply ? (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M9 17 4 12l5-5" />
+                    <path d="M4 12h11a5 5 0 0 1 0 10" />
+                  </svg>
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                )}
+              </span>
+              {isReply ? "既存issueへ返信" : "新規タスク作成"}
+            </div>
+            <button
+              type="button"
+              className={styles.closeBtn}
+              onClick={onClose}
+              title="閉じる"
+              aria-label="閉じる"
             >
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
 
-        {isReply ? (
-          <div className={styles.body}>
-            {replyTarget ? (
-              <span className={styles.targetChip}>
-                <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M9 17 4 12l5-5" />
-                  <path d="M4 12h11a5 5 0 0 1 0 10" />
-                </svg>
-                {shortRepoName(replyTarget.repo)} #{replyTarget.number}
-                <span className={styles.targetChipSuffix}>へ指示</span>
+          {isReply ? (
+            <div className={styles.body}>
+              {replyTarget ? (
+                <span className={styles.targetChip}>
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M9 17 4 12l5-5" />
+                    <path d="M4 12h11a5 5 0 0 1 0 10" />
+                  </svg>
+                  {shortRepoName(replyTarget.repo)} #{replyTarget.number}
+                  <span className={styles.targetChipSuffix}>へ指示</span>
+                  <button
+                    type="button"
+                    onClick={onClearReplyTarget}
+                    aria-label="対象issueを解除"
+                  >
+                    ×
+                  </button>
+                </span>
+              ) : (
+                <div className={styles.noTarget}>
+                  判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
+                </div>
+              )}
+              {replyTarget?.comments && replyTarget.comments.length > 0 && (
+                <ReplyQuote
+                  comments={replyTarget.comments}
+                  index={Math.min(
+                    quoteIndex ?? replyTarget.comments.length - 1,
+                    replyTarget.comments.length - 1,
+                  )}
+                  onIndexChange={setQuoteIndex}
+                  isIssueBody={replyTarget.isIssueBody}
+                  openedAt={replyTarget.openedAt}
+                  open={quoteOpen}
+                  onToggle={() => setQuoteOpen((o) => !o)}
+                />
+              )}
+              <ModelSelectRow
+                value={replyModel}
+                settings={replyRepo ? settingsByRepo[replyRepo] : undefined}
+                disabled={replyBusy || !replyTarget}
+                onChange={handleReplyModelChange}
+              />
+              <textarea
+                className={styles.textarea}
+                placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                disabled={replyBusy || !replyTarget}
+              />
+              <div className={styles.sendRow}>
                 <button
                   type="button"
-                  onClick={onClearReplyTarget}
-                  aria-label="対象issueを解除"
+                  className={styles.sendBtn}
+                  onClick={handleSendReply}
+                  disabled={replyBusy || !replyTarget || !message.trim()}
                 >
-                  ×
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M22 2 11 13" />
+                    <path d="M22 2 15 22l-4-9-9-4Z" />
+                  </svg>
+                  指示を送信
                 </button>
-              </span>
-            ) : (
-              <div className={styles.noTarget}>
-                判断待ち一覧や活動ログの各アイテムにある「返信」から、対象のissueを選んでください。
               </div>
-            )}
-            {replyTarget?.comments && replyTarget.comments.length > 0 && (
-              <ReplyQuote
-                comments={replyTarget.comments}
-                index={Math.min(
-                  quoteIndex ?? replyTarget.comments.length - 1,
-                  replyTarget.comments.length - 1,
-                )}
-                onIndexChange={setQuoteIndex}
-                isIssueBody={replyTarget.isIssueBody}
-                openedAt={replyTarget.openedAt}
-                open={quoteOpen}
-                onToggle={() => setQuoteOpen((o) => !o)}
-              />
-            )}
-            <ModelSelectRow
-              value={replyModel}
-              settings={replyRepo ? settingsByRepo[replyRepo] : undefined}
-              disabled={replyBusy || !replyTarget}
-              onChange={handleReplyModelChange}
-            />
-            <textarea
-              ref={textareaRef}
-              className={styles.textarea}
-              placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              disabled={replyBusy || !replyTarget}
-            />
-            <div className={styles.sendRow}>
-              <button
-                type="button"
-                className={styles.sendBtn}
-                onClick={handleSendReply}
-                disabled={replyBusy || !replyTarget || !message.trim()}
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+            </div>
+          ) : (
+            <div className={styles.body}>
+              <div>
+                <div className={styles.fieldLabel}>対象プロジェクト</div>
+                <select
+                  className={styles.select}
+                  value={newRepo}
+                  onChange={(e) => handleNewRepoChange(e.target.value)}
                 >
-                  <path d="M22 2 11 13" />
-                  <path d="M22 2 15 22l-4-9-9-4Z" />
-                </svg>
-                指示を送信
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className={styles.body}>
-            <div>
-              <div className={styles.fieldLabel}>対象プロジェクト</div>
-              <select
-                className={styles.select}
-                value={newRepo}
-                onChange={(e) => handleNewRepoChange(e.target.value)}
-              >
-                {repos.map((repo) => (
-                  <option key={repo} value={repo}>
-                    {shortRepoName(repo)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <div className={styles.fieldLabel}>タイトル</div>
-              <input
-                className={styles.input}
-                placeholder="例: 請求書の合計金額バリデーションを追加"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </div>
-            <div className={styles.promptField}>
-              <div className={styles.fieldLabel}>指示内容 / プロンプト</div>
-              <div className={styles.modelRowNew}>
-                <ModelSelectRow
-                  value={newModel}
-                  settings={settingsByRepo[newRepo]}
-                  disabled={false}
-
-                  onChange={handleNewModelChange}
+                  {repos.map((repo) => (
+                    <option key={repo} value={repo}>
+                      {shortRepoName(repo)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className={styles.fieldLabel}>タイトル</div>
+                <input
+                  className={styles.input}
+                  placeholder="例: 請求書の合計金額バリデーションを追加"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
                 />
               </div>
-              <textarea
-                ref={textareaRef}
-                className={`${styles.textarea} ${styles.textareaPrompt}`}
-                placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-              />
-            </div>
-            <div className={styles.dispatchRow}>
-              <button
-                type="button"
-                className={`${styles.dispatchBtn} ${styles.dispatchBtnPrimary}`}
-                onClick={() => handleCreateTask("immediate")}
-                disabled={!newRepo || !title.trim() || !prompt.trim()}
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <div className={styles.promptField}>
+                <div className={styles.fieldLabel}>指示内容 / プロンプト</div>
+                <div className={styles.modelRowNew}>
+                  <ModelSelectRow
+                    value={newModel}
+                    settings={settingsByRepo[newRepo]}
+                    disabled={false}
+
+                    onChange={handleNewModelChange}
+                  />
+                </div>
+                <textarea
+                  className={`${styles.textarea} ${styles.textareaPrompt}`}
+                  placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                />
+              </div>
+              <div className={styles.dispatchRow}>
+                <button
+                  type="button"
+                  className={`${styles.dispatchBtn} ${styles.dispatchBtnPrimary}`}
+                  onClick={() => handleCreateTask("immediate")}
+                  disabled={!newRepo || !title.trim() || !prompt.trim()}
                 >
-                  <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
-                </svg>
-                今すぐ着手
-              </button>
-              <button
-                type="button"
-                className={styles.dispatchBtn}
-                onClick={() => handleCreateTask("queued")}
-                disabled={!newRepo || !title.trim() || !prompt.trim()}
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+                  </svg>
+                  今すぐ着手
+                </button>
+                <button
+                  type="button"
+                  className={styles.dispatchBtn}
+                  onClick={() => handleCreateTask("queued")}
+                  disabled={!newRepo || !title.trim() || !prompt.trim()}
                 >
-                  <rect x="3" y="5" width="18" height="16" rx="2" />
-                  <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
-                </svg>
-                あとで着手（todo）
-              </button>
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="3" y="5" width="18" height="16" rx="2" />
+                    <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+                  </svg>
+                  あとで着手（todo）
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-        {error && <span className={styles.error}>{error}</span>}
+          )}
+          {error && <span className={styles.error}>{error}</span>}
+        </div>
+        <EdgeHandles />
       </div>
     </>
   );
