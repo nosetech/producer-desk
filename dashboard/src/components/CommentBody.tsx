@@ -5,6 +5,7 @@ import {
   splitAttachments,
   type AttachmentLine,
 } from "@/lib/comment";
+import AttachmentImage from "./AttachmentImage";
 import styles from "./CommentBody.module.css";
 
 const REMARK_PLUGINS = [remarkGfm];
@@ -45,14 +46,7 @@ const components: Components = {
     ),
   img: ({ src, alt }) =>
     typeof src === "string" && ASSET_URL.test(src) ? (
-      // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        className={styles.media}
-        src={attachmentProxyUrl(src)}
-        alt={alt ?? ""}
-        loading="lazy"
-      />
+      <AttachmentImage url={src} alt={alt ?? ""} />
     ) : (
       <span>{alt ?? ""}</span>
     ),
@@ -80,16 +74,7 @@ const components: Components = {
 function Attachment({ item }: { item: AttachmentLine }) {
   switch (item.kind) {
     case "image":
-      return (
-        // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          className={styles.media}
-          src={attachmentProxyUrl(item.url)}
-          alt={item.alt}
-          loading="lazy"
-        />
-      );
+      return <AttachmentImage url={item.url} alt={item.alt} />;
     case "video":
       return (
         <video

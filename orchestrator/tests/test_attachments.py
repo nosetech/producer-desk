@@ -126,3 +126,46 @@ def test_fetch_gives_up_after_too_many_redirects() -> None:
 
     with pytest.raises(AttachmentError):
         fetch_attachment(ASSET_URL, token=None, open_fn=open_fn)
+
+
+# --- issue #268: トークン解決 ---
+
+
+def _run(stdout: str, code: int = 0):
+    import subprocess
+
+    def fn(*a, **k):
+        return subprocess.CompletedProcess(a[0], code, stdout=stdout, stderr="")
+
+    return fn
+
+
+def test_resolve_token_prefers_config() -> None:
+    from orchestrator.config import resolve_github_token
+
+    token, source = resolve_github_token("cfg", environ={"GH_TOKEN": "env"}, run_fn=_run("gh"))
+    assert token == "cfg"
+    assert "cfg" not in (source or "")
+
+
+def test_resolve_token_env_then_gh() -> None:
+    from orchestrator.config import resolve_github_token
+
+    assert resolve_github_token(None, environ={"GITHUB_TOKEN": "e2"}, run_fn=_run("gh"))[0] == "e2"
+    both = {"GH_TOKEN": "e1", "GITHUB_TOKEN": "e2"}
+    assert resolve_github_token(None, environ=both, run_fn=_run("gh"))[0] == "e1"
+    assert resolve_github_token(None, environ={}, run_fn=_run("ghtok\n")) == (
+        "ghtok",
+        "gh auth token",
+    )
+
+
+def test_resolve_token_none_when_unavailable() -> None:
+    from orchestrator.config import resolve_github_token
+
+    assert resolve_github_token(None, environ={}, run_fn=_run("", code=1)) == (None, None)
+
+    def boom(*a, **k):
+        raise FileNotFoundError
+
+    assert resolve_github_token(None, environ={}, run_fn=boom) == (None, None)
