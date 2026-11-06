@@ -481,7 +481,12 @@ def _make_handler(
                     urls[0], token=github_token, range_header=self.headers.get("Range")
                 )
             except AttachmentError as e:
-                logger.warning("添付ファイルを取得できませんでした: %s", e)
+                hint = (
+                    "（GitHubトークン未設定、またはリポジトリの閲覧権限なし）"
+                    if e.status == 404 and not github_token
+                    else ""
+                )
+                logger.warning("添付ファイルを取得できませんでした: %s%s", e, hint)
                 self._send_json(e.status, {"error": str(e)})
                 return
             try:

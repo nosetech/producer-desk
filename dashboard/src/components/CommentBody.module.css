@@ -189,3 +189,15 @@
   border-top: 1px solid var(--border-subtle);
   margin: 4px 0;
 }
+
+.imageError {
+  display: block;
+  padding: 8px 10px;
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+  color: var(--text-secondary, var(--text-primary));
+  background: var(--bg-page);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 9px;
+  overflow-wrap: anywhere;
+}

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,6 +189,38 @@ def load_github_token(config_path: Path | None = None) -> str | None:
     if not isinstance(raw, str):
         raise ValueError("config/projects.yamlのgithub_tokenは文字列である必要があります。")
     return raw.strip() or None
+
+
+def resolve_github_token(
+    config_token: str | None,
+    *,
+    environ: dict[str, str] | None = None,
+    run_fn=subprocess.run,
+) -> tuple[str | None, str | None]:
+    """添付ファイルのプロキシ取得に使うGitHubトークンを解決する（issue #268）。
+
+    優先順: `config/projects.yaml`の`github_token` → 環境変数`GH_TOKEN` →
+    `GITHUB_TOKEN` → `gh auth token`の出力。`(token, source)`を返し、`source`は
+    解決経路の名前のみ（トークンの値は含まない。ログ用）。どれも得られなければ
+    `(None, None)`。
+    """
+    env = os.environ if environ is None else environ
+    if config_token:
+        return config_token, "config/projects.yamlのgithub_token"
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = env.get(name, "").strip()
+        if value:
+            return value, f"環境変数{name}"
+    try:
+        result = run_fn(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    value = (result.stdout or "").strip() if result.returncode == 0 else ""
+    if value:
+        return value, "gh auth token"
+    return None, None
 
 
 def load_polling_interval_seconds(config_path: Path | None = None) -> float:

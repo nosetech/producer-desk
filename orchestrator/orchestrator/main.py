@@ -28,6 +28,7 @@ from orchestrator.config import (
     load_log_retention_days,
     load_polling_interval_seconds,
     load_projects,
+    resolve_github_token,
 )
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
@@ -88,6 +89,17 @@ def main() -> None:
     if github_token:
         os.environ["GH_TOKEN"] = github_token
         logger.info("config/projects.yamlのgithub_tokenを使用します")
+
+    # issue #268: github_token未設定でも、GH_TOKEN/GITHUB_TOKEN・`gh auth token`の
+    # 認証済みトークンで添付ファイル（Privateリポジトリ）を取得できるようにする。
+    attachment_token, token_source = resolve_github_token(github_token)
+    if attachment_token:
+        logger.info("添付ファイルの取得に使うトークン: %s", token_source)
+    else:
+        logger.warning(
+            "添付ファイル取得用のGitHubトークンが見つかりません。Privateリポジトリの"
+            "添付画像は表示できません（github_token設定またはgh auth loginが必要）"
+        )
 
     if gh_supports_attach() is False:
         logger.warning(
@@ -187,7 +199,7 @@ def main() -> None:
         dispatch_queue=dispatch_queue,
         port=port,
         dashboard_settings=dashboard_settings,
-        github_token=github_token,
+        github_token=attachment_token,
         read_only=read_only,
     )
     logger.info(
