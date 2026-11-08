@@ -6,6 +6,8 @@ export type IssueFilterKey = string;
 
 export const FILTER_ALL = "all";
 export const FILTER_ORPHAN = "orphan";
+/** issue一覧を開いた直後の初期フィルタ（未着手）。 */
+export const DEFAULT_FILTER = "status:todo";
 
 /** 状態フィルタの表示順（Claude Design ProducerDesk.dc.htmlの`FK`に対応）。 */
 export const STATUS_FILTER_ORDER = [
@@ -42,13 +44,7 @@ export function buildFilterOptions(
 ): IssueFilterOption[] {
   const open = issues.filter((i) => !isClosed(i));
   const orphans = issues.filter((i) => i.is_orphaned);
-  const options: IssueFilterOption[] = [
-    {
-      key: FILTER_ALL,
-      label: "すべて",
-      count: showDone ? issues.length : open.length,
-    },
-  ];
+  const options: IssueFilterOption[] = [];
   if (orphans.length > 0) {
     options.push({
       key: FILTER_ORPHAN,
@@ -63,6 +59,11 @@ export function buildFilterOptions(
       count: issues.filter((i) => issueStatusKey(i) === key).length,
     });
   }
+  options.push({
+    key: FILTER_ALL,
+    label: "すべて",
+    count: showDone ? issues.length : open.length,
+  });
   return options;
 }
 

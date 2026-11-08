@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchIssueDetail, postRefreshProject } from "@/lib/api";
 import { replyQuoteSource } from "@/lib/comment";
 import {
+  DEFAULT_FILTER,
   FILTER_ALL,
   FILTER_ORPHAN,
   buildFilterOptions,
@@ -131,7 +132,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     initialCache.kind === "miss" ? [] : initialCache.entry.issues,
   );
   const [errorMessage, setErrorMessage] = useState("");
-  const [filter, setFilter] = useState<string>(FILTER_ALL);
+  const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
   const [columns, setColumns] = useState<ColumnWidths>(DEFAULT_COLUMN_WIDTHS);
