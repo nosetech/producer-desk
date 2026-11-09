@@ -129,6 +129,31 @@ def _latest_ci_wait_pr_number(issue: IssueSummary) -> int | None:
     return extract_ci_wait_marker(body)
 
 
+def build_in_progress_breakdown(
+    issues: list[IssueSummary], is_dispatch_active: Callable[[str, int], bool]
+) -> dict[str, int]:
+    """OPENの`status:in-progress`issueのうちキューに載っていないものを理由別に数える（issue #272）。
+
+    「作業中」件数はGitHubのラベル由来、キューはオーケストレータのメモリ上の状態で
+    意味が異なるため、キューが空なのに「作業中 1」となる理由をダッシュボードに示す。
+    - `ci_waiting`: 最新コメントがCI待機マーカー付き。Agent Runnerが意図的にターンを終え、
+      本モジュールのポーリングによる再開を待っている正常な状態
+    - `orphaned`: 上記以外でキュー上で実行中・待機中でもない孤立状態（issue #50）
+    キュー上のissueはどちらにも数えない。
+    """
+    breakdown = {"ci_waiting": 0, "orphaned": 0}
+    for issue in issues:
+        if issue.state != "OPEN" or STATUS_IN_PROGRESS not in issue.labels:
+            continue
+        if is_dispatch_active(issue.repo, issue.number):
+            continue
+        if _latest_ci_wait_pr_number(issue) is not None:
+            breakdown["ci_waiting"] += 1
+        else:
+            breakdown["orphaned"] += 1
+    return breakdown
+
+
 def process_ci_waiting_issues(
     issues_by_repo: dict[str, list[IssueSummary]],
     tracker: CiWaitTracker,

@@ -309,6 +309,11 @@ def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
         queue = body["project_status"][0]["queue"]
         assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
         assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+        # キュー上の#1は理由の内訳に数えない（issue #272）。
+        assert body["project_status"][0]["in_progress_breakdown"] == {
+            "ci_waiting": 0,
+            "orphaned": 0,
+        }
     finally:
         release.set()
         server.shutdown()

@@ -176,6 +176,34 @@
   line-height: 1;
 }
 
+/* 「作業中」のうちキュー外の理由ピル（Claude Design WORK_NOTE、issue #272） */
+.note {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 1px;
+  padding: 2px 6px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: help;
+  border: 1px solid;
+}
+
+.noteCi {
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border-color: var(--border-subtle);
+}
+
+.noteOrphan {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
 @media (max-width: 640px) {
   .section {
     padding: 12px 14px;
@@ -185,5 +213,11 @@
     display: flex;
     flex-direction: column;
     gap: 9px;
+  }
+
+  /* Claude Designのcompact表示（font 10px / padding 1px 5px） */
+  .note {
+    padding: 1px 5px;
+    font-size: 10px;
   }
 }
