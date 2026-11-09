@@ -96,6 +96,25 @@ def _issue(repo: str, number: int, labels: list[str], comments: list[dict]) -> I
     )
 
 
+def test_in_progress_breakdown_splits_ci_waiting_orphaned_and_queued() -> None:
+    from orchestrator.ci_watcher import build_in_progress_breakdown
+
+    repo = "nosetech/project-a"
+    issues = [
+        _issue(repo, 1, [STATUS_IN_PROGRESS], [_ci_wait_comment(10)]),  # CI待ち
+        _issue(repo, 2, [STATUS_IN_PROGRESS], []),  # 孤立
+        _issue(repo, 3, [STATUS_IN_PROGRESS], []),  # キュー上で実行中
+        _issue(repo, 4, ["status:in-review"], []),  # 対象外
+    ]
+    closed = _issue(repo, 5, [STATUS_IN_PROGRESS], [])
+    closed.state = "CLOSED"
+    issues.append(closed)
+
+    breakdown = build_in_progress_breakdown(issues, lambda r, n: n == 3)
+
+    assert breakdown == {"ci_waiting": 1, "orphaned": 1}
+
+
 def test_resumes_agent_runner_when_ci_completed() -> None:
     tracker = CiWaitTracker()
     labels = FakeLabels({STATUS_IN_PROGRESS})

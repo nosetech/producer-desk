@@ -25,6 +25,40 @@ const COUNT_ORDER: (keyof StatusCounts)[] = [
   "untagged",
 ];
 
+// 「作業中」のうちキュー外の理由（Claude Designの`WORK_NOTE`、issue #272）。
+const WORK_NOTES = [
+  {
+    key: "ci_waiting",
+    label: "CI待ち",
+    tip: "CI完了を待っています。完了後に自動で再開します",
+    className: styles.noteCi,
+    icon: (
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{ flex: "none" }}
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+    ),
+  },
+  {
+    key: "orphaned",
+    label: "実行なし",
+    tip: "作業中ラベルですが実行中のAgent Runnerがありません",
+    className: styles.noteOrphan,
+    icon: <WarningIcon size={10} />,
+  },
+] as const;
+
 function GearIcon() {
   return (
     <svg
@@ -207,6 +241,22 @@ export default function ProjectStatusRow({
                       <span className={styles.countValue} style={accent}>
                         {project.counts[key]}
                       </span>
+                      {key === STATUS_IN_PROGRESS &&
+                        WORK_NOTES.map((note) => {
+                          const n = project.inProgressBreakdown[note.key];
+                          if (n <= 0) return null;
+                          return (
+                            <span
+                              key={note.key}
+                              className={`${styles.note} ${note.className}`}
+                              title={note.tip}
+                              aria-label={`${note.label} ${n}件：${note.tip}`}
+                            >
+                              {note.icon}
+                              {n > 1 ? `${note.label} ${n}` : note.label}
+                            </span>
+                          );
+                        })}
                     </div>
                   );
                 })}

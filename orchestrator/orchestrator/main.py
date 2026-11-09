@@ -28,6 +28,7 @@ from orchestrator.config import (
     load_log_retention_days,
     load_polling_interval_seconds,
     load_projects,
+    resolve_github_token,
 )
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
@@ -37,6 +38,11 @@ from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.logging_config import configure_logging
 from orchestrator.polling import run_polling_loop
+from orchestrator.polling_health import (
+    PollingHealth,
+    PollingHealthNotifier,
+    run_health_watchdog,
+)
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
 
@@ -89,6 +95,17 @@ def main() -> None:
         os.environ["GH_TOKEN"] = github_token
         logger.info("config/projects.yamlのgithub_tokenを使用します")
 
+    # issue #268: github_token未設定でも、GH_TOKEN/GITHUB_TOKEN・`gh auth token`の
+    # 認証済みトークンで添付ファイル（Privateリポジトリ）を取得できるようにする。
+    attachment_token, token_source = resolve_github_token(github_token)
+    if attachment_token:
+        logger.info("添付ファイルの取得に使うトークン: %s", token_source)
+    else:
+        logger.warning(
+            "添付ファイル取得用のGitHubトークンが見つかりません。Privateリポジトリの"
+            "添付画像は表示できません（github_token設定またはgh auth loginが必要）"
+        )
+
     if gh_supports_attach() is False:
         logger.warning(
             "ghコマンドがv2.99.0未満のため、Agent Runnerによる`gh issue comment --attach`"
@@ -126,6 +143,10 @@ def main() -> None:
     ci_wait_tracker = CiWaitTracker()
     decision_notifier = DecisionNotifier()
     review_notifier = ReviewNotifier()
+    polling_health = PollingHealth()
+    health_notifier = PollingHealthNotifier(
+        polling_health, interval_seconds=polling_interval_seconds
+    )
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
         if read_only:
@@ -175,10 +196,18 @@ def main() -> None:
             "on_issues_fetched": on_issues_fetched,
             "is_dispatch_active": dispatch_queue.is_active,
             "stop_event": stop_event,
+            "health": polling_health,
         },
         daemon=True,
     )
     polling_thread.start()
+    if not read_only:
+        # ポーリングスレッドが停止・停滞しても検知できるよう別スレッドで監視する（issue #279）
+        threading.Thread(
+            target=run_health_watchdog,
+            args=(health_notifier, stop_event),
+            daemon=True,
+        ).start()
 
     port = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
     server = make_server(
@@ -187,8 +216,10 @@ def main() -> None:
         dispatch_queue=dispatch_queue,
         port=port,
         dashboard_settings=dashboard_settings,
-        github_token=github_token,
+        github_token=attachment_token,
         read_only=read_only,
+        polling_health=polling_health,
+        polling_interval_seconds=polling_interval_seconds,
     )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",

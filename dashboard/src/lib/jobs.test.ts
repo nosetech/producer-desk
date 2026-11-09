@@ -66,6 +66,9 @@ describe("jobs", () => {
     expect(failureMessage(job({ kind: "new", number: undefined }))).toBe(
       "a（新規） のissueの作成に失敗しました。",
     );
+    expect(failureMessage(job({ kind: "relabel" }))).toBe(
+      "a #1 のレビュー待ちへの変更に失敗しました。",
+    );
   });
 
   it("進捗件数は最新の完了段階から算出する", () => {

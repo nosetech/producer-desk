@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -19,7 +20,8 @@ from orchestrator.aggregation import (
 from orchestrator.config import DEFAULT_POLLING_INTERVAL_SECONDS, Project
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
-from orchestrator.labels import STATUS_IN_REVIEW
+from orchestrator.labels import STATUS_IN_REVIEW, STATUS_NEEDS_HUMAN_DECISION
+from orchestrator.polling_health import PollingHealth
 
 DEFAULT_INTERVAL_SECONDS = DEFAULT_POLLING_INTERVAL_SECONDS
 
@@ -28,17 +30,20 @@ ListLinkedPrsFn = Callable[[str, int], list[PrCandidate]]
 OnIssuesFetchedFn = Callable[[dict[str, list[IssueSummary]]], None]
 
 
-def _resolve_review_pr_numbers(
+def _resolve_pr_numbers(
     issues_by_repo: dict[str, list[IssueSummary]], list_linked_prs: ListLinkedPrsFn
 ) -> None:
-    """`status:in-review` のissueについてのみ対応PRの候補を解決する（issue #58, #206）。
+    """`status:in-review`・`needs-human-decision` のissueについてのみ対応PRの候補を解決する。
+
+    （issue #58, #206, #270）
 
     全issueに対して毎回PR一覧を取得するとポーリング負荷が増えるため、対象を絞る。
     `pr_number`は候補がちょうど1件で一意に特定できた場合のみセットする。
+    判断待ちではPR未作成（候補0件）が通常で、その場合は`pr_number=None`・候補空のまま。
     """
     for issues in issues_by_repo.values():
         for issue in issues:
-            if STATUS_IN_REVIEW in issue.labels:
+            if STATUS_IN_REVIEW in issue.labels or STATUS_NEEDS_HUMAN_DECISION in issue.labels:
                 candidates = list_linked_prs(issue.repo, issue.number)
                 issue.pr_candidates = candidates
                 issue.pr_number = candidates[0].number if len(candidates) == 1 else None
@@ -55,13 +60,13 @@ def fetch_project_issues(
     list_issues: ListIssuesFn = gh_list_issues,
     list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
 ) -> list[IssueSummary]:
-    """1プロジェクト分のissueを取得し、`status:in-review` のPR番号を解決して返す（issue #197）。
+    """1プロジェクト分のissueを取得し、レビュー待ち・判断待ちのPR番号を解決して返す（issue #197）。
 
     `poll_once`（全プロジェクト）と、プロジェクト単位の再取得エンドポイントの双方から
     使う共通の取得ロジック。
     """
     issues = list_issues(project.repo)
-    _resolve_review_pr_numbers({project.repo: issues}, list_linked_prs)
+    _resolve_pr_numbers({project.repo: issues}, list_linked_prs)
     return issues
 
 
@@ -114,6 +119,9 @@ def poll_once(
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def run_polling_loop(
     projects: list[Project],
     *,
@@ -124,6 +132,7 @@ def run_polling_loop(
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     is_dispatch_active: IsDispatchActiveFn | None = None,
     stop_event: threading.Event | None = None,
+    health: PollingHealth | None = None,
 ) -> None:
     """ポーリングを繰り返し、更新のたびに `on_update` を呼び出す。
 
@@ -133,15 +142,32 @@ def run_polling_loop(
     """
     stop = stop_event or threading.Event()
 
+    consecutive_failures = 0
     while True:
-        state = poll_once(
-            projects,
-            list_issues=list_issues,
-            list_linked_prs=list_linked_prs,
-            on_issues_fetched=on_issues_fetched,
-            is_dispatch_active=is_dispatch_active,
-        )
-        on_update(state)
+        try:
+            state = poll_once(
+                projects,
+                list_issues=list_issues,
+                list_linked_prs=list_linked_prs,
+                on_issues_fetched=on_issues_fetched,
+                is_dispatch_active=is_dispatch_active,
+            )
+            on_update(state)
+            if consecutive_failures:
+                logger.info("ポーリングが復旧しました（連続失敗 %d 回後）", consecutive_failures)
+            consecutive_failures = 0
+            if health is not None:
+                health.record_success()
+        except Exception as e:
+            # `gh`の一時的な失敗等でスレッドが終了すると、クローズ検知・コメント検知・
+            # CI待機検知が全て止まるため、記録して次周期へ進む（issue #277）。
+            consecutive_failures += 1
+            if health is not None:
+                health.record_failure(e)
+            logger.exception(
+                "ポーリング周期でエラーが発生しました（連続失敗 %d 回）。次周期で再試行します",
+                consecutive_failures,
+            )
 
         if stop.wait(interval_seconds):
             return

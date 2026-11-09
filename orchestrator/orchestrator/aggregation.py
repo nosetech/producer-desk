@@ -76,8 +76,9 @@ class IssueSummary:
     comments: list[dict]
     updated_at: str
     state: str = "OPEN"
-    # `status:in-review` のissueについてのみ、ポーリング時に紐づくPR番号を解決して埋める
-    # （orchestrator.polling.poll_once参照、issue #58）。
+    # `status:in-review`・`needs-human-decision` のissueについてのみ、
+    # ポーリング時に紐づくPR番号を解決して埋める
+    # （orchestrator.polling.poll_once参照、issue #58, #270）。
     pr_number: int | None = None
     # `pr_number`が一意に特定できなかった（候補が0件または2件以上）場合も含め、
     # 対応PRの候補一覧（issue #206）。承認時はこの候補からユーザーが選択する。

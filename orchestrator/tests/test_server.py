@@ -131,6 +131,8 @@ def _run_server(store: StateStore, **kwargs) -> tuple:
     # list_issuesを指定しないテストは、instruct/create_issue成功後の同期state再取得
     # （issue #70）で実際の`gh`コマンドを叩かないよう、空リストを返すフェイクを既定にする。
     kwargs.setdefault("list_issues", lambda repo: [])
+    # 判断待ちissueでもPR候補を解決するため（issue #270）、`gh pr list`も実際には叩かない。
+    kwargs.setdefault("list_linked_prs", lambda repo, n: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -307,6 +309,11 @@ def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
         queue = body["project_status"][0]["queue"]
         assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
         assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+        # キュー上の#1は理由の内訳に数えない（issue #272）。
+        assert body["project_status"][0]["in_progress_breakdown"] == {
+            "ci_waiting": 0,
+            "orphaned": 0,
+        }
     finally:
         release.set()
         server.shutdown()
@@ -2107,6 +2114,57 @@ def test_redispatch_without_pending_instruction_returns_422() -> None:
         server.shutdown()
 
 
+def test_mark_in_review_transitions_needs_human_decision_without_comment_or_dispatch() -> None:
+    """issue #274: 判断待ち→レビュー待ちはラベル変更のみ（コメント・ディスパッチなし）。"""
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+    )
+    try:
+        path = "/api/projects/nosetech/project-a/issues/1/mark-in-review"
+        status, body = _post(server, path, {})
+        assert status == 200
+        assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
+        assert comments.posted == []
+        assert calls == []
+        # 判断待ちでなくなったため再実行は拒否される
+        status, _ = _post(server, path, {})
+        assert status == 409
+        assert labels.labels_by_issue[1] == {STATUS_IN_REVIEW}
+    finally:
+        server.shutdown()
+
+
+def test_mark_in_review_rejects_non_decision_issue_and_unknown_repo() -> None:
+    labels = FakeLabels(initial={1: {STATUS_IN_PROGRESS}})
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=FakeComments().post_comment,
+    )
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/project-a/issues/1/mark-in-review", {})
+        assert status == 409
+        assert labels.labels_by_issue[1] == {STATUS_IN_PROGRESS}
+        status, _ = _post(server, "/api/projects/nosetech/unknown/issues/1/mark-in-review", {})
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
 def test_get_attachment_streams_fetched_body_and_uses_token() -> None:
     from orchestrator.attachments import AttachmentResponse
 
@@ -2191,6 +2249,7 @@ def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
         results = [
             _post(server, f"/api/projects/{repo}/issues/1/instruct", {"action": "approve"}),
             _post(server, f"/api/projects/{repo}/issues/1/redispatch", {}),
+            _post(server, f"/api/projects/{repo}/issues/1/mark-in-review", {}),
             _post(server, f"/api/projects/{repo}/issues", {"title": "t", "body": "b"}),
             _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
             _put(server, "/api/prompts/anything", {"body": "x"}),

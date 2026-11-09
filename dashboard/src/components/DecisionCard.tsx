@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { postInstruct } from "@/lib/api";
+import { postInstruct, postMarkInReview } from "@/lib/api";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
 import { commentSummary, latestComment } from "@/lib/comment";
@@ -22,6 +22,34 @@ const APPROVE_STAGES: StageDef[] = [
   { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
 ];
 
+// orchestrator/orchestrator/instruct.py の handle_mark_in_review のon_stageと対応する。
+const RELABEL_STAGES: StageDef[] = [
+  {
+    key: "remove",
+    label: "status:needs-human-decision を外す",
+    note: "DELETE /labels",
+  },
+  { key: "add", label: "status:in-review を付与", note: "POST /labels" },
+];
+
+function RelabelIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <path d="M4 7h13l-3-3M20 17H7l3 3" />
+    </svg>
+  );
+}
+
 function CheckIcon({ size = 15 }: { size?: number }) {
   return (
     <svg
@@ -35,6 +63,49 @@ function CheckIcon({ size = 15 }: { size?: number }) {
       strokeLinejoin="round"
     >
       <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function PrIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="18" r="3" />
+      <path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-3" />
+      <path d="M12 3 9 6l3 3" />
+    </svg>
+  );
+}
+
+function PrCandidateIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <path d="M6 9v6M18 9v1a2 2 0 0 1-2 2H8" />
     </svg>
   );
 }
@@ -70,6 +141,7 @@ export default function DecisionCard({
   ) => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [relabelOpen, setRelabelOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const { jobs, startJob, retryJob, dismissJob } = useApp();
   // 実行中・失敗中の操作があるissueのみ操作を止める（別issue・別プロジェクトは妨げない）。
@@ -82,6 +154,12 @@ export default function DecisionCard({
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
   const repoName = decision.repo.split("/")[1];
+  // 判断待ちでは対応PR未作成が通常のため、候補0件のときは何も表示しない（issue #270）。
+  const prCandidateCount = (decision.pr_candidates ?? []).length;
+  const prUrl =
+    decision.pr_number != null
+      ? `https://github.com/${decision.repo}/pull/${decision.pr_number}`
+      : null;
 
   function openConfirm() {
     if (busy) return;
@@ -110,6 +188,20 @@ export default function DecisionCard({
     });
   }
 
+  function handleConfirmRelabel() {
+    setRelabelOpen(false);
+    startJob({
+      kind: "relabel",
+      repo: decision.repo,
+      number: decision.number,
+      title: decision.title,
+      stages: RELABEL_STAGES,
+      exec: (progressId) =>
+        postMarkInReview(decision.repo, decision.number, progressId),
+      successMessage: `${repoName} #${decision.number} をレビュー待ちに変更しました。`,
+    });
+  }
+
   return (
     <div
       className={`${styles.card} ${
@@ -130,28 +222,50 @@ export default function DecisionCard({
           {formatRelativeTime(decision.updated_at)}
         </span>
       </div>
-      <a
-        href={titleUrl}
-        target="_blank"
-        rel="noreferrer"
-        className={styles.title}
-      >
-        <span>{decision.title}</span>
-        <svg
-          className={styles.titleIcon}
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      <div className={styles.titleRow}>
+        <a
+          href={titleUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={styles.title}
         >
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          <path d="M15 3h6v6M10 14 21 3" />
-        </svg>
-      </a>
+          <span>{decision.title}</span>
+          <svg
+            className={styles.titleIcon}
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <path d="M15 3h6v6M10 14 21 3" />
+          </svg>
+        </a>
+        {prUrl ? (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={prUrl}
+            className={styles.prLink}
+          >
+            <PrIcon />
+            PR #{decision.pr_number}
+          </a>
+        ) : prCandidateCount > 1 ? (
+          <span
+            className={styles.prCandidateChip}
+            title="対応PRの候補が複数あります。承認・返信の前にGitHubで確認してください"
+          >
+            <PrCandidateIcon />
+            PR候補 {prCandidateCount}件
+          </span>
+        ) : null}
+      </div>
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
@@ -216,6 +330,17 @@ export default function DecisionCard({
           返信
         </button>
       </div>
+
+      <button
+        type="button"
+        className={styles.relabelBtn}
+        onClick={() => !busy && setRelabelOpen(true)}
+        disabled={busy}
+        title="AIの遷移漏れを修正：ラベルを status:in-review に付け替えます"
+      >
+        <RelabelIcon />
+        レビュー待ちに変更
+      </button>
 
       <DispatchDiagnosis
         repo={decision.repo}
@@ -288,6 +413,79 @@ export default function DecisionCard({
               >
                 <CheckIcon />
                 承認する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {relabelOpen && (
+        <div
+          className={styles.confirmOverlay}
+          onClick={() => setRelabelOpen(false)}
+        >
+          <div
+            className={styles.confirmDialog}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`confirm-relabel-${decision.repo}-${decision.number}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={styles.confirmHeadingRow}>
+              <span
+                className={`${styles.confirmIconBadge} ${styles.relabelBadge}`}
+              >
+                <RelabelIcon size={18} />
+              </span>
+              <span
+                id={`confirm-relabel-${decision.repo}-${decision.number}`}
+                className={styles.confirmMessage}
+              >
+                レビュー待ちに変更しますか？
+              </span>
+            </div>
+            <p className={styles.confirmDetail}>
+              <span className={styles.confirmDetailNumber}>
+                {repoName} #{decision.number}
+              </span>{" "}
+              — {decision.title}
+            </p>
+            <p className={styles.relabelNote}>
+              このissueをレビュー待ちに変更します。AIへの指示コメントは投稿されず、ラベルのみ変更されます。
+            </p>
+            <div className={styles.labelDiff}>
+              <span className={styles.labelFrom}>
+                status:needs-human-decision
+              </span>
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--text-tertiary)"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ flex: "none" }}
+              >
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+              <span className={styles.labelTo}>status:in-review</span>
+            </div>
+            <div className={styles.confirmActions}>
+              <button
+                type="button"
+                className={styles.confirmCancelBtn}
+                onClick={() => setRelabelOpen(false)}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className={styles.relabelConfirmBtn}
+                onClick={handleConfirmRelabel}
+              >
+                変更する
               </button>
             </div>
           </div>
