@@ -38,16 +38,20 @@ def test_poll_once_fetches_each_project_and_aggregates() -> None:
     def list_issues(repo: str) -> list[IssueSummary]:
         return fixtures[repo]
 
-    state = poll_once([PROJECT_A, PROJECT_B], list_issues=list_issues)
+    state = poll_once(
+        [PROJECT_A, PROJECT_B], list_issues=list_issues, list_linked_prs=lambda repo, n: []
+    )
 
     assert [(i.repo, i.number) for i in state.decisions] == [("nosetech/project-a", 1)]
 
 
-def test_poll_once_resolves_pr_number_only_for_in_review_issues() -> None:
+def test_poll_once_resolves_pr_number_only_for_in_review_and_decision_issues() -> None:
     fixtures = {
         "nosetech/project-a": [
             _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW]),
             _issue("nosetech/project-a", 2, [STATUS_NEEDS_HUMAN_DECISION]),
+            _issue("nosetech/project-a", 3, [STATUS_IN_PROGRESS]),
+            _issue("nosetech/project-a", 4, [STATUS_TODO]),
         ],
     }
     resolved_calls: list[tuple[str, int]] = []
@@ -61,8 +65,9 @@ def test_poll_once_resolves_pr_number_only_for_in_review_issues() -> None:
 
     state = poll_once([PROJECT_A], list_issues=list_issues, list_linked_prs=list_linked_prs)
 
-    assert resolved_calls == [("nosetech/project-a", 1)]
+    assert resolved_calls == [("nosetech/project-a", 1), ("nosetech/project-a", 2)]
     assert state.reviews[0].pr_number == 33
+    assert state.decisions[0].pr_number == 33
 
 
 def test_poll_once_reflects_label_transition_made_by_on_issues_fetched() -> None:
@@ -206,10 +211,12 @@ def test_run_polling_loop_stops_immediately_when_stop_event_already_set() -> Non
     assert updates == [1]
 
 
-def test_fetch_project_issues_resolves_pr_number_only_for_in_review() -> None:
+def test_fetch_project_issues_resolves_pr_number_only_for_in_review_and_decision() -> None:
     issues = [
         _issue("nosetech/project-a", 1, [STATUS_IN_REVIEW]),
         _issue("nosetech/project-a", 2, [STATUS_TODO]),
+        _issue("nosetech/project-a", 3, [STATUS_NEEDS_HUMAN_DECISION]),
+        _issue("nosetech/project-a", 4, [STATUS_IN_PROGRESS]),
     ]
 
     result = fetch_project_issues(
@@ -218,7 +225,7 @@ def test_fetch_project_issues_resolves_pr_number_only_for_in_review() -> None:
         list_linked_prs=lambda repo, n: [PrCandidate(number=100 + n, title="PR", url="u")],
     )
 
-    assert [(i.number, i.pr_number) for i in result] == [(1, 101), (2, None)]
+    assert [(i.number, i.pr_number) for i in result] == [(1, 101), (2, None), (3, 103), (4, None)]
 
 
 def test_poll_once_records_fetch_and_poll_timestamps() -> None:
@@ -252,3 +259,19 @@ def test_poll_once_leaves_pr_number_unset_when_candidates_are_ambiguous() -> Non
     assert [c.number for c in by_number[1].pr_candidates] == [33, 40]
     assert by_number[2].pr_number is None
     assert by_number[2].pr_candidates == []
+
+
+def test_poll_once_decision_without_pr_keeps_pr_unset() -> None:
+    """issue #270: 判断待ちでPR未作成（候補0件）でもエラーにならず未設定のまま。"""
+    fixtures = {
+        "nosetech/project-a": [_issue("nosetech/project-a", 1, [STATUS_NEEDS_HUMAN_DECISION])]
+    }
+
+    state = poll_once(
+        [PROJECT_A],
+        list_issues=lambda repo: fixtures[repo],
+        list_linked_prs=lambda repo, n: [],
+    )
+
+    assert state.decisions[0].pr_number is None
+    assert state.decisions[0].pr_candidates == []

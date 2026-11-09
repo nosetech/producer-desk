@@ -131,6 +131,8 @@ def _run_server(store: StateStore, **kwargs) -> tuple:
     # list_issuesを指定しないテストは、instruct/create_issue成功後の同期state再取得
     # （issue #70）で実際の`gh`コマンドを叩かないよう、空リストを返すフェイクを既定にする。
     kwargs.setdefault("list_issues", lambda repo: [])
+    # 判断待ちissueでもPR候補を解決するため（issue #270）、`gh pr list`も実際には叩かない。
+    kwargs.setdefault("list_linked_prs", lambda repo, n: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

@@ -20,7 +20,7 @@ from orchestrator.aggregation import (
 from orchestrator.config import DEFAULT_POLLING_INTERVAL_SECONDS, Project
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
-from orchestrator.labels import STATUS_IN_REVIEW
+from orchestrator.labels import STATUS_IN_REVIEW, STATUS_NEEDS_HUMAN_DECISION
 
 DEFAULT_INTERVAL_SECONDS = DEFAULT_POLLING_INTERVAL_SECONDS
 
@@ -29,17 +29,20 @@ ListLinkedPrsFn = Callable[[str, int], list[PrCandidate]]
 OnIssuesFetchedFn = Callable[[dict[str, list[IssueSummary]]], None]
 
 
-def _resolve_review_pr_numbers(
+def _resolve_pr_numbers(
     issues_by_repo: dict[str, list[IssueSummary]], list_linked_prs: ListLinkedPrsFn
 ) -> None:
-    """`status:in-review` のissueについてのみ対応PRの候補を解決する（issue #58, #206）。
+    """`status:in-review`・`needs-human-decision` のissueについてのみ対応PRの候補を解決する。
+
+    （issue #58, #206, #270）
 
     全issueに対して毎回PR一覧を取得するとポーリング負荷が増えるため、対象を絞る。
     `pr_number`は候補がちょうど1件で一意に特定できた場合のみセットする。
+    判断待ちではPR未作成（候補0件）が通常で、その場合は`pr_number=None`・候補空のまま。
     """
     for issues in issues_by_repo.values():
         for issue in issues:
-            if STATUS_IN_REVIEW in issue.labels:
+            if STATUS_IN_REVIEW in issue.labels or STATUS_NEEDS_HUMAN_DECISION in issue.labels:
                 candidates = list_linked_prs(issue.repo, issue.number)
                 issue.pr_candidates = candidates
                 issue.pr_number = candidates[0].number if len(candidates) == 1 else None
@@ -56,13 +59,13 @@ def fetch_project_issues(
     list_issues: ListIssuesFn = gh_list_issues,
     list_linked_prs: ListLinkedPrsFn = gh_list_linked_prs,
 ) -> list[IssueSummary]:
-    """1プロジェクト分のissueを取得し、`status:in-review` のPR番号を解決して返す（issue #197）。
+    """1プロジェクト分のissueを取得し、レビュー待ち・判断待ちのPR番号を解決して返す（issue #197）。
 
     `poll_once`（全プロジェクト）と、プロジェクト単位の再取得エンドポイントの双方から
     使う共通の取得ロジック。
     """
     issues = list_issues(project.repo)
-    _resolve_review_pr_numbers({project.repo: issues}, list_linked_prs)
+    _resolve_pr_numbers({project.repo: issues}, list_linked_prs)
     return issues
 
 
