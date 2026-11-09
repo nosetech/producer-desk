@@ -349,3 +349,22 @@
   color: var(--text-tertiary);
   white-space: nowrap;
 }
+
+.tipTitleLink {
+  text-decoration: none;
+  text-underline-offset: 2px;
+  border-radius: 3px;
+  outline-offset: 2px;
+  cursor: pointer;
+}
+
+.tipTitleLink:hover {
+  color: var(--accent-blue);
+  text-decoration: underline;
+}
+
+.tipTitleLink:focus-visible {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  outline: 2px solid var(--accent-blue);
+}
