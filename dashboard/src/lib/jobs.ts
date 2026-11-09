@@ -1,6 +1,7 @@
 import type { StageDef } from "./stageProgress";
 
-export type JobKind = "approve" | "merge" | "reply" | "new" | "rerun";
+export type JobKind =
+  "approve" | "merge" | "reply" | "new" | "rerun" | "relabel";
 
 /**
  * 画面操作（承認・マージ・返信・新規作成）のバックグラウンド実行状態（issue #212）。
@@ -64,6 +65,7 @@ const FAIL_NOUN: Record<JobKind, string> = {
   reply: "返信の送信",
   new: "issueの作成",
   rerun: "指示の再実行",
+  relabel: "レビュー待ちへの変更",
 };
 
 export function jobLabel(job: Pick<Job, "repo" | "number" | "kind">): string {

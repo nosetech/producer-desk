@@ -19,6 +19,8 @@
 
 状態ラベルは常に1つのみ付与される（[アーキテクチャ設計書 3章](./architecture.md#3-タスク状態管理)）。
 
+**UI操作による例外遷移（issue #274）**: AIの遷移漏れ等で本来レビュー待ちのissueが判断待ちになっている場合に備え、ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタンから、人間が `needs-human-decision` → `status:in-review` へ変更できる（[2-3](#2-3-指示出しapi)の`mark-in-review`）。ラベル変更のみで、AIへの指示コメントの投稿・ディスパッチは行わない。
+
 issueのクローズ操作自体（人間による手動クローズ、PRマージに伴う`Closes #<issue番号>`経由の自動クローズいずれも）はproducer-deskの外側で起きるため、`status:closed`はAgent Runnerではなくオーケストレータが付与する。次回ポーリング（[2-2](#2-2-データ取得仕様ポーリング)）で対象issueがクローズ済みであることを検知し、[「冪等な状態遷移フロー」](#冪等な状態遷移フロー)と同じ`transition_label`で他の状態ラベルを`status:closed`に置き換える。
 
 #### 管理対象外issueの扱い
@@ -196,6 +198,12 @@ Content-Type: application/json
 - 二重実行防止: 実行中・待機中は409。issue単位の`InstructInFlightLocks`も`instruct`と共有し、処理中は409。
 - 未処理指示が無い場合は422（`未処理の指示コメントがありません`）、管理対象外issueは400、対象issueが見つからない場合は404。
 
+**`POST /api/projects/{repo}/issues/{issue_number}/mark-in-review`（判断待ち→レビュー待ちへの変更、issue #274）**
+
+- 判断待ち（`needs-human-decision`）のissueを`status:in-review`へ変更する。AIの遷移漏れによる誤遷移を人間がUIから直すための保険で、`transition_label`で冪等にラベルだけを付け替える（コメント投稿・ディスパッチなし）。リクエストボディは任意（`progressId`のみ。`on_stage`は`remove` / `add`）。
+- 現在のラベルが`needs-human-decision`でない場合は409。未登録リポジトリは404。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では他の書き込み系APIと同様に403。
+- ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタン（確認ダイアログ付き）から呼ばれる。デザインは[design-prompt-dashboard-diff-relabel.md](./design-prompt-dashboard-diff-relabel.md)参照。
+
 ### 2-4. ダッシュボードの画面設計
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
@@ -246,6 +254,7 @@ echo "<指示内容>" | claude -p \
 - **ヘルスチェック**: ワンショット実行のため常時稼働のプロセス監視（ヘルスチェックエンドポイント等）は設けない。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueにコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与を第一とする。[1章](#1-データモデル状態遷移設計)参照）。**実行中の進捗確認は、プロセス監視ではなく後述のログ収集（`tail -f`によるリアルタイム追跡）で行う（issue #49）。**
   - **異常終了時のコメント文面**: 異常終了は大抵の場合APIリミット到達（429）が原因であり、その場合は終了コード・ログパスを提示しても人間が読むべき情報にならない（issue #146）。`run_agent_runner`はNDJSON出力の最後の`"type":"result"`イベント（`_parse_result_payload`、利用量記録用の`_extract_usage_records`と共通の抽出処理`_classify_run_error`（issue #60）を経由）から`is_error`/`api_error_status`を参照し、`api_error_status == 429`かつ`usage_store.parse_limit_reset_text()`で`result`の自由文から解除予定時刻（例: `resets 1pm (Asia/Tokyo)`）を抜き出せた場合に限り、「Claude CodeのAPI利用リミットに達したため停止しました」という趣旨のメッセージ（解除予定時刻付き）に切り替える（`agent_runner.py`の`_build_failure_comment`）。**429到達時でも`result`が空・非文字列で解除予定時刻等の情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り終了コード・ログパスを含むメッセージにフォールバックする**（予期しない例外等も同様）。**429以外の異常終了では、`result`が非空の文字列として得られていればコメント本文に「エラー内容: <result>」として含め（2000文字を超える場合は切り詰めて「…（省略、詳細はログを参照）」を付す）、ログパスも詳細調査用に併記する。`payload`が`None`（NDJSON出力が壊れている・`result`イベントが無い）または`result`が空/非文字列の場合は従来通りログパスのみのメッセージにフォールバックする（issue #190）**。いずれの場合も`needs-human-decision`へのラベル遷移自体は変わらない。
 - **正常終了時の決定的フォールバック**: プロセスが正常終了（exit 0）しても、Agent Runnerが上記の自己申告ラベル遷移（`AGENT_RUNNER_LABEL_INSTRUCTION`）を実行し忘れることがある（issue #70）。正常終了時、issueは必ず「PR作成済み（`status:in-review`）」「人間への確認が必要（`needs-human-decision`）」のいずれかに到達している設計であるため、オーケストレータは`run_agent_runner`の成功分岐でissueコメント投稿後に現在のラベルを再取得し、`status:in-progress`のまま変化していなければ（＝`needs-human-decision`・`status:in-review`いずれにも自己遷移していなければ）常に異常とみなし、`needs-human-decision`へ強制的に遷移させる（`result`テキストの自然文判定は行わない。既存の「異常終了時は`needs-human-decision`に強制遷移」ロジックと対称的な構造。issue #78）。Agent Runnerが既に自己遷移済みの場合、`transition_label`の冪等性によりこのフォールバックは何も行わない。
+  - **遷移先の判定（issue #274）**: `status:in-progress`のまま正常終了した場合、作業ブランチ（worktreeのカレントブランチ）をheadとするオープンPRがあれば、既存PRへの追加pushだけで終えて自己遷移を怠ったケースとみなして`status:in-review`へ遷移させる（あわせてPR本文へのissue参照補完を行う）。オープンPRが無い（または判定に失敗した）場合のみ従来どおり`needs-human-decision`へ遷移させる。CI待ちマーカーがある場合は従来どおりスキップする。また`AGENT_RUNNER_LABEL_INSTRUCTION`に「既存PRへの追加pushで終える場合も最終的に`status:in-review`へ遷移させる」旨を明記している。
   - **CI完了待ちとの区別（issue #173）**: 上記フォールバックは当初「`status:in-progress`のまま正常終了＝常にラベル遷移漏れ」と一律に扱っており、CI完了待ちのため意図的に（`AGENT_RUNNER_LABEL_INSTRUCTION`の指示通りに）ターンを終了したケースも区別できずに`needs-human-decision`へ落としてしまっていた。`run_agent_runner`は現在、最終応答（`result`）から`agent_runner.extract_ci_wait_marker`でCI待機マーカーの有無を確認し、マーカーが検出された場合のみこのフォールバックをスキップして`status:in-progress`を維持する。CI完了の検知・後続処理の自動再開は3-5節の`orchestrator.ci_watcher`が担う。
 - **ログ収集**: ログファイル（`logs/<repo>/<timestamp>.log`、`<timestamp>`はJST基準の`%Y%m%dT%H%M%S`。UTC基準・末尾`Z`表記だった旧形式から、`usage_store.py`の`_JST`と同じ前例に合わせて変更した。issue #114）はディスパッチ開始時点で作成し、以降は `claude` CLIの標準出力（NDJSON、3-1参照）を1行読むたびに都度ファイルへappendする（`agent_runner.py`の`_stream_process_output`。`subprocess.Popen`でプロセスを起動し、完了を待たずに読み取りを進める）。標準エラー出力は `stderr=subprocess.STDOUT` で標準出力ストリームに合流させ、取りこぼしを防ぐ（別スレッドでの並行読み取りは実装が複雑になる割に効果が変わらないため採用しなかった）。この方式により、実行中に `tail -f logs/<repo>/<timestamp>.log` でリアルタイムに進捗を追える（issue #49。旧方式では `subprocess.run(capture_output=True)` でプロセス終了まで標準出力・標準エラーをメモリにバッファし、終了後に一度だけログファイルへ書き出していたため、実行時間の長いタスクでは終了までログファイルが一切更新されなかった）。加えて、プロセス終了後にNDJSON全体から最後の `"type":"result"` イベントを取り出し（`_parse_result_payload`）、その `result` フィールドを要約としてissueコメントに投稿し、ダッシュボードのプロジェクト状況表示と連動させる。
 - **個別実行ログの保持クリーンアップ**: 「1実行＝1ファイル、実行完了まで同一ファイルへ追記」という書き込み方式自体は変更しない（NDJSONの一貫性・`tail -f`の継続性を壊さないため）。`run_agent_runner`の実行完了直後（正常終了・異常終了・worktree不在による早期リターンいずれの場合も）に、`agent_runner.py`の`cleanup_old_agent_logs`が当該リポジトリの`logs/<repo>/`配下を走査し、**更新日時（mtime）**が`log_retention_days`（2-1の`config/projects.yaml`設定値、既定7日）より古い`*.log`ファイルのみを削除する。ファイル名に埋め込まれた実行開始時刻ではなくmtimeで判定するのは、`_stream_process_output`が1行書くたびに`flush()`するため実行中のファイルは常にmtimeが「今」に近く、実行中は経過日数のカウントが始まらないため（`DispatchQueue.is_active()`等の別途のフラグ管理は不要。issue #114）。

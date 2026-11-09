@@ -906,10 +906,82 @@ def test_run_agent_runner_success_without_label_self_transition_falls_back_to_ne
         get_session_state_fn=get_session,
         persist_session_state_fn=FakePersistSessionState(),
         now=FIXED_NOW,
+        get_current_branch_fn=FakeGetCurrentBranch("feature/70-x"),
+        find_open_pr_by_branch_fn=FakeFindOpenPrByBranch(None),
     )
 
     assert result.success is True
     assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+
+
+def test_run_agent_runner_in_progress_with_open_pr_falls_back_to_in_review(
+    tmp_path: Path,
+) -> None:
+    """issue #274: 既存PRへの追加pushだけで終えて自己遷移を怠った場合はレビュー待ちへ遷移する。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "追加pushしました"})], returncode=0)
+    get_session = FakeGetSessionState({("nosetech/project-a", 254): "existing-id"})
+    append_fn = FakeAppendPrIssueReference()
+
+    result = run_agent_runner(
+        project,
+        254,
+        "dist/も修正してください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        resolve_pr_number_fn=FakeResolvePrNumber(None),
+        get_current_branch_fn=FakeGetCurrentBranch("feature/254-x"),
+        find_open_pr_by_branch_fn=FakeFindOpenPrByBranch({"number": 255, "body": "本文"}),
+        append_pr_issue_reference_fn=append_fn,
+    )
+
+    assert result.success is True
+    assert labels.labels == {STATUS_IN_REVIEW}
+    assert append_fn.calls == [("nosetech/project-a", 255, 254, "本文")]
+
+
+def test_run_agent_runner_in_progress_with_open_pr_and_ci_wait_marker_stays_in_progress(
+    tmp_path: Path,
+) -> None:
+    """issue #274: CI待ちマーカーがある場合はオープンPRがあってもin-progressを維持する。"""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_IN_PROGRESS})
+    comments = FakeComments()
+    result_text = f'CI待ち\n\n{agent_runner.CI_WAIT_MARKER_PREFIX}\n{{"pr_number": 255}}\n-->'
+    popen = FakePopenFactory(lines=[result_line({"result": result_text})], returncode=0)
+    get_session = FakeGetSessionState({("nosetech/project-a", 254): "existing-id"})
+
+    run_agent_runner(
+        project,
+        254,
+        "作業を進めてください",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=get_session,
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+        get_current_branch_fn=FakeGetCurrentBranch("feature/254-x"),
+        find_open_pr_by_branch_fn=FakeFindOpenPrByBranch({"number": 255, "body": ""}),
+    )
+
+    assert labels.labels == {STATUS_IN_PROGRESS}
 
 
 def test_run_agent_runner_success_with_ci_wait_marker_skips_forced_fallback(

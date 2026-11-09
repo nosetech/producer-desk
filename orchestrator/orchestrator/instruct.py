@@ -32,6 +32,7 @@ from orchestrator.labels import (
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
+    STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
     AddLabelFn,
     GetLabelsFn,
@@ -83,6 +84,48 @@ def _noop_on_stage(stage: str) -> None:
 
 class ReviewMergeError(RuntimeError):
     """レビュー承認時、対象issueに紐づくPRが見つからない場合に送出する（issue #58）。"""
+
+
+class NotNeedsHumanDecisionError(RuntimeError):
+    """判断待ち（needs-human-decision）でないissueをレビュー待ちへ変更しようとした場合に送出する。"""
+
+
+def handle_mark_in_review(
+    repo: str,
+    issue_number: int,
+    *,
+    get_labels: GetLabelsFn,
+    add_label: AddLabelFn,
+    remove_label: RemoveLabelFn,
+    on_stage: OnStageFn = _noop_on_stage,
+) -> None:
+    """判断待ちのissueをUI操作でレビュー待ち（status:in-review）へ変更する（issue #274）。
+
+    AIの遷移漏れによる誤遷移を人間が直すための操作。ラベル変更のみを行い、
+    AIへの指示コメントの投稿・ディスパッチは行わない。現在のラベルが
+    needs-human-decisionでない場合は`NotNeedsHumanDecisionError`を送出する。
+    """
+    if STATUS_NEEDS_HUMAN_DECISION not in get_labels(repo, issue_number):
+        raise NotNeedsHumanDecisionError(
+            f"{repo}#{issue_number} は判断待ちではないため、レビュー待ちへ変更できません"
+        )
+
+    def remove_and_notify(r: str, n: int, label: str) -> None:
+        remove_label(r, n, label)
+        on_stage("remove")
+
+    def add_and_notify(r: str, n: int, label: str) -> None:
+        add_label(r, n, label)
+        on_stage("add")
+
+    transition_label(
+        repo,
+        issue_number,
+        STATUS_IN_REVIEW,
+        get_labels=get_labels,
+        add_label=add_and_notify,
+        remove_label=remove_and_notify,
+    )
 
 
 class PrSelectionRequiredError(RuntimeError):

@@ -144,6 +144,22 @@ export function postRedispatch(
   );
 }
 
+/**
+ * 判断待ちのissueをレビュー待ち（status:in-review）へ変更する（issue #274）。
+ * ラベル変更のみで、AIへの指示コメントは投稿されない。
+ */
+export function postMarkInReview(
+  repo: string,
+  issueNumber: number,
+  progressId?: string,
+): Promise<{ label: string }> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}/mark-in-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ progressId }),
+  }).then((res) => parseJsonOrThrow<{ label: string }>(res));
+}
+
 export function postCreateIssue(
   repo: string,
   title: string,
