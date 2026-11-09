@@ -221,6 +221,8 @@ AGENT_RUNNER_LABEL_INSTRUCTION = (
     f"  {CI_WAIT_MARKER_PREFIX}\n"
     '  {"pr_number": <PR番号（整数）>}\n'
     "  -->\n"
+    "  既存のPRへ追加pushして作業を終える場合（status:in-reviewからの追加指示への対応など）も、"
+    "最終的に必ず上記のstatus:in-reviewへの遷移を実行してください。\n"
     "状態ラベル（status:todo / status:in-progress / needs-human-decision / "
     "status:in-review）は常にいずれか1つのみが付与されている状態を保ってください。"
 )
@@ -867,6 +869,25 @@ def _ensure_pr_issue_reference(
         )
 
 
+def _has_open_pr_for_worktree(
+    repo: str,
+    worktree_path: Path,
+    *,
+    get_current_branch_fn: GetCurrentBranchFn,
+    find_open_pr_by_branch_fn: FindOpenPrByBranchFn,
+) -> bool:
+    """worktreeのカレントブランチをheadとするオープンPRがあるかを返す（issue #274）。
+
+    判定に失敗した場合（`gh`/`git`の失敗）はFalse（従来どおり判断待ちへ倒す）。
+    """
+    try:
+        branch = get_current_branch_fn(str(worktree_path))
+        return find_open_pr_by_branch_fn(repo, branch) is not None
+    except subprocess.CalledProcessError:
+        logger.warning("オープンPRの有無の判定に失敗しました: %s", repo, exc_info=True)
+        return False
+
+
 _FAILURE_COMMENT_ERROR_MAX_CHARS = 2000
 
 
@@ -1119,14 +1140,33 @@ def run_agent_runner(
         current_labels = get_labels(project.repo, issue_number)
         if STATUS_IN_PROGRESS in current_labels:
             if extract_ci_wait_marker(summary) is None:
+                # issue #274: 作業ブランチに紐づくオープンPRがある場合は、既存PRへの
+                # 追加pushだけで終えて自己申告遷移を怠ったケースとみなし、
+                # レビュー待ちへ遷移させる（PRが無い場合のみ判断待ち）。
+                has_open_pr = _has_open_pr_for_worktree(
+                    project.repo,
+                    worktree_path,
+                    get_current_branch_fn=get_current_branch_fn,
+                    find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+                )
                 transition_label(
                     project.repo,
                     issue_number,
-                    STATUS_NEEDS_HUMAN_DECISION,
+                    STATUS_IN_REVIEW if has_open_pr else STATUS_NEEDS_HUMAN_DECISION,
                     get_labels=get_labels,
                     add_label=add_label,
                     remove_label=remove_label,
                 )
+                if has_open_pr:
+                    _ensure_pr_issue_reference(
+                        project.repo,
+                        issue_number,
+                        worktree_path,
+                        resolve_pr_number_fn=resolve_pr_number_fn,
+                        get_current_branch_fn=get_current_branch_fn,
+                        find_open_pr_by_branch_fn=find_open_pr_by_branch_fn,
+                        append_pr_issue_reference_fn=append_pr_issue_reference_fn,
+                    )
         elif STATUS_IN_REVIEW in current_labels:
             _ensure_pr_issue_reference(
                 project.repo,

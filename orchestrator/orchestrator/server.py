@@ -63,12 +63,15 @@ from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE_SPEC,
+    NotNeedsHumanDecisionError,
     PrSelectionRequiredError,
     ReviewMergeError,
     handle_create_issue,
     handle_instruct,
+    handle_mark_in_review,
 )
 from orchestrator.labels import (
+    STATUS_IN_REVIEW,
     AddLabelFn,
     GetLabelsFn,
     RemoveLabelFn,
@@ -106,6 +109,10 @@ DISPATCH_STATUS_PATH = re.compile(
 )
 REDISPATCH_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/redispatch$"
+)
+# 判断待ち→レビュー待ちへのUI操作による変更（issue #274）。ラベル変更のみ。
+MARK_IN_REVIEW_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/mark-in-review$"
 )
 # 単一issueの本文・コメント取得（issue #231）。返信UIの引用表示用。
 ISSUE_DETAIL_PATH = re.compile(
@@ -552,6 +559,14 @@ def _make_handler(
                 )
                 return
 
+            mark_in_review_match = MARK_IN_REVIEW_PATH.match(self.path)
+            if mark_in_review_match:
+                self._handle_mark_in_review(
+                    mark_in_review_match.group("repo"),
+                    int(mark_in_review_match.group("issue_number")),
+                )
+                return
+
             create_issue_match = CREATE_ISSUE_PATH.match(self.path)
             if create_issue_match:
                 self._handle_create_issue(create_issue_match.group("repo"))
@@ -846,6 +861,54 @@ def _make_handler(
                     200,
                     {"dispatched": True, "comment": status.pending_message, "state": status.state},
                 )
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
+        def _handle_mark_in_review(self, repo: str, issue_number: int) -> None:
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+
+            if not instruct_locks.try_acquire(repo, issue_number):
+                message = f"{repo}#{issue_number} は他の操作を処理中です。しばらくお待ちください"
+                self._send_json(409, {"error": message})
+                return
+
+            progress_id: str | None = None
+            try:
+                try:
+                    payload = self._read_json_body()
+                    progress_id = payload.get("progressId") if isinstance(payload, dict) else None
+                    if not isinstance(progress_id, str):
+                        progress_id = None
+                except ValueError:
+                    progress_id = None
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
+                try:
+                    handle_mark_in_review(
+                        repo,
+                        issue_number,
+                        get_labels=get_labels,
+                        add_label=add_label,
+                        remove_label=remove_label,
+                        on_stage=on_stage,
+                    )
+                except NotNeedsHumanDecisionError as e:
+                    self._send_json(409, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+                finally:
+                    instruct_locks.release(repo, issue_number)
+
+                self._refresh_store()
+                self._send_json(200, {"label": STATUS_IN_REVIEW})
             finally:
                 if progress_id:
                     progress_store.clear(progress_id)
