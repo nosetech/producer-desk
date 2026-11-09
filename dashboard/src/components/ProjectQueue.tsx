@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -216,9 +217,21 @@ function QueueTooltip({
   const meta = entry.label ? statusMeta(entry.label) : null;
   return (
     <>
-      {pinned && <div className={styles.backdrop} onClick={onClose} />}
+      {pinned && (
+        <div
+          className={styles.backdrop}
+          onClick={(e) => {
+            // ポータル内のクリックもReactツリー上は親チップへバブリングするため止める
+            e.stopPropagation();
+            onClose();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        />
+      )}
       <div
         role="tooltip"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
         className={`${styles.tip} ${pinned ? styles.tipPinned : ""}`}
         style={{
           left,
@@ -247,7 +260,10 @@ function QueueTooltip({
               className={styles.tipClose}
               aria-label="閉じる"
               title="閉じる"
-              onClick={onClose}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
             >
               <CloseIcon size={13} />
             </button>
@@ -255,9 +271,20 @@ function QueueTooltip({
         </div>
         {entry.title !== null && (
           <>
-            <div className={styles.tipTitle}>
-              {truncateQueueTitle(entry.title)}
-            </div>
+            {pinned ? (
+              <Link
+                href={`/projects/${repo}`}
+                className={`${styles.tipTitle} ${styles.tipTitleLink}`}
+                title={`${repo} のissue一覧を開く`}
+                onClick={onClose}
+              >
+                {truncateQueueTitle(entry.title)}
+              </Link>
+            ) : (
+              <div className={styles.tipTitle}>
+                {truncateQueueTitle(entry.title)}
+              </div>
+            )}
             <div className={styles.tipMeta}>
               <span
                 className={styles.tipBadge}
