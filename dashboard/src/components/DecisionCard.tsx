@@ -39,6 +39,49 @@ function CheckIcon({ size = 15 }: { size?: number }) {
   );
 }
 
+function PrIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="18" r="3" />
+      <path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-3" />
+      <path d="M12 3 9 6l3 3" />
+    </svg>
+  );
+}
+
+function PrCandidateIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <path d="M6 9v6M18 9v1a2 2 0 0 1-2 2H8" />
+    </svg>
+  );
+}
+
 function ReplyIcon() {
   return (
     <svg
@@ -82,6 +125,12 @@ export default function DecisionCard({
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
   const repoName = decision.repo.split("/")[1];
+  // 判断待ちでは対応PR未作成が通常のため、候補0件のときは何も表示しない（issue #270）。
+  const prCandidateCount = (decision.pr_candidates ?? []).length;
+  const prUrl =
+    decision.pr_number != null
+      ? `https://github.com/${decision.repo}/pull/${decision.pr_number}`
+      : null;
 
   function openConfirm() {
     if (busy) return;
@@ -130,28 +179,50 @@ export default function DecisionCard({
           {formatRelativeTime(decision.updated_at)}
         </span>
       </div>
-      <a
-        href={titleUrl}
-        target="_blank"
-        rel="noreferrer"
-        className={styles.title}
-      >
-        <span>{decision.title}</span>
-        <svg
-          className={styles.titleIcon}
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      <div className={styles.titleRow}>
+        <a
+          href={titleUrl}
+          target="_blank"
+          rel="noreferrer"
+          className={styles.title}
         >
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-          <path d="M15 3h6v6M10 14 21 3" />
-        </svg>
-      </a>
+          <span>{decision.title}</span>
+          <svg
+            className={styles.titleIcon}
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            <path d="M15 3h6v6M10 14 21 3" />
+          </svg>
+        </a>
+        {prUrl ? (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={prUrl}
+            className={styles.prLink}
+          >
+            <PrIcon />
+            PR #{decision.pr_number}
+          </a>
+        ) : prCandidateCount > 1 ? (
+          <span
+            className={styles.prCandidateChip}
+            title="対応PRの候補が複数あります。承認・返信の前にGitHubで確認してください"
+          >
+            <PrCandidateIcon />
+            PR候補 {prCandidateCount}件
+          </span>
+        ) : null}
+      </div>
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
