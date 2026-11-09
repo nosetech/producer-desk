@@ -134,6 +134,55 @@ def test_run_polling_loop_calls_on_update_each_cycle_until_stopped() -> None:
     assert updates == [1, 2, 3]
 
 
+def test_run_polling_loop_continues_after_exception() -> None:
+    calls = 0
+    updates: list[int] = []
+    stop_event = threading.Event()
+
+    def list_issues(repo: str) -> list[IssueSummary]:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise RuntimeError("gh issue list failed")
+        return []
+
+    def on_update(state: object) -> None:
+        updates.append(calls)
+        stop_event.set()
+
+    run_polling_loop(
+        [PROJECT_A],
+        interval_seconds=0,
+        on_update=on_update,
+        list_issues=list_issues,
+        stop_event=stop_event,
+    )
+
+    assert calls == 3
+    assert updates == [3]
+
+
+def test_run_polling_loop_continues_after_on_update_exception() -> None:
+    updates: list[int] = []
+    stop_event = threading.Event()
+
+    def on_update(state: object) -> None:
+        updates.append(1)
+        if len(updates) == 1:
+            raise RuntimeError("boom")
+        stop_event.set()
+
+    run_polling_loop(
+        [PROJECT_A],
+        interval_seconds=0,
+        on_update=on_update,
+        list_issues=lambda repo: [],
+        stop_event=stop_event,
+    )
+
+    assert updates == [1, 1]
+
+
 def test_run_polling_loop_stops_immediately_when_stop_event_already_set() -> None:
     updates: list[int] = []
     stop_event = threading.Event()

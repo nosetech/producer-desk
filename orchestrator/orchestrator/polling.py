@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -114,6 +115,9 @@ def poll_once(
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def run_polling_loop(
     projects: list[Project],
     *,
@@ -133,15 +137,28 @@ def run_polling_loop(
     """
     stop = stop_event or threading.Event()
 
+    consecutive_failures = 0
     while True:
-        state = poll_once(
-            projects,
-            list_issues=list_issues,
-            list_linked_prs=list_linked_prs,
-            on_issues_fetched=on_issues_fetched,
-            is_dispatch_active=is_dispatch_active,
-        )
-        on_update(state)
+        try:
+            state = poll_once(
+                projects,
+                list_issues=list_issues,
+                list_linked_prs=list_linked_prs,
+                on_issues_fetched=on_issues_fetched,
+                is_dispatch_active=is_dispatch_active,
+            )
+            on_update(state)
+            if consecutive_failures:
+                logger.info("ポーリングが復旧しました（連続失敗 %d 回後）", consecutive_failures)
+            consecutive_failures = 0
+        except Exception:
+            # `gh`の一時的な失敗等でスレッドが終了すると、クローズ検知・コメント検知・
+            # CI待機検知が全て止まるため、記録して次周期へ進む（issue #277）。
+            consecutive_failures += 1
+            logger.exception(
+                "ポーリング周期でエラーが発生しました（連続失敗 %d 回）。次周期で再試行します",
+                consecutive_failures,
+            )
 
         if stop.wait(interval_seconds):
             return
