@@ -74,6 +74,14 @@ export interface ProjectQueue {
  * 向け集計。かつての横断タイムライン（`activity`）はissue #121で廃止され、この
  * フィールドに一本化された。
  */
+/** 「作業中」のうちキューに載っていない分の理由別件数（issue #272）。 */
+export interface InProgressBreakdown {
+  /** CI完了待ち（Agent Runnerが意図的に待機中の正常な状態）。 */
+  ci_waiting: number;
+  /** ラベルだけin-progressで実行プロセスが無い孤立状態（issue #50）。 */
+  orphaned: number;
+}
+
 export interface ProjectStatusSummary {
   repo: string;
   /** 直近更新issueの状態ラベル。管理対象issueが1件も無いリポジトリはnull。 */
@@ -88,6 +96,8 @@ export interface ProjectStatusSummary {
   fetched_at: string | null;
   /** リクエスト時点のディスパッチキュー状態（issue #233）。 */
   queue: ProjectQueue;
+  /** 「作業中」件数のうちキュー外の理由別内訳（リクエスト時点、issue #272）。 */
+  in_progress_breakdown?: InProgressBreakdown;
 }
 
 export interface AggregatedState {

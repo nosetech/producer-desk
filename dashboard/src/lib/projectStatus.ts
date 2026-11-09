@@ -1,6 +1,7 @@
 import { EMPTY_STATUS_COUNTS } from "./types";
 import { STATUS_TODO, type StatusLabel } from "./status";
 import type {
+  InProgressBreakdown,
   IssueSummary,
   ProjectExecutionSettings,
   ProjectQueue,
@@ -17,6 +18,8 @@ export interface ProjectStatus {
   fetchedAt: string | null;
   /** ディスパッチキューの状態（issue #233）。 */
   queue: ProjectQueue;
+  /** 「作業中」のうちキュー外の理由別件数（issue #272）。 */
+  inProgressBreakdown: InProgressBreakdown;
   executionSettings: ProjectExecutionSettings;
 }
 
@@ -56,6 +59,10 @@ export function deriveProjectStatus(
     counts,
     fetchedAt: status?.fetched_at ?? null,
     queue: status?.queue ?? { running: null, waiting: [] },
+    inProgressBreakdown: status?.in_progress_breakdown ?? {
+      ci_waiting: 0,
+      orphaned: 0,
+    },
     executionSettings: executionSettings ?? {
       execution_mode: "claude_code",
       litellm_model: null,

@@ -30,6 +30,7 @@ from orchestrator.aggregation import (
     build_project_queue,
 )
 from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
+from orchestrator.ci_watcher import build_in_progress_breakdown
 from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
@@ -428,6 +429,11 @@ def _make_handler(
                     build_project_queue(
                         dispatch_queue.snapshot(repo), state.issues_by_repo.get(repo, [])
                     )
+                )
+                # 「作業中」件数のうちキューに載っていない分の理由（issue #272）。件数はGitHubの
+                # ラベル由来で、キューはメモリ上の状態のため、同じリクエスト時点で突き合わせる。
+                project["in_progress_breakdown"] = build_in_progress_breakdown(
+                    state.issues_by_repo.get(repo, []), dispatch_queue.is_active
                 )
             return payload
 
