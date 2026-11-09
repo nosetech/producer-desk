@@ -38,6 +38,11 @@ from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.logging_config import configure_logging
 from orchestrator.polling import run_polling_loop
+from orchestrator.polling_health import (
+    PollingHealth,
+    PollingHealthNotifier,
+    run_health_watchdog,
+)
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
 
@@ -138,6 +143,10 @@ def main() -> None:
     ci_wait_tracker = CiWaitTracker()
     decision_notifier = DecisionNotifier()
     review_notifier = ReviewNotifier()
+    polling_health = PollingHealth()
+    health_notifier = PollingHealthNotifier(
+        polling_health, interval_seconds=polling_interval_seconds
+    )
 
     def on_issues_fetched(issues_by_repo: dict) -> None:
         if read_only:
@@ -187,10 +196,18 @@ def main() -> None:
             "on_issues_fetched": on_issues_fetched,
             "is_dispatch_active": dispatch_queue.is_active,
             "stop_event": stop_event,
+            "health": polling_health,
         },
         daemon=True,
     )
     polling_thread.start()
+    if not read_only:
+        # ポーリングスレッドが停止・停滞しても検知できるよう別スレッドで監視する（issue #279）
+        threading.Thread(
+            target=run_health_watchdog,
+            args=(health_notifier, stop_event),
+            daemon=True,
+        ).start()
 
     port = int(os.environ.get(PORT_ENV, DEFAULT_PORT))
     server = make_server(
@@ -201,6 +218,8 @@ def main() -> None:
         dashboard_settings=dashboard_settings,
         github_token=attachment_token,
         read_only=read_only,
+        polling_health=polling_health,
+        polling_interval_seconds=polling_interval_seconds,
     )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",

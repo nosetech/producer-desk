@@ -21,6 +21,7 @@ from orchestrator.config import DEFAULT_POLLING_INTERVAL_SECONDS, Project
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.labels import STATUS_IN_REVIEW, STATUS_NEEDS_HUMAN_DECISION
+from orchestrator.polling_health import PollingHealth
 
 DEFAULT_INTERVAL_SECONDS = DEFAULT_POLLING_INTERVAL_SECONDS
 
@@ -131,6 +132,7 @@ def run_polling_loop(
     on_issues_fetched: OnIssuesFetchedFn | None = None,
     is_dispatch_active: IsDispatchActiveFn | None = None,
     stop_event: threading.Event | None = None,
+    health: PollingHealth | None = None,
 ) -> None:
     """ポーリングを繰り返し、更新のたびに `on_update` を呼び出す。
 
@@ -154,10 +156,14 @@ def run_polling_loop(
             if consecutive_failures:
                 logger.info("ポーリングが復旧しました（連続失敗 %d 回後）", consecutive_failures)
             consecutive_failures = 0
-        except Exception:
+            if health is not None:
+                health.record_success()
+        except Exception as e:
             # `gh`の一時的な失敗等でスレッドが終了すると、クローズ検知・コメント検知・
             # CI待機検知が全て止まるため、記録して次周期へ進む（issue #277）。
             consecutive_failures += 1
+            if health is not None:
+                health.record_failure(e)
             logger.exception(
                 "ポーリング周期でエラーが発生しました（連続失敗 %d 回）。次周期で再試行します",
                 consecutive_failures,

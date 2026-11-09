@@ -492,6 +492,14 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 
 起動時点で既に`needs-human-decision`・`status:in-review`のissueは「既知」として扱い通知しない（[2-3「共通仕様」](#2-3-指示出しapi内部api)のコメント検知と同様、オーケストレータ再起動のたびに既存の判断待ち・レビュー待ちを再通知しないための方針）。以降のポーリングで新規に判断待ち・レビュー待ちになったissueのみを、それぞれ独立に（`DecisionNotifier`・`ReviewNotifier`として）通知する。`SLACK_WEBHOOK_URL`が未設定の場合は通知処理をスキップする（起動失敗にはしない）。
 
+### 5-2a. ポーリング異常の通知とヘルスチェック（issue #279）
+
+ポーリングループ自身の最終成功時刻・連続失敗回数を、`server._refresh_store`由来の`last_polled_at`とは別に保持する（`orchestrator/polling_health.py`）。
+
+- 連続3回失敗、または最終成功からポーリング間隔の3倍（下限15分）以上経過（停滞）した場合、Slackに1回だけ通知する。同一障害中は再通知せず、復旧時に復旧通知を1回送る
+- 停滞はポーリングスレッドとは別の監視スレッドが60秒ごとに評価するため、ポーリングが完全に止まっても検知できる
+- `GET /api/health` が `polling.{last_success_at, consecutive_failures, last_error, seconds_since_last_success, stalled}` を返す
+
 ### 5-3. ダッシュボードからの指示出し操作の内部処理フロー
 
 **承認・自由記述（既存issueへの指示）**

@@ -31,7 +31,11 @@ from orchestrator.aggregation import (
 )
 from orchestrator.attachments import AttachmentError, AttachmentResponse, fetch_attachment
 from orchestrator.ci_watcher import build_in_progress_breakdown
-from orchestrator.config import DEFAULT_DASHBOARD_SETTINGS, Project
+from orchestrator.config import (
+    DEFAULT_DASHBOARD_SETTINGS,
+    DEFAULT_POLLING_INTERVAL_SECONDS,
+    Project,
+)
 from orchestrator.config import update_project_execution_settings as cfg_update_execution_settings
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.dispatch_status import (
@@ -81,6 +85,7 @@ from orchestrator.labels import (
     gh_remove_label,
 )
 from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, poll_once
+from orchestrator.polling_health import PollingHealth
 from orchestrator.prompts import (
     USER_NAME_SPEC,
     PromptSpec,
@@ -281,6 +286,8 @@ def _make_handler(
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
     read_only: bool = False,
+    polling_health: PollingHealth | None = None,
+    polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -328,6 +335,19 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandlerのインターフェースに合わせる)
             if self.path == "/api/state":
                 self._handle_state()
+                return
+            if self.path == "/api/health":
+                if polling_health is None:
+                    self._send_json(200, {"polling": None})
+                else:
+                    self._send_json(
+                        200,
+                        {
+                            "polling": polling_health.snapshot(
+                                interval_seconds=polling_interval_seconds
+                            )
+                        },
+                    )
                 return
             if self.path == "/api/usage":
                 self._handle_usage()
@@ -992,6 +1012,8 @@ def make_server(
     github_token: str | None = None,
     fetch_attachment_fn: FetchAttachmentFn = fetch_attachment,
     read_only: bool = False,
+    polling_health: PollingHealth | None = None,
+    polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -1018,6 +1040,8 @@ def make_server(
         github_token=github_token,
         fetch_attachment_fn=fetch_attachment_fn,
         read_only=read_only,
+        polling_health=polling_health,
+        polling_interval_seconds=polling_interval_seconds,
         dashboard_settings=(
             dashboard_settings if dashboard_settings is not None else DEFAULT_DASHBOARD_SETTINGS
         ),
