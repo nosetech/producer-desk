@@ -16,6 +16,7 @@ import {
   type UpdateProjectSettingsResult,
   type UsageResponse,
 } from "./types";
+import type { PlanErrorKind } from "./planFlow";
 import {
   DEFAULT_DASHBOARD_SETTINGS,
   parseDashboardSettings,
@@ -158,6 +159,52 @@ export function postMarkInReview(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ progressId }),
   }).then((res) => parseJsonOrThrow<{ label: string }>(res));
+}
+
+/** 計画生成APIのエラー。`kind`でダッシュボードのエラー表示を切り替える。 */
+export class PlanApiError extends Error {
+  readonly kind: PlanErrorKind;
+
+  constructor(message: string, kind: PlanErrorKind) {
+    super(message);
+    this.name = "PlanApiError";
+    this.kind = kind;
+  }
+}
+
+/**
+ * やりたいことからissueの計画（タイトル・本文）をAIに作成させる（issue #287）。
+ * issueは作成しない。承認後の登録は`postCreateIssue`を使う。
+ */
+export async function postIssuePlan(
+  repo: string,
+  input: {
+    request: string;
+    previousPlan?: { title: string; body: string };
+    instruction?: string;
+    /** モデル選択値（`claude_code` / `litellm:<alias>`）。省略時はプロジェクトの既定。 */
+    model?: string;
+  },
+  progressId?: string,
+): Promise<{ title: string; body: string }> {
+  const res = await fetch(`${repoPath(repo)}/issue-plans`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...input, progressId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const code = data?.code;
+    const kind: PlanErrorKind =
+      code === "parse" || code === "timeout" || code === "limit"
+        ? code
+        : "failed";
+    throw new PlanApiError(
+      typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
+      kind,
+    );
+  }
+  return data as { title: string; body: string };
 }
 
 export function postCreateIssue(

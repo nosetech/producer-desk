@@ -75,6 +75,14 @@ from orchestrator.instruct import (
     handle_instruct,
     handle_mark_in_review,
 )
+from orchestrator.issue_plan import (
+    PLAN_ISSUE_SPEC,
+    IssuePlan,
+    PlanError,
+    PlanRunner,
+    generate_plan,
+    parse_model_choice,
+)
 from orchestrator.labels import (
     STATUS_IN_REVIEW,
     AddLabelFn,
@@ -125,6 +133,8 @@ ISSUE_DETAIL_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)$"
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
+# AIによるissue計画の生成（issue #287）。issueは作成しない。
+ISSUE_PLANS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issue-plans$")
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 # プロジェクト単位のissue・ラベル情報の再取得（issue #197）。
@@ -132,6 +142,7 @@ REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh
 # 全プロジェクトの再取得（issue #197）。
 REFRESH_ALL_PATH = "/api/refresh"
 # 読み取り専用モード（issue #241）で書き込み系リクエストを拒否する際のメッセージ。
+GeneratePlanFn = Callable[..., IssuePlan]
 READ_ONLY_ERROR = "読み取り専用モードのため、書き込み系の操作は実行できません"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
@@ -144,6 +155,7 @@ PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
 PROMPT_SPECS: tuple[PromptSpec, ...] = (
     *AGENT_RUNNER_PROMPT_SPECS,
+    PLAN_ISSUE_SPEC,
     APPROVE_DEFAULT_MESSAGE_SPEC,
     USER_NAME_SPEC,
 )
@@ -288,6 +300,8 @@ def _make_handler(
     read_only: bool = False,
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
+    plan_runner: PlanRunner | None = None,
+    generate_plan_fn: GeneratePlanFn = generate_plan,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     instruct_locks = InstructInFlightLocks()
@@ -566,6 +580,12 @@ def _make_handler(
             refresh_match = REFRESH_PROJECT_PATH.match(self.path)
             if refresh_match:
                 self._handle_refresh_project(refresh_match.group("repo"))
+                return
+
+            # 計画生成はGitHubへ書き込まない（issueは作成しない）ため読み取り専用でも許可する。
+            plans_match = ISSUE_PLANS_PATH.match(self.path)
+            if plans_match:
+                self._handle_issue_plan(plans_match.group("repo"))
                 return
 
             if self._reject_if_read_only():
@@ -939,6 +959,67 @@ def _make_handler(
                 if progress_id:
                     progress_store.clear(progress_id)
 
+        def _handle_issue_plan(self, repo: str) -> None:
+            """issue #287: やりたいことからissueの計画（タイトル・本文）を生成して返す。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            if plan_runner is None:
+                self._send_json(503, {"error": "計画生成は利用できません"})
+                return
+            progress_id: str | None = None
+            try:
+                try:
+                    payload = self._read_json_body()
+                    if not isinstance(payload, dict):
+                        raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
+                    pid = payload.get("progressId")
+                    progress_id = pid if isinstance(pid, str) else None
+                    request_text = payload.get("request")
+                    if not isinstance(request_text, str) or not request_text.strip():
+                        raise ValueError("requestは空でない文字列である必要があります")
+                    previous = payload.get("previousPlan")
+                    previous_plan: IssuePlan | None = None
+                    if previous is not None:
+                        if (
+                            not isinstance(previous, dict)
+                            or not isinstance(previous.get("title"), str)
+                            or not isinstance(previous.get("body"), str)
+                        ):
+                            raise ValueError("previousPlanはtitle・bodyを持つ必要があります")
+                        previous_plan = IssuePlan(previous["title"], previous["body"])
+                    instruction = payload.get("instruction")
+                    if instruction is not None and not isinstance(instruction, str):
+                        raise ValueError("instructionは文字列である必要があります")
+                except ValueError as e:
+                    self._send_json(400, {"error": str(e)})
+                    return
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
+                project = projects_by_repo[repo]
+                try:
+                    plan = plan_runner.submit(
+                        project,
+                        lambda: generate_plan_fn(
+                            project,
+                            request_text,
+                            previous_plan,
+                            instruction,
+                            model_override=parse_model_choice(payload.get("model")),
+                        ),
+                        on_stage=on_stage,
+                    )
+                except PlanError as e:
+                    self._send_json(e.status, {"error": str(e), "code": e.code})
+                    return
+                self._send_json(200, {"title": plan.title, "body": plan.body})
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
         def _handle_create_issue(self, repo: str) -> None:
             if repo not in known_repos:
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
@@ -1014,6 +1095,8 @@ def make_server(
     read_only: bool = False,
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
+    plan_runner: PlanRunner | None = None,
+    generate_plan_fn: GeneratePlanFn = generate_plan,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -1040,6 +1123,8 @@ def make_server(
         github_token=github_token,
         fetch_attachment_fn=fetch_attachment_fn,
         read_only=read_only,
+        plan_runner=plan_runner,
+        generate_plan_fn=generate_plan_fn,
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         dashboard_settings=(
