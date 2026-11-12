@@ -161,6 +161,20 @@ Content-Type: application/json
 - `dispatch: "immediate"`: 作成直後に上記「既存issueへの指示」の `instruct` と同じ扱いで即時ディスパッチ（またはプロジェクトが実行中ならキュー）する。
 - `dispatch: "queued"`: `status:todo` のまま登録するだけでディスパッチしない。後日、ダッシュボードから当該issueに `instruct` を送ることで着手させる。
 
+#### AIによる計画作成（issue計画生成API、issue #287）
+
+新規タスク作成で「AIに計画してもらう」を選んだとき、「やりたいこと」からissueのタイトル・本文（計画）をAIに作成させる。**この時点ではissueを作らない**。承認後の登録は既存の `POST /api/projects/{repo}/issues`（上記「新規タスクの作成」、`status:todo`付与・`immediate`/`queued`選択）をそのまま使う。
+
+- `POST /api/projects/{repo}/issue-plans`
+  - リクエスト: `{ "request": string, "previousPlan"?: {"title","body"}, "instruction"?: string, "model"?: string, "progressId"?: string }`。`previousPlan`と`instruction`を渡すと、既存の計画に修正指示を反映した版を返す（何度でも繰り返せる）。`model`は`claude_code` / `litellm:<alias>`（省略時はプロジェクトの既定の実行手段）。
+  - 成功: `200 { "title", "body" }`。失敗: `{ "error", "code" }`。`code`は`parse`（出力からタイトル・本文を取り出せない、502）/ `timeout`（600秒、504）/ `limit`（利用リミット、429）/ `failed`（その他、502）。入力不正は400、未登録リポジトリは404。
+- 実行: `claude -p --output-format json --permission-mode plan`を、プロジェクトのworktreeを`cwd`にワンショット実行する。`--dangerously-skip-permissions`は使わず、`--disallowedTools Edit Write NotebookEdit Bash`で変更系ツールを禁止する（コード変更・ラベル操作・コメント投稿は行わせない）。実行前にworktreeを`origin/develop`最新のdetached HEADへ合わせる（未コミットの変更がある場合・fetch失敗時は触らずに続行）。
+- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す。キュー投入・worktree取得は`issue_plan.PlanRunner`に集約しており、将来worktreeを動的に作成して並行化する際はここを差し替える。
+- 進捗: `/api/progress/{progress_id}`のポーリングで、待機中は`plan_queued:<順位>`、実行中は`plan_running`を返す（ダッシュボードが「待機中（キュー◯番目）」「計画を作成中」を区別表示）。
+- 読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）: GitHubへ書き込まないため計画生成は許可する（その後のissue登録は403）。
+- プロンプト: 出力形式（`{"title","body"}`のJSONをコードブロックで1つ）と調査の指示はプロンプト設定の`plan_issue_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で編集・リセットできる。必須トークンは`"title"` / `"body"`、使えるプレースホルダは`{repo}` / `{user_name}`（`{issue_number}`は未作成のため不可）。修正指示時も同じプロンプトを使い、現在の計画と修正指示をユーザーメッセージとして渡す。
+- 画面: 新規タスク作成パネルの「自分で書く / AIに計画してもらう」切替、計画確認（タイトル・本文の直接編集、AIへの修正指示、「承認して登録」「やり直す」「キャンセル」）。デザインは[design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md)参照。
+
 #### 共通仕様
 
 - 認証は[6-2](#6-2-ネットワークアクセスの認証設計)の通りアプリレベルの追加認証は行わず、ネットワーク境界（MVPでは同一LAN内アクセスであること）に委ねる。
@@ -295,10 +309,10 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下8種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下9種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -308,6 +322,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
   | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
   | `dev_instance_instruction` | 動作確認用のorchestrator・dashboardを`bin/dev_instance.sh`経由で起動・停止させ、名前・ポート指定のkill（`pkill`等）の禁止、`NODE_ENV`の除去、読み取り専用モード、見た目を確認できなかった場合の原因明記の指示（issue #238・#241） | なし |
+  | `plan_issue_instruction` | 新規タスク作成の「AIに計画してもらう」で、やりたいことからissueのタイトル・本文を作成させる指示（出力JSON形式、読み取り専用の制約。issue #287） | `"title"` / `"body"` |
   | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
   | `user_name` | ユーザーの呼称（既定「ユーザー」） | なし |
 

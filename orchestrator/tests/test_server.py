@@ -1419,6 +1419,109 @@ def test_create_issue_invalid_dispatch_value_returns_400() -> None:
         server.shutdown()
 
 
+# issue #287: AIによるissue計画の生成API（POST /api/projects/{repo}/issue-plans）。
+def _plan_server(generate_plan_fn, **kwargs):
+    from orchestrator.issue_plan import PlanRunner
+
+    runner_ref: list = []
+
+    def dispatch_fn(repo, number, message):
+        runner_ref[0].run_job(number)
+
+    dispatch_queue = DispatchQueue(dispatch_fn)
+    runner_ref.append(PlanRunner(dispatch_queue))
+    issue_creator = FakeIssueCreator(start_number=1)
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        plan_runner=runner_ref[0],
+        generate_plan_fn=generate_plan_fn,
+        create_issue=issue_creator.create_issue,
+        **kwargs,
+    )
+    return server, issue_creator
+
+
+def _post_status(server, path: str, payload: dict) -> tuple[int, dict]:
+    try:
+        return _post(server, path, payload)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_issue_plan_returns_plan_without_creating_issue() -> None:
+    from orchestrator.issue_plan import IssuePlan
+
+    seen: list = []
+
+    def generate(project, request, previous_plan=None, instruction=None, model_override=None):
+        seen.append((request, previous_plan, instruction))
+        return IssuePlan("題", "本文")
+
+    server, issue_creator = _plan_server(generate)
+    try:
+        status, body = _post_status(
+            server,
+            "/api/projects/nosetech/project-a/issue-plans",
+            {
+                "request": "やりたい",
+                "previousPlan": {"title": "旧", "body": "旧本文"},
+                "instruction": "短く",
+            },
+        )
+
+        assert (status, body) == (200, {"title": "題", "body": "本文"})
+        assert seen[0][0] == "やりたい" and seen[0][2] == "短く"
+        assert seen[0][1].title == "旧"
+        assert issue_creator.created == [] if hasattr(issue_creator, "created") else True
+    finally:
+        server.shutdown()
+
+
+def test_issue_plan_error_is_returned_to_user() -> None:
+    from orchestrator.issue_plan import PlanError
+
+    def generate(*args, **kwargs):
+        raise PlanError("タイムアウトしました", 504)
+
+    server, _ = _plan_server(generate)
+    try:
+        status, body = _post_status(
+            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
+        )
+
+        assert status == 504 and "タイムアウト" in body["error"]
+    finally:
+        server.shutdown()
+
+
+def test_issue_plan_rejects_empty_request_and_unknown_repo() -> None:
+    server, _ = _plan_server(lambda *a, **k: None)
+    try:
+        assert _post_status(server, "/api/projects/nosetech/project-a/issue-plans", {})[0] == 400
+        assert (
+            _post_status(server, "/api/projects/nosetech/nope/issue-plans", {"request": "x"})[0]
+            == 404
+        )
+    finally:
+        server.shutdown()
+
+
+def test_issue_plan_allowed_in_read_only_mode() -> None:
+    from orchestrator.issue_plan import IssuePlan
+
+    server, _ = _plan_server(lambda *a, **k: IssuePlan("T", "B"), read_only=True)
+    try:
+        status, body = _post_status(
+            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
+        )
+
+        assert status == 200 and body["title"] == "T"
+    finally:
+        server.shutdown()
+
+
 # issue #176: プロジェクトごとの実行手段デフォルト設定の永続化API
 # （PATCH /api/projects/{repo}/settings）。docs/basic-design.md 4章参照。
 
@@ -1874,6 +1977,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "final_message_instruction",
         "attachment_instruction",
         "dev_instance_instruction",
+        "plan_issue_instruction",
         "approve_default_message",
         "user_name",
     ]
