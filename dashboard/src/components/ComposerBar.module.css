@@ -48,16 +48,36 @@
   animation: composerRise 0.22s ease;
 }
 
-/* パネルは辺ハンドルを持つため overflow を切らず、スクロールは内側のこの要素が担う。 */
-.panelScroll {
+/* パネルは辺ハンドルを持つため overflow を切らない。角丸のクリップは内側のこの要素が担い、
+   スクロールバーが角丸からはみ出さないようにする（issue #291、デザイン準拠）。 */
+.panelClip {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.panelScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 13px;
   padding: 16px 18px 18px;
-  border-radius: inherit;
+}
+
+/* 計画モードのパネル: 余白は内側のスクロール領域が持つ（デザイン準拠）。 */
+.panelPlan {
+  padding: 0;
+}
+
+/* 計画モード: 下余白は左右と同程度の22px。 */
+.panelScrollPlan {
+  padding-bottom: 22px;
 }
 
 .panelHeader {
@@ -108,6 +128,11 @@
   gap: 11px;
   flex: 1;
   min-height: 0;
+}
+
+/* 計画モードでは縮めず、スクロール最下部まで下余白を残す。 */
+.bodyPlan {
+  flex: 1 0 auto;
 }
 
 .promptField {
@@ -690,4 +715,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 640px) {
+  .panel.panelPlan {
+    padding: 0;
+  }
+
+  .panelScrollPlan {
+    padding: 14px 14px 22px;
+  }
 }
