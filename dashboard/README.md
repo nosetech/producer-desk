@@ -2,7 +2,7 @@
 
 `producer-desk`（自走型AI開発オーケストレーションシステム）のダッシュボード。Next.jsで実装する。
 
-画面設計は [`docs/design-prompt-dashboard.md`](../docs/design-prompt-dashboard.md) のClaude Designへの委譲プロンプトを元に作成された成果物に準拠する（`CLAUDE.md`「画面デザインの実装ルール」参照）。表示項目・API仕様は [`docs/basic-design.md`](../docs/basic-design.md) 2章に対応する。
+画面設計は [`docs/design-prompt-dashboard.md`](../docs/design-prompt-dashboard.md) のプロンプトを元にClaudeで作成され、Artifactsに置かれたデザインに準拠する（`CLAUDE.md`「画面デザインの実装ルール」参照）。表示項目・API仕様は [`docs/basic-design.md`](../docs/basic-design.md) 2章に対応する。
 
 ## セットアップ
 

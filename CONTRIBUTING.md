@@ -9,7 +9,7 @@ producer-deskを**利用するだけ**の場合は[README.md](./README.md)（[Gi
 1. [`docs/requirements.md`](./docs/requirements.md) — 要件定義
 2. [`docs/architecture.md`](./docs/architecture.md) — アーキテクチャ設計
 3. [`docs/basic-design.md`](./docs/basic-design.md) — 基本設計（ラベルによる状態遷移、内部API仕様、Agent Runner起動仕様等の詳細）
-4. [`docs/design-prompt-dashboard.md`](./docs/design-prompt-dashboard.md) — ダッシュボード画面設計をClaude Designへ委譲するためのプロンプト
+4. [`docs/design-prompt-dashboard.md`](./docs/design-prompt-dashboard.md) — ダッシュボード画面設計をClaudeのチャットで作成・修正するためのプロンプト（デザイン本体はArtifacts）
 
 ## 構成
 

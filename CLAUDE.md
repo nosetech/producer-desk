@@ -13,34 +13,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. `docs/requirements.md` — 要件定義（issue #2）。想定ユーザー（プロデューサー1名、並行3〜5プロジェクト）、機能/非機能要件、MVPスコープ
 2. `docs/architecture.md` — アーキテクチャ設計（issue #3）。全体構成図、コンポーネント間通信方式、エージェント実行基盤の方針
 3. `docs/basic-design.md` — 基本設計（issue #4）。ラベルによる状態遷移の詳細、内部API仕様、Agent Runner起動仕様、通知フロー、権限設計
-4. `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff*.md` — ダッシュボードの画面設計を別セッションのClaude（Claude Design）に委譲するための、そのままコピペして使うプロンプト。`-diff*` の方は初回デザイン後の差分追加依頼用で、単独では使わない。画面はダッシュボードとプロジェクト別issue一覧の2つ（サイドバーで切替、issue #116）
+4. `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff*.md` — ダッシュボードの画面設計をClaudeのチャット（デザイン本体はArtifacts）で作成・修正するための、そのままコピペして使うプロンプト。`-diff*` の方は初回デザイン後の差分追加依頼用で、単独では使わない。画面はダッシュボードとプロジェクト別issue一覧の2つ（サイドバーで切替、issue #116）
 
 各ドキュメントは相互にMarkdownリンク・見出しアンカーで参照し合っている。一方を編集した際は、他方からの参照（アンカー文字列を含む）が壊れていないか確認すること。
 
 ## 画面デザインの実装ルール
 
-ダッシュボードの画面実装は、Claude Designで作成された以下のデザインを**正**として忠実に実装すること。レイアウト・配色・コンポーネント構成・インタラクションを独自解釈で変更しない。
+ダッシュボードの画面実装は、Claudeの Artifacts にあるデザインを**正**として忠実に実装すること（以前の Claude Design からは Artifacts へ移管済み）。レイアウト・配色・コンポーネント構成・インタラクションを独自解釈で変更しない。
 
-- デザイン: https://claude.ai/design/p/d67961c7-d882-4efb-bac8-492338ae41c4?file=ProducerDesk.dc.html
+- デザイン: https://claude.ai/artifact/F7xkuq13UDPwwmpf7ufDAS（「producer-desk」。一覧は https://claude.ai/artifacts）
+- 主なファイル（`project/` 配下）:
+  - `project/ProducerDesk.dc.html`: マスターのテンプレート
+  - `project/ProducerDesk.logic.js`: スタイル・状態ロジック（**`.dc.html`と両方**を読むこと）
+  - `project/ProducerDeskIcons.dc.html` / `project/SendingSpinner.dc.html` / `project/IconColorCheck.dc.html`: アイコン・送信中スピナー・アイコン配色確認
+  - `project/feature/issue-<n>-*.dc.html` と対の `.logic.js`: issue単位の差分デザイン（マスターへ未マージのもの）
+  - `project/support.js`: 共通スクリプト
+  - `artifact-type/` と `SKILL.md` は Artifact の仕組み側のファイルでデザインではない。読まない。
 
-このデザインは `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` のプロンプトを元に作成されたもの。デザインとdocs側の仕様（表示項目・API仕様等）に齟齬がある場合は、実装前にどちらを正とするか確認すること。デザインが更新された場合は、この節のURLも合わせて更新する。
+このデザインは `docs/design-prompt-dashboard.md` / `docs/design-prompt-dashboard-diff.md` のプロンプトを元に作成されたもの。デザインとdocs側の仕様（表示項目・API仕様等）に齟齬がある場合は、実装前にどちらを正とするか確認すること。デザインが更新された場合は、この節のURL・ファイル一覧も合わせて更新する。デザインを修正する場合は、Claudeのチャットから指示して行う（Artifactのファイルを直接編集しない）。
 
-**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等の非対話的な取得では403になり中身を見られない（配色・アイコンの指定はこのURLの実際のレンダリング結果にしかなく、docs側のテキストには書かれていない）。
+**重要**: 上記URLは `claude.ai` の認証が必要なページであり、`WebFetch` 等では取得できない（配色・アイコンの指定はデザインの実ソースにしかなく、docs側のテキストには書かれていない）。
 
-**実装・レビュー時は必ず `DesignSync` MCPツールでこのデザインの実ソース（`ProducerDesk.dc.html`）を直接取得し（`ProducerDesk.dc.html`はテンプレート、スタイル・状態ロジックは`ProducerDesk.logic.js`に分割されているため**両方**を取得する）、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（`projectId` はURLの `/p/<uuid>` 部分、`d67961c7-d882-4efb-bac8-492338ae41c4`）。
+**実装・レビュー時は必ず `Artifact` ツールでこのデザインの実ソースを直接取得し、実際のCSS/JS値（色・余白・border-radius・アニメーション等）を確認してから実装すること。** 手順は以下の通り（ブラウザ操作は不要）。
 
-1. `DesignSync` の `get_project` で `projectId` が読めることを確認する（`list_projects` はデザインシステム種別のプロジェクトのみを返すため、このプロジェクト（`type: PROJECT_TYPE_PROJECT`）は一覧に出てこない。`get_project`/`list_files`/`get_file` は `projectId` を直接渡せば種別を問わず使える）
-2. `list_files` で対象ファイル一覧（`ProducerDesk.dc.html`・`ProducerDesk.logic.js` 等）を確認する
-3. `get_file` でファイルの中身をそのまま取得する（256KiB上限）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn`、`diagBtnStyle` 等。主に`ProducerDesk.logic.js`側にある）をそのテキストから直接読み取り、値をそのまま実装に反映する
-4. **レスポンスの`truncated`を必ず確認する。** `truncated: true`の場合は末尾が欠けており、スタイル定義を取りこぼしている可能性がある（issue #219で`ProducerDesk.dc.html`が256KiBを超えて切れ、ボタンのスタイルが取得できず実装が既存ボタンの見た目の流用になった）。`true`のときは取得できた範囲だけで実装を進めず（既存コンポーネントの見た目を流用して代替するのも不可）、その旨を明記して作業を停止し、Claude Design側でのファイル分割を人間に依頼すること
+1. `Artifact` の `action: "list"`、`scope: "files"`、`url` に上記URLを指定してファイル一覧を取得し、対象ファイル（`project/ProducerDesk.dc.html`・`project/ProducerDesk.logic.js` 等）を確認する
+2. `action: "read"`、`url`、`path`（例: `project/ProducerDesk.logic.js`）でファイルを取得する（複数ファイルは `paths` でまとめて取得できる。取得したファイルはローカルにも保存される）。対象コンポーネントに対応するスタイルオブジェクト定義（例: `confirmDialogStyle`、`approveBtn`、`diagBtnStyle` 等。主に`ProducerDesk.logic.js`側にある）をそのテキストから直接読み取り、値をそのまま実装に反映する
+3. **取得結果が途中で欠けていないか必ず確認する。** 欠けて（切れて）いて対象のスタイル定義を取りこぼしている可能性がある場合は、取得できた範囲だけで実装を進めず（既存コンポーネントの見た目を流用して代替するのも不可）、その旨を明記して作業を停止し、Claudeのチャットでのファイル分割を人間に依頼すること（旧Claude Design時代にissue #219で`ProducerDesk.dc.html`が256KiBを超えて切れ、ボタンのスタイルが取得できず既存ボタンの見た目の流用になった）
 
-`DesignSync` の利用には、`claude.ai` ログインへのデザインシステムアクセス権限が必要。**この権限は一度 `/design-login`（ローカルコマンド、または通常の `claude.ai` ログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名 `Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の `claude` CLI呼び出し（Agent Runnerの `claude -p` を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フローを行う必要はない（運用開始前にホスト上で一度だけ人間が `/design-login` を実行しておけば足りる。詳細は `docs/basic-design.md` 3-1参照）。
+`Artifact` ツールの利用には、Claude Code が `claude.ai` アカウントで `/login` 済みであることが必要。`claude -p`（ヘッドレス）では `Artifact` ツールが既定で無効なため、Agent Runnerは子プロセスの環境変数`CLAUDE_CODE_ARTIFACT=1`で有効化している（`docs/basic-design.md` 3-1参照）。そのためAgent Runner自身が実行時に認証フローを行う必要はない（運用開始前にホスト上で一度だけ人間が `claude.ai` に `/login` しておけば足りる）。
 
 **このURLをブラウザ操作ツール（`mcp__claude-in-chrome__*`）で開いてキャンバス上の要素をクリックしてコードを選択したり、プレビューをズームしたスクリーンショットから目視でCSS値を推測したりするのは絶対に行わないこと。** プレビューは静的なスナップショットで状態を持つインタラクション（ダイアログ表示等）が再現されず、キャンバス上の要素クリックによるコード選択も自動操作からは機能しないことが確認済み（producer-desk PR #57）。目視推測も丸め誤差や見落としが起きやすく、不正確な値のまま実装を進めるくらいなら停止すべきである。
 
-**`DesignSync` が権限不足等で使えない場合はフォールバックせず、その旨を明記してそこで作業を停止し、人間の確認を仰ぐこと。** ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため、`DesignSync` の代わりとして使わない。
+**`Artifact` ツールが使えない場合（未ログイン・ツール無効等）はフォールバックせず、その旨を明記してそこで作業を停止し、人間の確認を仰ぐこと。** ブラウザ操作ツールでの代替取得は不正確になりうるため、`Artifact` の代わりとして使わない。
 
-`DesignSync` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
+`Artifact` で値を取得できた場合、実装後はブラウザ操作ツールで完成品とデザインのプレビューを並べて**最終的な見た目の一致を確認する**（気づいていない要素の見落とし確認等。これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 
 Agent Runner実行時もworktreeのこの`CLAUDE.md`が読み込まれるため、上記の指示はそのまま適用される（プロジェクトごとの指示であり、Agent Runner共通の`--append-system-prompt`では付与しない。`docs/basic-design.md` 3-6参照）。
 

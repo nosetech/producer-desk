@@ -1,4 +1,4 @@
-# Claude Designへの指示プロンプト: producer-desk ダッシュボード画面設計
+# Claudeチャットへの指示プロンプト: producer-desk ダッシュボード画面設計
 
 `producer-desk`（自走型AI開発オーケストレーションシステム）のダッシュボード画面のビジュアルデザインを依頼するためのプロンプトです。以下を丸ごとコピーし、Claude（Artifact機能等）に貼り付けて画面設計を依頼してください。
 

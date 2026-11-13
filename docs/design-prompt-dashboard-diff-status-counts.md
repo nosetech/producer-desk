@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: プロジェクト状況ウィジェットの拡張・活動タイムライン廃止（差分）
+# Claudeチャットへの追加指示プロンプト: プロジェクト状況ウィジェットの拡張・活動タイムライン廃止（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（[design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md)の指示入力欄追加の後に依頼する想定）。既に作成済みのモックアップ（Artifact）がある場合は、それを更新する形で対応してください。ゼロから作り直す必要はありません。以下を丸ごとコピーし、既存デザインを作成したClaude（Artifact）とのやり取りに貼り付けてください。
 
