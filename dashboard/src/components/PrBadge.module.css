@@ -1,0 +1,44 @@
+.prLink,
+.prCandidateChip,
+.prNoneChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+
+.prLink {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--accent-blue);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.prLink:hover {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  text-decoration: none;
+}
+
+.prCandidateChip {
+  border: 1px solid var(--review);
+  background: var(--review-bg);
+  color: var(--review);
+  cursor: default;
+}
+
+.prNoneChip {
+  border: 1px dashed var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: default;
+}
