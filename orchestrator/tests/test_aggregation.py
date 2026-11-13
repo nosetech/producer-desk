@@ -14,6 +14,8 @@ from orchestrator.aggregation import (
     IssueSummary,
     QueueEntry,
     aggregate,
+    build_inbox,
+    build_project_issues,
     build_project_queue,
 )
 from orchestrator.dispatch_queue import QueueSnapshot
@@ -549,3 +551,52 @@ def test_build_project_queue_empty_snapshot() -> None:
 
     assert queue.running is None
     assert queue.waiting == []
+
+
+def _inbox_issue(number: int, labels: list[str], created_at: str, state: str = "OPEN"):
+    issue = _issue("nosetech/project-a", number, labels, created_at, state=state)
+    issue.created_at = created_at
+    issue.body = f"本文{number}"
+    return issue
+
+
+def test_inbox_issues_are_excluded_from_status_counts_and_project_label() -> None:
+    # issue #288: inboxは状態別件数（untagged含む）・並行状況・判断待ちに混ざらない。
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _inbox_issue(1, ["inbox", "bug"], "2026-08-01T00:00:00Z"),
+            _inbox_issue(2, ["inbox", "enhancement"], "2026-08-02T00:00:00Z"),
+        ],
+    }
+
+    state = aggregate(issues_by_repo)
+
+    assert sum(state.status_counts.values()) == 0
+    assert state.decisions == [] and state.reviews == []
+    status = state.project_status[0]
+    assert status.label is None
+    assert sum(status.counts.values()) == 0
+    assert [(i.number, i.kind) for i in status.inbox] == [(2, "enhancement"), (1, "bug")]
+
+
+def test_inbox_kind_falls_back_to_other_when_zero_or_multiple_kind_labels() -> None:
+    issues = [
+        _inbox_issue(1, ["inbox"], "2026-08-01T00:00:00Z"),
+        _inbox_issue(2, ["inbox", "bug", "enhancement"], "2026-08-02T00:00:00Z"),
+    ]
+
+    assert [i.kind for i in build_inbox(issues)] == ["other", "other"]
+
+
+def test_promoted_issue_with_status_label_is_not_inbox() -> None:
+    issues = [_inbox_issue(1, ["inbox", "status:todo"], "2026-08-01T00:00:00Z")]
+
+    assert build_inbox(issues) == []
+    assert aggregate({"nosetech/project-a": issues}).status_counts["status:todo"] == 1
+
+
+def test_closed_inbox_item_is_not_listed_anywhere() -> None:
+    issues = [_inbox_issue(1, ["inbox", "bug"], "2026-08-01T00:00:00Z", state="CLOSED")]
+
+    assert build_inbox(issues) == []
+    assert build_project_issues(issues) == []

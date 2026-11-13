@@ -2358,6 +2358,9 @@ def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
             _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
             _put(server, "/api/prompts/anything", {"body": "x"}),
             _delete(server, "/api/prompts/anything"),
+            _post(server, f"/api/projects/{repo}/inbox", {"title": "t", "kind": "bug"}),
+            _patch(server, f"/api/projects/{repo}/inbox/1", {"title": "t", "kind": "bug"}),
+            _delete(server, f"/api/projects/{repo}/inbox/1"),
         ]
         for status, body in results:
             assert status == 403
@@ -2378,5 +2381,157 @@ def test_read_only_server_still_serves_read_apis() -> None:
     try:
         assert _get(server, "/api/settings")[0] == 200
         assert _post(server, "/api/refresh", {})[0] == 200
+    finally:
+        server.shutdown()
+
+
+# issue #288: inbox（バグ・機能アイデアの一行メモ）API。
+class FakeInboxGithub:
+    def __init__(self) -> None:
+        self.updated: list[tuple[str, int, str, str]] = []
+        self.closed: list[tuple[str, int]] = []
+        self.ensured: list[str] = []
+
+    def update_issue(self, repo: str, number: int, title: str, body: str) -> None:
+        self.updated.append((repo, number, title, body))
+
+    def close_not_planned(self, repo: str, number: int) -> None:
+        self.closed.append((repo, number))
+
+    def ensure_labels(self, repo: str) -> None:
+        self.ensured.append(repo)
+
+
+def _inbox_server(labels: FakeLabels, creator: FakeIssueCreator, gh: FakeInboxGithub):
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        create_issue=creator.create_issue,
+        update_issue=gh.update_issue,
+        close_issue_not_planned=gh.close_not_planned,
+        ensure_inbox_labels=gh.ensure_labels,
+    )
+    return server, calls
+
+
+def test_create_inbox_adds_inbox_and_kind_labels_without_status_or_dispatch() -> None:
+    labels, creator, gh = FakeLabels(), FakeIssueCreator(start_number=50), FakeInboxGithub()
+    server, calls = _inbox_server(labels, creator, gh)
+    try:
+        status, body = _post(
+            server,
+            "/api/projects/nosetech/project-a/inbox",
+            {"title": "  明細がずれる ", "body": "再現手順", "kind": "bug"},
+        )
+
+        assert status == 201 and body["issue_number"] == 50
+        assert creator.created == [("nosetech/project-a", "明細がずれる", "再現手順")]
+        assert labels.labels_by_issue[50] == {"inbox", "bug"}
+        assert gh.ensured == ["nosetech/project-a"]
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"title": "t", "kind": "feature"}, {"title": "  ", "kind": "bug"}, {"kind": "bug"}],
+)
+def test_create_inbox_rejects_invalid_input(payload: dict) -> None:
+    labels, creator, gh = FakeLabels(), FakeIssueCreator(), FakeInboxGithub()
+    server, _ = _inbox_server(labels, creator, gh)
+    try:
+        status, _body = _post(server, "/api/projects/nosetech/project-a/inbox", payload)
+
+        assert status == 400
+        assert creator.created == []
+    finally:
+        server.shutdown()
+
+
+def test_update_inbox_swaps_kind_label_idempotently() -> None:
+    labels = FakeLabels({7: {"inbox", "bug"}})
+    gh = FakeInboxGithub()
+    server, _ = _inbox_server(labels, FakeIssueCreator(), gh)
+    try:
+        payload = {"title": "新タイトル", "body": "本文", "kind": "enhancement"}
+        for _ in range(2):  # 再実行しても収束する
+            status, _body = _patch(server, "/api/projects/nosetech/project-a/inbox/7", payload)
+            assert status == 200
+
+        assert labels.labels_by_issue[7] == {"inbox", "enhancement"}
+        assert gh.updated[0] == ("nosetech/project-a", 7, "新タイトル", "本文")
+    finally:
+        server.shutdown()
+
+
+def test_update_and_delete_inbox_reject_non_inbox_issue() -> None:
+    labels = FakeLabels({8: {"status:todo"}})
+    gh = FakeInboxGithub()
+    server, _ = _inbox_server(labels, FakeIssueCreator(), gh)
+    try:
+        s1, _ = _patch(
+            server, "/api/projects/nosetech/project-a/inbox/8", {"title": "t", "kind": "bug"}
+        )
+        s2, _ = _delete(server, "/api/projects/nosetech/project-a/inbox/8")
+
+        assert (s1, s2) == (409, 409)
+        assert gh.updated == [] and gh.closed == []
+    finally:
+        server.shutdown()
+
+
+def test_delete_inbox_closes_as_not_planned() -> None:
+    labels = FakeLabels({9: {"inbox", "other"}})
+    gh = FakeInboxGithub()
+    server, _ = _inbox_server(labels, FakeIssueCreator(), gh)
+    try:
+        status, _body = _delete(server, "/api/projects/nosetech/project-a/inbox/9")
+
+        assert status == 200
+        assert gh.closed == [("nosetech/project-a", 9)]
+    finally:
+        server.shutdown()
+
+
+def test_promote_inbox_item_updates_existing_issue_instead_of_creating() -> None:
+    labels = FakeLabels({11: {"inbox", "enhancement"}})
+    creator, gh = FakeIssueCreator(), FakeInboxGithub()
+    server, calls = _inbox_server(labels, creator, gh)
+    try:
+        status, body = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "計画後", "prompt": "本文", "dispatch": "queued", "issueNumber": 11},
+        )
+
+        assert status == 201 and body["issue_number"] == 11 and body["dispatched"] is False
+        assert creator.created == []  # 重複issueを作らない
+        assert gh.updated == [("nosetech/project-a", 11, "計画後", "本文")]
+        # inboxを外してstatus:todoを付与。種別ラベルは残す。
+        assert labels.labels_by_issue[11] == {"enhancement", "status:todo"}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_promote_rejects_non_inbox_issue_number() -> None:
+    labels = FakeLabels({12: {"status:in-progress"}})
+    creator, gh = FakeIssueCreator(), FakeInboxGithub()
+    server, _ = _inbox_server(labels, creator, gh)
+    try:
+        status, _body = _post(
+            server,
+            "/api/projects/nosetech/project-a/issues",
+            {"title": "t", "prompt": "p", "dispatch": "queued", "issueNumber": 12},
+        )
+
+        assert status == 400
+        assert gh.updated == []
     finally:
         server.shutdown()

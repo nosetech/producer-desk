@@ -158,6 +158,29 @@ for i in "${!STATUS_LABEL_NAMES[@]}"; do
     fi
 done
 
+# --- 1b. inbox用ラベルの作成（冪等、issue #288） ---
+# 名前・色・説明は orchestrator/orchestrator/labels.py の INBOX_LABEL_DEFS および
+# dist/scripts/migrate.sh と同じ値を使う（どれかを変更したら全て更新すること）。
+declare -a INBOX_LABEL_NAMES=("inbox" "bug" "enhancement" "other")
+declare -a INBOX_LABEL_COLORS=("c5def5" "d73a4a" "a2eeef" "ededed")
+declare -a INBOX_LABEL_DESCRIPTIONS=(
+    "未計画のメモ（producer-desk inbox）"
+    "Something isn't working"
+    "New feature or request"
+    "その他（producer-desk inbox）"
+)
+
+for i in "${!INBOX_LABEL_NAMES[@]}"; do
+    name="${INBOX_LABEL_NAMES[$i]}"
+    if grep -Fxq "${name}" <<<"${existing_labels}"; then
+        log "ラベル '${name}' は既に存在するためスキップします"
+    else
+        gh label create --repo "${TARGET_REPO}" "${name}" \
+            --color "${INBOX_LABEL_COLORS[$i]}" --description "${INBOX_LABEL_DESCRIPTIONS[$i]}"
+        log "ラベル '${name}' を作成しました"
+    fi
+done
+
 # --- 2. ベースcloneとworktreeの用意（冪等） ---
 BASE_CLONE_PATH="${BASE_CLONE_ROOT}/${TARGET_REPO}"
 

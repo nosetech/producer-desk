@@ -20,6 +20,7 @@ import {
 } from "@/lib/comment";
 import type {
   Dispatch,
+  InboxItem,
   IssueComment,
   ProjectSettingsResponse,
 } from "@/lib/types";
@@ -445,6 +446,11 @@ function ReplyQuote({
   );
 }
 
+/** inbox項目を「やりたいこと」の初期値にする（一言メモ＋補足）。 */
+function inboxWant(item: InboxItem): string {
+  return item.body.trim() ? `${item.title}\n\n${item.body}` : item.title;
+}
+
 export default function ComposerBar({
   open,
   mode,
@@ -454,6 +460,7 @@ export default function ComposerBar({
   repos,
   newTaskRepo,
   onNewTaskRepoChange,
+  inboxTarget,
 }: {
   open: boolean;
   mode: ComposerMode;
@@ -463,6 +470,8 @@ export default function ComposerBar({
   repos: string[];
   newTaskRepo: string;
   onNewTaskRepoChange: (repo: string) => void;
+  /** 「計画する」の入力元inbox項目（issue #288）。あれば計画モードで開き、承認で昇格する。 */
+  inboxTarget?: InboxItem | null;
 }) {
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
@@ -578,9 +587,13 @@ export default function ComposerBar({
       setNewModel(MODEL_DEFAULT);
       setQuoteIndex(null);
       setError(null);
-      setNewMode("manual");
+      // inbox項目から開いた場合は、その本文を「やりたいこと」の初期値に計画モードで開く。
+      setNewMode(inboxTarget ? "plan" : "manual");
       dispatchPlan({ type: "redo" });
-      dispatchPlan({ type: "edit", patch: { want: "" } });
+      dispatchPlan({
+        type: "edit",
+        patch: { want: inboxTarget ? inboxWant(inboxTarget) : "" },
+      });
     }
   }
 
@@ -622,6 +635,9 @@ export default function ComposerBar({
     const repo = newRepo;
     const issueTitle = taskTitle.trim();
     const body = taskBody.trim();
+    // inbox項目から計画した場合のみ、新規作成ではなくその項目を昇格する（issue #288）。
+    const promoteNumber =
+      newMode === "plan" && inboxTarget ? inboxTarget.number : undefined;
     startJob({
       kind: "new",
       repo,
@@ -631,9 +647,17 @@ export default function ComposerBar({
           ? CREATE_IMMEDIATE_STAGES
           : CREATE_QUEUED_STAGES,
       exec: (progressId) =>
-        postCreateIssue(repo, issueTitle, body, dispatch, progressId),
-      successMessage:
-        dispatch === "immediate"
+        postCreateIssue(
+          repo,
+          issueTitle,
+          body,
+          dispatch,
+          progressId,
+          promoteNumber,
+        ),
+      successMessage: promoteNumber
+        ? `${shortRepoName(repo)} #${promoteNumber} をinboxから通常のissueに昇格しました。`
+        : dispatch === "immediate"
           ? `${shortRepoName(repo)} に新しいタスクを作成し、着手を依頼しました。`
           : `${shortRepoName(repo)} にタスクをtodoとして登録しました（あとで着手）。`,
     });
@@ -816,7 +840,7 @@ export default function ComposerBar({
                   <select
                     className={styles.select}
                     value={newRepo}
-                    disabled={planBusy}
+                    disabled={planBusy || !!inboxTarget}
                     onChange={(e) => handleNewRepoChange(e.target.value)}
                   >
                     {repos.map((repo) => (

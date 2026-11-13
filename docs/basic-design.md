@@ -29,6 +29,8 @@ issueのクローズ操作自体（人間による手動クローズ、PRマー�
 
 過去、この管理対象外という区分が無かったため、「状態ラベルが1つも付いていない」ことを一律「完了」と誤表示していた不具合があった（[issue #45](https://github.com/nosetech/producer-desk/issues/45)）。
 
+**補助ラベル`inbox`（issue #288）**: プロジェクト別issue一覧の「inbox」（バグ・機能アイデアの一行メモ置き場）の項目は、`inbox`ラベル＋種別ラベル（`bug` / `enhancement` / `other` のちょうど1つ）だけを持つGitHub issueとして保存する。`inbox`は上記5状態には**含まれない補助ラベル**で（`labels.py`の`INBOX_LABEL`。`STATUS_LABELS`・排他的ラベルの対象外）、状態遷移図への影響はない。状態ラベルが未付与のため上記の「管理対象外」の扱いが自然に当てはまり、Agent Runnerへは自動ディスパッチされず、判断待ち一覧・最近の活動・状態別件数（`untagged`含む）・並行状況にも混ざらない（`aggregation.is_inbox_issue`が`inbox`付きで状態ラベル無しのissueを判定し、集計から除外する）。「計画する」で計画を承認すると同じissueが昇格する（`inbox`を外して`status:todo`を付与。種別ラベルは残す。ラベル操作は現在のラベルを取得して差分のみ適用する冪等な方式）。
+
 ### 冪等な状態遷移フロー
 
 ラベルの付け替えは以下の擬似コードの通り、**現在のラベル一覧を取得してから差分のみ適用**する（PoCで判明した `--remove-label`/`--add-label` の非atomic性への対処、[poc-results.md](https://github.com/nosetech/research-log/blob/main/log/2026/07/autonomous-dev-orchestration/poc-results.md) 1章）。
@@ -219,9 +221,19 @@ Content-Type: application/json
 - 現在のラベルが`needs-human-decision`でない場合は409。未登録リポジトリは404。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では他の書き込み系APIと同様に403。
 - ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタン（確認ダイアログ付き）から呼ばれる。デザインは[design-prompt-dashboard-diff-relabel.md](./design-prompt-dashboard-diff-relabel.md)参照。
 
+**inbox API（issue #288）**
+
+- `POST /api/projects/{repo}/inbox`: inbox項目を作成する。ボディは`{"title"（必須）, "body"（任意）, "kind"（`bug`/`enhancement`/`other`、必須）}`。`create_issue`＋`inbox`ラベル＋種別ラベル1つを付与し、状態ラベルは付けずディスパッチもしない。種別が3つ以外・titleが空は400、対象リポジトリに`inbox`/種別ラベルが無い場合は作成前に`gh label create`で補う（`github_client.ensure_labels`）。応答は`201 {"issue_number": n}`。
+- `PATCH /api/projects/{repo}/inbox/{issue_number}`: タイトル・本文・種別の編集。種別変更時は旧種別ラベルを外して新種別ラベルを付与する（冪等）。`inbox`ラベルが無いissue（通常のissue）は409で拒否する。
+- `DELETE /api/projects/{repo}/inbox/{issue_number}`: `not planned`でクローズする（`state_reason: not_planned`）。`inbox`ラベルが無いissueは409。
+- 昇格: `POST /api/projects/{repo}/issues`（[#287の承認時登録](#2-3-指示出しapi内部api)）のボディに`issueNumber`を渡すと、新規作成せず、そのinbox項目のタイトル・本文を更新→`inbox`除去→`status:todo`付与（`immediate`ならさらにディスパッチ）を行う（`instruct.handle_create_issue`の`existing_issue_number`）。`inbox`ラベルが無いissue番号は400。
+- 上記3つの書き込みAPIは`ORCHESTRATOR_READ_ONLY=1`では403。一覧は`GET /api/projects/{repo}/issues`・`POST .../refresh`の応答の`inbox`配列（OPENなinbox項目、`{number, title, kind, body, created_at}`、登録日時の新しい順）で取得し、通常の`issues`にはinbox項目を含めない。`GET /api/state`の`project_status[].inbox`にも同じ配列を載せる。`kind`は付与された種別ラベルから導出し、0個・複数なら`other`。
+
 ### 2-4. ダッシュボードの画面設計
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claudeのチャットへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+
+- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。
 
 #### コメント添付ファイル（画像・動画）の表示（issue #218）
 
@@ -616,6 +628,7 @@ tarballを新バージョンの別ディレクトリに展開する運用のた�
 - **対象ファイルと検証**: `config/projects.yaml`はPyYAMLが利用可能な場合にYAMLとしてパース可能か検証、`config/sessions.json`は標準ライブラリの`json`でパース可能か検証してからコピーする（不正な場合は移行を中止）。`.env`はそのままコピー。`logs/`は必須ではないため`--with-logs`指定時のみ対象
 - **`config/usage.db`のスキーマバージョニング**: `orchestrator/orchestrator/usage_store.py`にSQLiteの`PRAGMA user_version`を使った最小限のスキーマバージョン管理（`SCHEMA_VERSION`定数）を導入した。新規作成時・スキーマバージョン管理導入以前に作成されたDB（`user_version`が未設定=0）ではバージョンを書き込むだけで通す一方、`SCHEMA_VERSION`と異なる値が設定されている場合は`_connect()`が`RuntimeError`で処理を止める。`migrate.sh`側も独立した定数`EXPECTED_USAGE_DB_SCHEMA_VERSION`を持ち、コピー前に`PRAGMA user_version`を比較して不一致なら自動移行せずエラーで停止する（将来テーブル定義を変更する際は、`usage_store.py`の`SCHEMA_VERSION`と`migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`を両方インクリメントし、`_connect()`に変換ロジックを追加する運用を想定。現時点ではスキーマ変更の予定が無いため、フルのマイグレーションフレームワークは導入せず、この最小限の枠組みに留めている）。コピー自体は`sqlite3 <src> ".backup '<dst>'"`（オンラインバックアップAPI）で行うため、旧バージョンのオーケストレータを稼働させたまま実行しても不整合なコピーにならない（`scripts/backup_usage_db.sh`と同じ手法）
 - **上書き挙動**: 新展開先に同名ファイルが既に存在する場合、既定ではスキップ（何度実行しても安全）。`--force`指定時は`<file>.bak-<timestamp>`へリネームしてバックアップした上で上書きする
+- **inbox用ラベルの作成（issue #288）**: ファイル移行の後に、新展開先の`config/projects.yaml`（`--force`無しでコピーがスキップされた場合も移行先の既存ファイルが対象）に載っている全リポジトリへ、`inbox` / `bug` / `enhancement` / `other`のうち不足しているラベルだけを`gh label create`で作成する（冪等）。`gh`未導入・未認証・権限不足・リポジトリ到達不可の場合は、ファイル移行の成否とは切り離して警告を出して続行し、失敗したリポジトリと手動実行手順を最後にまとめて表示する。`--skip-labels`で省略できる。新規プロジェクトは`add_project.sh`が同じラベルを作成する。ラベルの名前・色・説明は`labels.py`の`INBOX_LABEL_DEFS`・`add_project.sh`・`migrate.sh`で同じ値を持つ（変更時は3箇所を揃える）。
 - **旧ディレクトリの扱い**: 移行ツールは旧ディレクトリを読み取り専用で扱い、削除・アーカイブは行わない。新バージョンの動作確認（`bin/start.sh`起動後、ダッシュボードでプロジェクト一覧・利用量履歴が表示されること）が済むまで旧バージョンを併用できるようにするため、削除するかどうかは利用者の判断に委ねる（SETUP.md「10. アップグレード手順」参照）
 
 ## 成果物

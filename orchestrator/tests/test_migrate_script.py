@@ -58,12 +58,52 @@ def _make_new_root(tmp_path: Path) -> Path:
     return new_root
 
 
-def _run_migrate(new_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+FAKE_GH = """#!/bin/bash
+# テスト用の偽gh。呼び出しを$FAKE_GH_LOGへ追記する（実リポジトリには触れない）。
+echo "$*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+    "auth status") [ "${FAKE_GH_UNAUTH:-0}" = 1 ] && exit 1; exit 0 ;;
+    "label list")
+        case "$*" in *"${FAKE_GH_FAIL_REPO:-@@none@@}"*) exit 1 ;; esac
+        printf '%s\\n' ${FAKE_GH_EXISTING:-}
+        exit 0 ;;
+    "label create") exit 0 ;;
+esac
+exit 0
+"""
+
+
+def _install_fake_gh(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir(exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    return bin_dir
+
+
+def _run_migrate(new_root: Path, *args: str, env: dict | None = None):
+    # 実際の`gh`が実リポジトリのラベルを作らないよう、常に偽ghをPATH先頭に置く。
+    import os
+
+    fake_bin = _install_fake_gh(new_root.parent)
+    full_env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_GH_LOG": str(new_root.parent / "gh.log"),
+        **(env or {}),
+    }
     return subprocess.run(
         [str(new_root / "scripts" / "migrate.sh"), *args],
         capture_output=True,
         text=True,
+        env=full_env,
     )
+
+
+def _gh_log(new_root: Path) -> list[str]:
+    log = new_root.parent / "gh.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
 def test_migrate_copies_config_and_env_but_not_logs_by_default(tmp_path: Path) -> None:
@@ -180,3 +220,78 @@ def test_migrate_skips_files_missing_from_old_root(tmp_path: Path, missing: str)
 
     assert result.returncode == 0, result.stderr
     assert not (new_root / missing).exists()
+
+
+# issue #288: 移行後、projects.yamlの全リポジトリへinbox用ラベル（不足分のみ）を作成する。
+def test_migrate_creates_missing_inbox_labels_only(tmp_path: Path) -> None:
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root), env={"FAKE_GH_EXISTING": "bug enhancement"})
+
+    assert result.returncode == 0, result.stderr
+    creates = [line for line in _gh_log(new_root) if line.startswith("label create")]
+    assert [c.split()[4] for c in creates] == ["inbox", "other"]
+    assert all("--repo nosetech/project-a" in c for c in creates)
+    assert "警告" not in result.stderr
+
+
+def test_migrate_label_step_is_idempotent_when_all_labels_exist(tmp_path: Path) -> None:
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(
+        new_root, str(old_root), env={"FAKE_GH_EXISTING": "inbox bug enhancement other"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not [line for line in _gh_log(new_root) if line.startswith("label create")]
+
+
+def test_migrate_label_failure_warns_without_aborting_file_migration(tmp_path: Path) -> None:
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root), env={"FAKE_GH_FAIL_REPO": "project-a"})
+
+    assert result.returncode == 0, result.stderr
+    assert (new_root / "config" / "usage.db").exists()
+    assert "失敗したリポジトリ: nosetech/project-a" in result.stderr
+    assert "gh label create" in result.stderr
+
+
+def test_migrate_unauthenticated_gh_warns_and_continues(tmp_path: Path) -> None:
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root), env={"FAKE_GH_UNAUTH": "1"})
+
+    assert result.returncode == 0, result.stderr
+    assert (new_root / "config" / "projects.yaml").exists()
+    assert "未認証" in result.stderr
+    assert not [line for line in _gh_log(new_root) if line.startswith("label")]
+
+
+def test_migrate_skip_labels_option(tmp_path: Path) -> None:
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+
+    result = _run_migrate(new_root, str(old_root), "--skip-labels")
+
+    assert result.returncode == 0, result.stderr
+    assert _gh_log(new_root) == []
+
+
+def test_migrate_labels_target_existing_destination_projects_yaml(tmp_path: Path) -> None:
+    # --force無しでコピーがスキップされた場合は、移行先の既存projects.yamlを対象にする。
+    old_root = _make_old_root(tmp_path)
+    new_root = _make_new_root(tmp_path)
+    (new_root / "config" / "projects.yaml").write_text(
+        "projects:\n  - repo: nosetech/dest-only\n    worktree_path: /tmp/x\n", encoding="utf-8"
+    )
+
+    result = _run_migrate(new_root, str(old_root), env={"FAKE_GH_EXISTING": "inbox"})
+
+    assert result.returncode == 0, result.stderr
+    creates = [line for line in _gh_log(new_root) if line.startswith("label create")]
+    assert creates and all("--repo nosetech/dest-only" in c for c in creates)

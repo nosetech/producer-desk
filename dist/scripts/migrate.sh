@@ -6,7 +6,7 @@
 #
 # 使い方:
 #   cd <新バージョンの展開先ディレクトリ>
-#   ./scripts/migrate.sh <旧バージョンの展開先ディレクトリ> [--with-logs] [--force]
+#   ./scripts/migrate.sh <旧バージョンの展開先ディレクトリ> [--with-logs] [--force] [--skip-labels]
 #
 #   <旧バージョンの展開先ディレクトリ>  移行元。tarball展開直後の、config/・
 #                                     .env・logs/等を含むディレクトリ
@@ -43,6 +43,14 @@
 #   .env                    ユーザー設定（SLACK_WEBHOOK_URL等）
 #   logs/                   Agent Runner実行ログ等（--with-logs指定時のみ）
 #
+# ファイル移行の後に、新バージョンの config/projects.yaml に載っている全リポジトリへ、
+# inbox機能（issue #288）が使うラベル（inbox / bug / enhancement / other）のうち
+# 不足しているものだけを作成する（冪等。既存ラベルはスキップするため何度実行しても
+# 安全）。移行先の既存 projects.yaml（--force無しでコピーがスキップされた場合を含む）を
+# 対象にする。gh未導入・未認証・権限不足・リポジトリ到達不可でもファイル移行の成否には
+# 影響させず、警告を出して続行し、失敗したリポジトリと手動実行手順を最後にまとめて表示する。
+# スキップするには --skip-labels を指定する。
+#
 # 非スコープ: 旧ディレクトリの削除・アーカイブは行わない（移行後も旧ディレクトリは
 # 変更せず残す。新バージョンの動作確認が済むまで旧バージョンを併用できるように
 # するため、削除するかどうかは利用者の判断に委ねる）。新バージョン側の起動
@@ -68,13 +76,14 @@ err() {
 
 usage() {
     cat <<EOF
-使い方: $(basename "$0") <旧バージョンの展開先ディレクトリ> [--with-logs] [--force]
+使い方: $(basename "$0") <旧バージョンの展開先ディレクトリ> [--with-logs] [--force] [--skip-labels]
 
   <旧バージョンの展開先ディレクトリ>  移行元ディレクトリ（config/・.env・logs/
                                     等を含む、tarball展開直後のルート）
   --with-logs                      logs/ ディレクトリも合わせてコピーする
   --force                          新バージョン側の既存ファイルをバックアップの上
                                     上書きする（省略時はスキップ）
+  --skip-labels                    対象リポジトリへのinbox用ラベル作成を行わない
 EOF
 }
 
@@ -88,6 +97,7 @@ shift
 
 WITH_LOGS=0
 FORCE=0
+SKIP_LABELS=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --with-logs)
@@ -95,6 +105,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --force)
             FORCE=1
+            ;;
+        --skip-labels)
+            SKIP_LABELS=1
             ;;
         -h|--help)
             usage
@@ -246,4 +259,73 @@ else
     log "スキップ: logs/（--with-logs 未指定）"
 fi
 
+# --- 対象リポジトリのinbox用ラベル作成（issue #288） ---
+# 名前・色・説明は orchestrator/orchestrator/labels.py の INBOX_LABEL_DEFS および
+# dist/scripts/add_project.sh と同じ値を使う（どれかを変更したら全て更新すること）。
+INBOX_LABEL_NAMES=("inbox" "bug" "enhancement" "other")
+INBOX_LABEL_COLORS=("c5def5" "d73a4a" "a2eeef" "ededed")
+INBOX_LABEL_DESCRIPTIONS=(
+    "未計画のメモ（producer-desk inbox）"
+    "Something isn't working"
+    "New feature or request"
+    "その他（producer-desk inbox）"
+)
+
+# 1リポジトリの不足ラベルを作成する。1つでも失敗したら非0を返す（呼び出し側で警告）。
+ensure_inbox_labels() {
+    local repo="$1"
+    local existing
+    if ! existing="$(gh label list --repo "${repo}" --limit 500 --json name -q '.[].name' 2>/dev/null)"; then
+        return 1
+    fi
+    local rc=0 i name
+    for i in "${!INBOX_LABEL_NAMES[@]}"; do
+        name="${INBOX_LABEL_NAMES[$i]}"
+        if grep -Fxq -- "${name}" <<<"${existing}"; then
+            log "ラベル '${name}' は既に存在するためスキップします（${repo}）"
+        elif gh label create --repo "${repo}" "${name}" \
+            --color "${INBOX_LABEL_COLORS[$i]}" --description "${INBOX_LABEL_DESCRIPTIONS[$i]}" >/dev/null 2>&1; then
+            log "ラベル '${name}' を作成しました（${repo}）"
+        else
+            rc=1
+        fi
+    done
+    return "${rc}"
+}
+
+LABEL_FAILED_REPOS=()
+LABEL_WARNING=""
+if [ "${SKIP_LABELS}" -eq 1 ]; then
+    log "スキップ: inbox用ラベルの作成（--skip-labels 指定）"
+elif [ ! -f "${PROJECTS_DST}" ]; then
+    log "スキップ: inbox用ラベルの作成（移行先に config/projects.yaml がありません）"
+elif ! command -v gh >/dev/null 2>&1; then
+    LABEL_WARNING="ghコマンドが見つからないため、inbox用ラベルを作成できませんでした"
+elif ! gh auth status >/dev/null 2>&1; then
+    LABEL_WARNING="ghが未認証のため、inbox用ラベルを作成できませんでした（gh auth login が必要です）"
+else
+    TARGET_REPOS=()
+    while IFS= read -r line; do
+        [ -n "${line}" ] && TARGET_REPOS+=("${line}")
+    done < <(sed -n -E 's/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*["'"'"']?([^"'"'"'[:space:]#]+).*/\1/p' "${PROJECTS_DST}")
+    if [ "${#TARGET_REPOS[@]}" -eq 0 ]; then
+        log "スキップ: inbox用ラベルの作成（config/projects.yaml にリポジトリがありません）"
+    fi
+    for repo in "${TARGET_REPOS[@]+"${TARGET_REPOS[@]}"}"; do
+        if ! ensure_inbox_labels "${repo}"; then
+            LABEL_FAILED_REPOS+=("${repo}")
+        fi
+    done
+fi
+
 log "移行が完了しました。${NEW_ROOT} で ./bin/start.sh を実行し、ダッシュボードでプロジェクト・利用量履歴が引き継がれていることを確認してください。"
+
+if [ -n "${LABEL_WARNING}" ] || [ "${#LABEL_FAILED_REPOS[@]}" -gt 0 ]; then
+    err "警告: inbox用ラベルの作成が完了していません（ファイルの移行自体は成功しています）。"
+    [ -n "${LABEL_WARNING}" ] && err "  ${LABEL_WARNING}"
+    for repo in "${LABEL_FAILED_REPOS[@]+"${LABEL_FAILED_REPOS[@]}"}"; do
+        err "  失敗したリポジトリ: ${repo}"
+    done
+    err "  gh を認証・権限確認のうえ、再度 ./scripts/migrate.sh <旧ディレクトリ> を実行するか、"
+    err "  各リポジトリで gh label create inbox / bug / enhancement / other を手動実行してください（既存はスキップされ冪等です）。"
+fi

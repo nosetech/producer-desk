@@ -28,7 +28,9 @@ from orchestrator.github_client import delete_branch as gh_delete_branch
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.github_client import merge_pr as gh_merge_pr
+from orchestrator.inbox import UpdateIssueFn
 from orchestrator.labels import (
+    INBOX_LABEL,
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -329,12 +331,30 @@ def handle_create_issue(
     remove_label: RemoveLabelFn,
     dispatch_queue: DispatchQueue,
     on_stage: OnStageFn = _noop_on_stage,
+    existing_issue_number: int | None = None,
+    update_issue: UpdateIssueFn | None = None,
 ) -> CreateIssueResult:
+    """issueを作成（または既存inbox項目を昇格）して`status:todo`にし、必要ならディスパッチする。
+
+    `existing_issue_number`を指定した場合（issue #288）は新規作成せず、そのinbox項目の
+    タイトル・本文を更新し、`inbox`ラベルを外して`status:todo`を付与する（重複issueを
+    作らない）。ラベル操作は現在のラベルを取得して差分のみ適用する（冪等）。
+    """
     if dispatch not in ("immediate", "queued"):
         raise ValueError(f"不明なdispatch: {dispatch}")
 
-    issue_number = create_issue(repo, title, prompt)
-    on_stage("issue")
+    if existing_issue_number is not None:
+        if update_issue is None:
+            raise ValueError("update_issueが必要です")
+        issue_number = existing_issue_number
+        if INBOX_LABEL not in get_labels(repo, issue_number):
+            raise ValueError(f"{repo}#{issue_number} はinbox項目ではありません")
+        update_issue(repo, issue_number, title, prompt)
+        on_stage("issue")
+        remove_label(repo, issue_number, INBOX_LABEL)
+    else:
+        issue_number = create_issue(repo, title, prompt)
+        on_stage("issue")
     add_label(repo, issue_number, STATUS_TODO)
     on_stage("label")
 
