@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: 判断待ち→レビュー待ちへの変更ボタン（差分）
+# Claudeチャットへの追加指示プロンプト: 判断待ち→レビュー待ちへの変更ボタン（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（issue #274）。既存デザインを作成したClaude（Artifact）とのやり取りに貼り付けて使います。単独では使わない。
 

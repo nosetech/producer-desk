@@ -583,6 +583,42 @@ def test_run_agent_runner_passes_resolved_ollama_bench_path_via_env(
     assert call_kwargs["env"]["PATH"] == os.environ["PATH"]
 
 
+def test_run_agent_runner_passes_claude_code_artifact_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #292: 子プロセスの環境に`CLAUDE_CODE_ARTIFACT=1`が渡り、親の
+    `CLAUDE_CODE_DISABLE_ARTIFACT`は引き継がれない。`OLLAMA_BENCH_PATH`も維持される。"""
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_ARTIFACT", "1")
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "0")
+    monkeypatch.setattr(agent_runner, "_resolve_ollama_bench_path", lambda: "/x/ollama-bench")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    popen = FakePopenFactory(lines=[result_line({"result": "ok"})], returncode=0)
+
+    run_agent_runner(
+        project,
+        1,
+        "実装して",
+        popen=popen,
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=FakeGetSessionState({("nosetech/project-a", 1): "existing-id"}),
+        persist_session_state_fn=FakePersistSessionState(),
+        now=FIXED_NOW,
+    )
+
+    env = popen.calls[0]["env"]
+    assert env["CLAUDE_CODE_ARTIFACT"] == "1"
+    assert "CLAUDE_CODE_DISABLE_ARTIFACT" not in env
+    assert env["OLLAMA_BENCH_PATH"] == "/x/ollama-bench"
+
+
 def test_resolve_ollama_bench_path_logs_warning_when_unresolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

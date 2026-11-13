@@ -26,6 +26,7 @@ from orchestrator.aggregation import (
     IsDispatchActiveFn,
     IssueSummary,
     aggregate,
+    build_inbox,
     build_project_issues,
     build_project_queue,
 )
@@ -58,14 +59,26 @@ from orchestrator.github_client import (
     PostCommentFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
+from orchestrator.github_client import close_issue_not_planned as gh_close_issue_not_planned
 from orchestrator.github_client import create_issue as gh_create_issue
 from orchestrator.github_client import delete_branch as gh_delete_branch
+from orchestrator.github_client import ensure_labels as gh_ensure_labels
 from orchestrator.github_client import get_issue_detail as gh_get_issue_detail
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.github_client import update_issue as gh_update_issue
+from orchestrator.inbox import (
+    CloseNotPlannedFn,
+    EnsureLabelsFn,
+    NotInboxIssueError,
+    UpdateIssueFn,
+    handle_create_inbox,
+    handle_delete_inbox,
+    handle_update_inbox,
+)
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE_SPEC,
     NotNeedsHumanDecisionError,
@@ -75,7 +88,16 @@ from orchestrator.instruct import (
     handle_instruct,
     handle_mark_in_review,
 )
+from orchestrator.issue_plan import (
+    PLAN_ISSUE_SPEC,
+    IssuePlan,
+    PlanError,
+    PlanRunner,
+    generate_plan,
+    parse_model_choice,
+)
 from orchestrator.labels import (
+    INBOX_LABEL_DEFS,
     STATUS_IN_REVIEW,
     AddLabelFn,
     GetLabelsFn,
@@ -125,6 +147,11 @@ ISSUE_DETAIL_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)$"
 )
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
+# AIによるissue計画の生成（issue #287）。issueは作成しない。
+INBOX_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/inbox$")
+INBOX_ITEM_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/inbox/(?P<issue_number>\d+)$")
+
+ISSUE_PLANS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issue-plans$")
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 # プロジェクト単位のissue・ラベル情報の再取得（issue #197）。
@@ -132,6 +159,7 @@ REFRESH_PROJECT_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/refresh
 # 全プロジェクトの再取得（issue #197）。
 REFRESH_ALL_PATH = "/api/refresh"
 # 読み取り専用モード（issue #241）で書き込み系リクエストを拒否する際のメッセージ。
+GeneratePlanFn = Callable[..., IssuePlan]
 READ_ONLY_ERROR = "読み取り専用モードのため、書き込み系の操作は実行できません"
 PROGRESS_PATH = re.compile(r"^/api/progress/(?P<progress_id>[^/]+)$")
 PROJECT_SETTINGS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/settings$")
@@ -144,6 +172,7 @@ PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
 PROMPT_SPECS: tuple[PromptSpec, ...] = (
     *AGENT_RUNNER_PROMPT_SPECS,
+    PLAN_ISSUE_SPEC,
     APPROVE_DEFAULT_MESSAGE_SPEC,
     USER_NAME_SPEC,
 )
@@ -288,8 +317,16 @@ def _make_handler(
     read_only: bool = False,
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
+    plan_runner: PlanRunner | None = None,
+    generate_plan_fn: GeneratePlanFn = generate_plan,
+    update_issue: UpdateIssueFn = gh_update_issue,
+    close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
+    ensure_inbox_labels: EnsureLabelsFn | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
+    ensure_labels_fn: EnsureLabelsFn = ensure_inbox_labels or (
+        lambda repo: gh_ensure_labels(repo, INBOX_LABEL_DEFS)
+    )
     instruct_locks = InstructInFlightLocks()
     progress_store = ProgressStore()
 
@@ -427,6 +464,7 @@ def _make_handler(
                         dataclasses.asdict(i)
                         for i in build_project_issues(issues, dispatch_queue.is_active)
                     ],
+                    "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
                 },
             )
 
@@ -489,6 +527,7 @@ def _make_handler(
                         dataclasses.asdict(i)
                         for i in build_project_issues(issues, dispatch_queue.is_active)
                     ],
+                    "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
                     "state": self._state_payload(state),
                 },
             )
@@ -568,6 +607,12 @@ def _make_handler(
                 self._handle_refresh_project(refresh_match.group("repo"))
                 return
 
+            # 計画生成はGitHubへ書き込まない（issueは作成しない）ため読み取り専用でも許可する。
+            plans_match = ISSUE_PLANS_PATH.match(self.path)
+            if plans_match:
+                self._handle_issue_plan(plans_match.group("repo"))
+                return
+
             if self._reject_if_read_only():
                 return
 
@@ -598,6 +643,11 @@ def _make_handler(
                 self._handle_create_issue(create_issue_match.group("repo"))
                 return
 
+            inbox_match = INBOX_PATH.match(self.path)
+            if inbox_match:
+                self._handle_create_inbox(inbox_match.group("repo"))
+                return
+
             self._send_json(404, {"error": "not found"})
 
         def do_PATCH(self) -> None:  # noqa: N802
@@ -607,6 +657,13 @@ def _make_handler(
             settings_match = PROJECT_SETTINGS_PATH.match(self.path)
             if settings_match:
                 self._handle_update_project_settings(settings_match.group("repo"))
+                return
+
+            inbox_item_match = INBOX_ITEM_PATH.match(self.path)
+            if inbox_item_match:
+                self._handle_update_inbox(
+                    inbox_item_match.group("repo"), int(inbox_item_match.group("issue_number"))
+                )
                 return
 
             self._send_json(404, {"error": "not found"})
@@ -629,6 +686,13 @@ def _make_handler(
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_reset_prompt(prompt_match.group("key"))
+                return
+
+            inbox_item_match = INBOX_ITEM_PATH.match(self.path)
+            if inbox_item_match:
+                self._handle_delete_inbox(
+                    inbox_item_match.group("repo"), int(inbox_item_match.group("issue_number"))
+                )
                 return
 
             self._send_json(404, {"error": "not found"})
@@ -939,6 +1003,146 @@ def _make_handler(
                 if progress_id:
                     progress_store.clear(progress_id)
 
+        def _handle_issue_plan(self, repo: str) -> None:
+            """issue #287: やりたいことからissueの計画（タイトル・本文）を生成して返す。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            if plan_runner is None:
+                self._send_json(503, {"error": "計画生成は利用できません"})
+                return
+            progress_id: str | None = None
+            try:
+                try:
+                    payload = self._read_json_body()
+                    if not isinstance(payload, dict):
+                        raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
+                    pid = payload.get("progressId")
+                    progress_id = pid if isinstance(pid, str) else None
+                    request_text = payload.get("request")
+                    if not isinstance(request_text, str) or not request_text.strip():
+                        raise ValueError("requestは空でない文字列である必要があります")
+                    previous = payload.get("previousPlan")
+                    previous_plan: IssuePlan | None = None
+                    if previous is not None:
+                        if (
+                            not isinstance(previous, dict)
+                            or not isinstance(previous.get("title"), str)
+                            or not isinstance(previous.get("body"), str)
+                        ):
+                            raise ValueError("previousPlanはtitle・bodyを持つ必要があります")
+                        previous_plan = IssuePlan(previous["title"], previous["body"])
+                    instruction = payload.get("instruction")
+                    if instruction is not None and not isinstance(instruction, str):
+                        raise ValueError("instructionは文字列である必要があります")
+                except ValueError as e:
+                    self._send_json(400, {"error": str(e)})
+                    return
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
+                project = projects_by_repo[repo]
+                try:
+                    plan = plan_runner.submit(
+                        project,
+                        lambda: generate_plan_fn(
+                            project,
+                            request_text,
+                            previous_plan,
+                            instruction,
+                            model_override=parse_model_choice(payload.get("model")),
+                        ),
+                        on_stage=on_stage,
+                    )
+                except PlanError as e:
+                    self._send_json(e.status, {"error": str(e), "code": e.code})
+                    return
+                self._send_json(200, {"title": plan.title, "body": plan.body})
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
+        def _handle_create_inbox(self, repo: str) -> None:
+            """inbox項目を作成する（issue #288）。ディスパッチはしない。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                payload = self._read_json_body()
+                issue_number = handle_create_inbox(
+                    repo,
+                    payload["title"],
+                    payload.get("body") or "",
+                    payload["kind"],
+                    create_issue=create_issue,
+                    ensure_labels=ensure_labels_fn,
+                    get_labels=get_labels,
+                    add_label=add_label,
+                    remove_label=remove_label,
+                )
+            except (KeyError, ValueError) as e:  # InvalidInboxKindErrorはValueError
+                self._send_json(400, {"error": str(e)})
+                return
+            except subprocess.CalledProcessError as e:
+                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                return
+            self._refresh_store()
+            self._send_json(201, {"issue_number": issue_number})
+
+        def _handle_update_inbox(self, repo: str, issue_number: int) -> None:
+            """inbox項目のタイトル・本文・種別を編集する（issue #288）。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                payload = self._read_json_body()
+                handle_update_inbox(
+                    repo,
+                    issue_number,
+                    payload["title"],
+                    payload.get("body") or "",
+                    payload["kind"],
+                    update_issue=update_issue,
+                    ensure_labels=ensure_labels_fn,
+                    get_labels=get_labels,
+                    add_label=add_label,
+                    remove_label=remove_label,
+                )
+            except NotInboxIssueError as e:
+                self._send_json(409, {"error": str(e)})
+                return
+            except (KeyError, ValueError) as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            except subprocess.CalledProcessError as e:
+                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                return
+            self._refresh_store()
+            self._send_json(200, {"issue_number": issue_number})
+
+        def _handle_delete_inbox(self, repo: str, issue_number: int) -> None:
+            """inbox項目を`not planned`でクローズする（issue #288）。"""
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                handle_delete_inbox(
+                    repo,
+                    issue_number,
+                    close_not_planned=close_issue_not_planned,
+                    get_labels=get_labels,
+                )
+            except NotInboxIssueError as e:
+                self._send_json(409, {"error": str(e)})
+                return
+            except subprocess.CalledProcessError as e:
+                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                return
+            self._refresh_store()
+            self._send_json(200, {"issue_number": issue_number})
+
         def _handle_create_issue(self, repo: str) -> None:
             if repo not in known_repos:
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
@@ -954,11 +1158,18 @@ def _make_handler(
                         if progress_id
                         else (lambda _stage: None)
                     )
+                    existing = payload.get("issueNumber")
+                    if existing is not None and (
+                        isinstance(existing, bool) or not isinstance(existing, int)
+                    ):
+                        raise ValueError("issueNumberは整数で指定してください")
                     result = handle_create_issue(
                         repo,
                         payload["title"],
                         payload["prompt"],
                         payload["dispatch"],
+                        existing_issue_number=existing,
+                        update_issue=update_issue,
                         create_issue=create_issue,
                         get_labels=get_labels,
                         add_label=add_label,
@@ -1014,6 +1225,11 @@ def make_server(
     read_only: bool = False,
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
+    plan_runner: PlanRunner | None = None,
+    generate_plan_fn: GeneratePlanFn = generate_plan,
+    update_issue: UpdateIssueFn = gh_update_issue,
+    close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
+    ensure_inbox_labels: EnsureLabelsFn | None = None,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -1040,6 +1256,11 @@ def make_server(
         github_token=github_token,
         fetch_attachment_fn=fetch_attachment_fn,
         read_only=read_only,
+        plan_runner=plan_runner,
+        generate_plan_fn=generate_plan_fn,
+        update_issue=update_issue,
+        close_issue_not_planned=close_issue_not_planned,
+        ensure_inbox_labels=ensure_inbox_labels,
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         dashboard_settings=(

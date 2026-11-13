@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from orchestrator.aggregation import IssueSummary, PrCandidate
 
-ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state"
+ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state,body,createdAt"
 
 ISSUE_DETAIL_FIELDS = "body,comments,author,url,createdAt"
 
@@ -81,6 +81,8 @@ def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]
             comments=issue["comments"],
             updated_at=issue["updatedAt"],
             state=issue["state"],
+            body=issue.get("body") or "",
+            created_at=issue.get("createdAt") or "",
         )
         for issue in raw_issues
     ]
@@ -142,6 +144,84 @@ def create_issue(repo: str, title: str, body: str, *, run: RunFn = subprocess.ru
         check=True,
     )
     return json.loads(result.stdout)["number"]
+
+
+def update_issue(
+    repo: str, issue_number: int, title: str, body: str, *, run: RunFn = subprocess.run
+) -> None:
+    """issueのタイトルと本文を更新する（`gh api -X PATCH`、issue #288）。"""
+    run(
+        [
+            "gh",
+            "api",
+            "-X",
+            "PATCH",
+            f"repos/{repo}/issues/{issue_number}",
+            "-f",
+            f"title={title}",
+            "-f",
+            f"body={body}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def close_issue_not_planned(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> None:
+    """issueを`not planned`でクローズする（inbox項目の削除、issue #288）。"""
+    run(
+        [
+            "gh",
+            "api",
+            "-X",
+            "PATCH",
+            f"repos/{repo}/issues/{issue_number}",
+            "-f",
+            "state=closed",
+            "-f",
+            "state_reason=not_planned",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def ensure_labels(
+    repo: str, defs: Iterable[tuple[str, str, str]], *, run: RunFn = subprocess.run
+) -> list[str]:
+    """リポジトリに無いラベルのみ作成する（冪等、issue #288）。作成したラベル名を返す。"""
+    result = run(
+        ["gh", "label", "list", "--repo", repo, "--json", "name", "--limit", "500"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    existing = {label["name"] for label in json.loads(result.stdout)}
+    created: list[str] = []
+    for name, color, description in defs:
+        if name in existing:
+            continue
+        run(
+            [
+                "gh",
+                "label",
+                "create",
+                name,
+                "--repo",
+                repo,
+                "--color",
+                color,
+                "--description",
+                description,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        created.append(name)
+    return created
 
 
 # PR本文の「closeする意図」を示すキーワード（GitHubのclosing keywords）。直後の`#N`が

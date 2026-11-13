@@ -3,6 +3,7 @@
 import { createContext, useContext } from "react";
 import type {
   AggregatedState,
+  InboxItem,
   IssueComment,
   ProjectExecutionSettings,
 } from "@/lib/types";
@@ -41,7 +42,8 @@ export interface AppContextValue {
     /** commentsがコメントではなくissue本文であることを示す（issue #231）。 */
     isIssueBody?: boolean,
   ) => void;
-  openNewTask: (repo: string) => void;
+  /** 新規タスク作成を開く。inbox項目を渡すと「AIに計画してもらう」をその項目を入力元に起動する（issue #288）。 */
+  openNewTask: (repo: string, inbox?: InboxItem) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);

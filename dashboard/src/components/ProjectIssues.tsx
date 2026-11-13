@@ -27,11 +27,12 @@ import {
 import { shortRepoName } from "@/lib/projectStatus";
 import { projectDotColorVar, statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
-import type { ProjectIssue } from "@/lib/types";
+import type { InboxItem, ProjectIssue } from "@/lib/types";
 import { findIssueJob } from "@/lib/jobs";
 import { useApp } from "./AppContext";
 import { DispatchDiagnosisSlot } from "./DispatchDiagnosis";
 import JobStatus from "./JobStatus";
+import InboxSection from "./InboxSection";
 import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
 import SyncAgo from "./SyncAgo";
@@ -131,6 +132,8 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const [issues, setIssues] = useState<ProjectIssue[]>(
     initialCache.kind === "miss" ? [] : initialCache.entry.issues,
   );
+  // OPENなinbox項目（issue #288）。一覧と同じ再取得で更新する。
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -192,6 +195,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq !== requestSeq.current) return;
           storeIssues(repo, data.issues);
           setIssues(data.issues);
+          setInbox(data.inbox ?? []);
           setLoad("ready");
           // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
           if (mode === "manual") restartPoll.current();
@@ -408,6 +412,14 @@ export default function ProjectIssues({ repo }: { repo: string }) {
             {filter === FILTER_ORPHAN ? "すべて表示に戻す" : "該当のみ表示"}
           </button>
         </div>
+      )}
+
+      {load !== "error" && (
+        <InboxSection
+          repo={repo}
+          items={inbox}
+          onChanged={() => void fetchIssues("poll")}
+        />
       )}
 
       <div

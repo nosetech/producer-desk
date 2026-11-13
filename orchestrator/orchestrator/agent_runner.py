@@ -515,6 +515,15 @@ def build_claude_command(
 # cwdに起動される。オーケストレータプロセスのPATHをそのまま継承させただけでは
 # `ollama-bench`がPATH解決できず、プロジェクト側の指示（README.md参照）が
 # 「command not found」で失敗し利用量が一切記録されない。解決結果は
+# issue #292: `claude -p`（非対話モード）では`Artifact`ツールが既定で無効のため、
+# `--chrome`と同様に明示的に有効化する（`run_agent_runner`が子プロセスの環境変数
+# として渡す）。非公式の環境変数で、Claude Code v2.1.322で動作を確認した。
+# 親プロセスに`CLAUDE_CODE_DISABLE_ARTIFACT`があると意図せず無効化されうるため、
+# 子プロセスへは引き継がない。
+ARTIFACT_ENABLE_ENV_VAR = "CLAUDE_CODE_ARTIFACT"
+ARTIFACT_DISABLE_ENV_VAR = "CLAUDE_CODE_DISABLE_ARTIFACT"
+
+
 # `run_agent_runner`が子プロセスの環境変数`OLLAMA_BENCH_PATH`に設定する
 # （system promptへの埋め込みではなく環境変数にする理由は同定数の直前コメント参照）。
 #
@@ -1084,9 +1093,14 @@ def run_agent_runner(
     base_env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+        if k not in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", ARTIFACT_DISABLE_ENV_VAR)
     }
-    env = {**base_env, "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(), **env_overrides}
+    env = {
+        **base_env,
+        "OLLAMA_BENCH_PATH": _resolve_ollama_bench_path(),
+        ARTIFACT_ENABLE_ENV_VAR: "1",
+        **env_overrides,
+    }
     process = popen(
         command,
         cwd=str(worktree_path),

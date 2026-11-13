@@ -21,6 +21,10 @@ from dataclasses import dataclass, field
 
 from orchestrator.dispatch_queue import QueueSnapshot
 from orchestrator.labels import (
+    INBOX_KIND_BUG,
+    INBOX_KIND_ENHANCEMENT,
+    INBOX_KIND_OTHER,
+    INBOX_LABEL,
     STATUS_CLOSED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -83,6 +87,21 @@ class IssueSummary:
     # `pr_number`が一意に特定できなかった（候補が0件または2件以上）場合も含め、
     # 対応PRの候補一覧（issue #206）。承認時はこの候補からユーザーが選択する。
     pr_candidates: list[PrCandidate] = field(default_factory=list)
+    # inbox項目（issue #288）の表示用。`gh issue list`が返すissue本文・作成日時（ISO 8601）。
+    body: str = ""
+    created_at: str = ""
+
+
+@dataclass
+class InboxItem:
+    """inbox項目（`inbox`ラベル付きissue、issue #288）の1件。"""
+
+    number: int
+    title: str
+    # `bug` / `enhancement` / `other`。種別ラベルが0個・複数の場合は`other`扱い。
+    kind: str
+    body: str
+    created_at: str
 
 
 @dataclass
@@ -107,6 +126,8 @@ class ProjectStatus:
     # オーケストレータが実際にGitHubからこのリポジトリのissueを取得した時刻（ISO 8601, UTC）。
     # ダッシュボードの「N分前に更新」表示の元（issue #197）。未取得ならNone。
     fetched_at: str | None = None
+    # このリポジトリのOPENなinbox項目（登録日時の新しい順、issue #288）。
+    inbox: list[InboxItem] = field(default_factory=list)
 
 
 @dataclass
@@ -169,6 +190,41 @@ def _current_status_label(issue: IssueSummary) -> str | None:
     return next((label for label in STATUS_LABEL_PRIORITY if label in present), None)
 
 
+_INBOX_KINDS = (INBOX_KIND_BUG, INBOX_KIND_ENHANCEMENT, INBOX_KIND_OTHER)
+
+
+def is_inbox_issue(issue: IssueSummary) -> bool:
+    """`inbox`ラベルを持ち、状態ラベル（5種）が未付与のissueか（issue #288）。
+
+    昇格すると`inbox`ラベルが外れて`status:todo`が付与されるため、状態ラベルが付いた
+    issueは（`inbox`が残っていても）通常のissueとして扱う。
+    """
+    return INBOX_LABEL in issue.labels and not any(label in STATUS_LABELS for label in issue.labels)
+
+
+def inbox_kind(labels: list[str]) -> str:
+    """種別ラベルからinbox項目の種別を導出する。ちょうど1つでなければ`other`。"""
+    present = [label for label in labels if label in _INBOX_KINDS]
+    return present[0] if len(present) == 1 else INBOX_KIND_OTHER
+
+
+def build_inbox(issues: list[IssueSummary]) -> list[InboxItem]:
+    """1リポジトリのOPENなinbox項目を、登録日時の新しい順で返す。"""
+    items = [
+        InboxItem(
+            number=i.number,
+            title=i.title,
+            kind=inbox_kind(i.labels),
+            body=i.body,
+            created_at=i.created_at,
+        )
+        for i in issues
+        if i.state == "OPEN" and is_inbox_issue(i)
+    ]
+    items.sort(key=lambda i: (i.created_at, i.number), reverse=True)
+    return items
+
+
 def _is_orphaned_in_progress(
     issue: IssueSummary, label: str, is_dispatch_active: IsDispatchActiveFn | None
 ) -> bool:
@@ -205,6 +261,8 @@ def build_project_issues(
     """1リポジトリのissue一覧を、issue一覧ページ向けに状態ラベル・孤立判定付きで整形する。"""
     result: list[ProjectIssue] = []
     for issue in issues:
+        if is_inbox_issue(issue):
+            continue  # inboxは専用セクションで表示する（issue #288）
         label = _current_status_label(issue)
         if label is None and issue.state == "CLOSED":
             label = STATUS_CLOSED
@@ -253,10 +311,13 @@ def aggregate(
     fetched_at_by_repo = fetched_at_by_repo or {}
     for repo, issues in issues_by_repo.items():
         fetched_at = fetched_at_by_repo.get(repo)
+        inbox = build_inbox(issues)
         labeled: list[tuple[IssueSummary, str]] = []
         repo_counts = dict.fromkeys(STATUS_COUNT_KEYS, 0)
 
         for issue in issues:
+            if is_inbox_issue(issue):
+                continue  # inboxは状態別件数・並行状況の集計に含めない（issue #288）
             label = _current_status_label(issue)
             if label is not None:
                 labeled.append((issue, label))
@@ -268,7 +329,7 @@ def aggregate(
 
         if not labeled:
             project_status.append(
-                ProjectStatus(repo=repo, counts=repo_counts, fetched_at=fetched_at)
+                ProjectStatus(repo=repo, counts=repo_counts, fetched_at=fetched_at, inbox=inbox)
             )
             continue
 
@@ -284,6 +345,7 @@ def aggregate(
                 ),
                 counts=repo_counts,
                 fetched_at=fetched_at,
+                inbox=inbox,
             )
         )
 

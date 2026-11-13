@@ -34,8 +34,11 @@ from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
 from orchestrator.github_client import gh_supports_attach
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.issue_plan import PlanRunner, execution_env, generate_plan
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
+from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
+from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
 from orchestrator.logging_config import configure_logging
 from orchestrator.polling import run_polling_loop
 from orchestrator.polling_health import (
@@ -55,11 +58,18 @@ PORT_ENV = "ORCHESTRATOR_PORT"
 
 
 def _make_dispatch_fn(
-    projects: list[Project], log_retention_days: int, litellm_health_timeout_seconds: float
+    projects: list[Project],
+    log_retention_days: int,
+    litellm_health_timeout_seconds: float,
+    plan_runner_ref: list[PlanRunner],
 ) -> DispatchFn:
     projects_by_repo = {project.repo: project for project in projects}
 
     def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        if issue_number < 0:
+            # issue #287: 負の番号は計画生成ジョブ（実issueではない）。
+            plan_runner_ref[0].run_job(issue_number)
+            return
         run_agent_runner(
             projects_by_repo[repo],
             issue_number,
@@ -71,6 +81,32 @@ def _make_dispatch_fn(
         )
 
     return dispatch_fn
+
+
+def _make_generate_plan_fn(litellm_health_timeout_seconds: float):
+    """issue #287: 計画生成（`generate_plan`）に、プロジェクト設定の実行手段を反映させる。"""
+
+    def generate_plan_fn(
+        project, request, previous_plan=None, instruction=None, model_override=None
+    ):
+        return generate_plan(
+            project,
+            request,
+            previous_plan,
+            instruction,
+            model_override=model_override,
+            litellm_env_fn=lambda p, o: execution_env(
+                p,
+                o,
+                health_check=lambda url: litellm_is_healthy(
+                    url, timeout=litellm_health_timeout_seconds
+                ),
+                base_url=litellm_resolve_base_url(),
+                api_key=litellm_resolve_api_key(),
+            ),
+        )
+
+    return generate_plan_fn
 
 
 def main() -> None:
@@ -136,9 +172,14 @@ def main() -> None:
 
     store = StateStore()
     stop_event = threading.Event()
+    plan_runner_ref: list[PlanRunner] = []
     dispatch_queue = DispatchQueue(
-        dispatch_fn=_make_dispatch_fn(projects, log_retention_days, litellm_health_timeout_seconds)
+        dispatch_fn=_make_dispatch_fn(
+            projects, log_retention_days, litellm_health_timeout_seconds, plan_runner_ref
+        )
     )
+    plan_runner = PlanRunner(dispatch_queue)
+    plan_runner_ref.append(plan_runner)
     comment_tracker = CommentTracker()
     ci_wait_tracker = CiWaitTracker()
     decision_notifier = DecisionNotifier()
@@ -220,6 +261,8 @@ def main() -> None:
         read_only=read_only,
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
+        plan_runner=plan_runner,
+        generate_plan_fn=_make_generate_plan_fn(litellm_health_timeout_seconds),
     )
     logger.info(
         "APIサーバーを起動しました: http://%s:%s/api/state",

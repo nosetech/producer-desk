@@ -3,7 +3,7 @@
 - 対応issue: [#4](https://github.com/nosetech/producer-desk/issues/4)（親issue: [#1](https://github.com/nosetech/producer-desk/issues/1)、前提issue: [#2](https://github.com/nosetech/producer-desk/issues/2) [#3](https://github.com/nosetech/producer-desk/issues/3)）
 - 作成日: 2026-08-03
 - 前提: [要件定義書](./requirements.md) / [アーキテクチャ設計書](./architecture.md)
-- 画面設計: 本書ではワイヤーフレーム等の視覚的な設計は扱わない。Claude Designへの委譲プロンプトを[design-prompt-dashboard.md](./design-prompt-dashboard.md)としてまとめている。
+- 画面設計: 本書ではワイヤーフレーム等の視覚的な設計は扱わない。Claudeのチャット（デザイン本体はArtifacts）で使うプロンプトを[design-prompt-dashboard.md](./design-prompt-dashboard.md)としてまとめている。
 
 ## 1. データモデル・状態遷移設計
 
@@ -28,6 +28,8 @@ issueのクローズ操作自体（人間による手動クローズ、PRマー�
 `status:todo` / `status:in-progress` / `needs-human-decision` / `status:in-review` / `status:closed` のいずれも付与されていないissueは、producer-deskの管理対象外として扱う（このシステムが起票していない素のissue、まだ`status:todo`すら付いていない起票直後のissue等）。管理対象外issueは判断待ち一覧・プロジェクト状況のいずれにも表示しない（[2-2](#2-2-データ取得仕様ポーリング)参照。ただし「プロジェクトの並行状況」ウィジェットの状態別件数には`untagged`として計上される。ラベル付け漏れの検知用途、issue #115）。オーケストレータは管理対象外issueに対して`status:closed`を含むいかなる状態ラベルも自動付与しない（管理対象外issueがクローズされても何もしない。対象はあくまで4つの状態ラベルのいずれかが付与済み＝一度でもproducer-deskが着手したissueのみ）。
 
 過去、この管理対象外という区分が無かったため、「状態ラベルが1つも付いていない」ことを一律「完了」と誤表示していた不具合があった（[issue #45](https://github.com/nosetech/producer-desk/issues/45)）。
+
+**補助ラベル`inbox`（issue #288）**: プロジェクト別issue一覧の「inbox」（バグ・機能アイデアの一行メモ置き場）の項目は、`inbox`ラベル＋種別ラベル（`bug` / `enhancement` / `other` のちょうど1つ）だけを持つGitHub issueとして保存する。`inbox`は上記5状態には**含まれない補助ラベル**で（`labels.py`の`INBOX_LABEL`。`STATUS_LABELS`・排他的ラベルの対象外）、状態遷移図への影響はない。状態ラベルが未付与のため上記の「管理対象外」の扱いが自然に当てはまり、Agent Runnerへは自動ディスパッチされず、判断待ち一覧・最近の活動・状態別件数（`untagged`含む）・並行状況にも混ざらない（`aggregation.is_inbox_issue`が`inbox`付きで状態ラベル無しのissueを判定し、集計から除外する）。「計画する」で計画を承認すると同じissueが昇格する（`inbox`を外して`status:todo`を付与。種別ラベルは残す。ラベル操作は現在のラベルを取得して差分のみ適用する冪等な方式）。
 
 ### 冪等な状態遷移フロー
 
@@ -161,6 +163,20 @@ Content-Type: application/json
 - `dispatch: "immediate"`: 作成直後に上記「既存issueへの指示」の `instruct` と同じ扱いで即時ディスパッチ（またはプロジェクトが実行中ならキュー）する。
 - `dispatch: "queued"`: `status:todo` のまま登録するだけでディスパッチしない。後日、ダッシュボードから当該issueに `instruct` を送ることで着手させる。
 
+#### AIによる計画作成（issue計画生成API、issue #287）
+
+新規タスク作成で「AIに計画してもらう」を選んだとき、「やりたいこと」からissueのタイトル・本文（計画）をAIに作成させる。**この時点ではissueを作らない**。承認後の登録は既存の `POST /api/projects/{repo}/issues`（上記「新規タスクの作成」、`status:todo`付与・`immediate`/`queued`選択）をそのまま使う。
+
+- `POST /api/projects/{repo}/issue-plans`
+  - リクエスト: `{ "request": string, "previousPlan"?: {"title","body"}, "instruction"?: string, "model"?: string, "progressId"?: string }`。`previousPlan`と`instruction`を渡すと、既存の計画に修正指示を反映した版を返す（何度でも繰り返せる）。`model`は`claude_code` / `litellm:<alias>`（省略時はプロジェクトの既定の実行手段）。
+  - 成功: `200 { "title", "body" }`。失敗: `{ "error", "code" }`。`code`は`parse`（出力からタイトル・本文を取り出せない、502）/ `timeout`（600秒、504）/ `limit`（利用リミット、429）/ `failed`（その他、502）。入力不正は400、未登録リポジトリは404。
+- 実行: `claude -p --output-format json --permission-mode plan`を、プロジェクトのworktreeを`cwd`にワンショット実行する。`--dangerously-skip-permissions`は使わず、`--disallowedTools Edit Write NotebookEdit Bash`で変更系ツールを禁止する（コード変更・ラベル操作・コメント投稿は行わせない）。実行前にworktreeを`origin/develop`最新のdetached HEADへ合わせる（未コミットの変更がある場合・fetch失敗時は触らずに続行）。
+- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す。キュー投入・worktree取得は`issue_plan.PlanRunner`に集約しており、将来worktreeを動的に作成して並行化する際はここを差し替える。
+- 進捗: `/api/progress/{progress_id}`のポーリングで、待機中は`plan_queued:<順位>`、実行中は`plan_running`を返す（ダッシュボードが「待機中（キュー◯番目）」「計画を作成中」を区別表示）。
+- 読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）: GitHubへ書き込まないため計画生成は許可する（その後のissue登録は403）。
+- プロンプト: 出力形式（`{"title","body"}`のJSONをコードブロックで1つ）と調査の指示はプロンプト設定の`plan_issue_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で編集・リセットできる。必須トークンは`"title"` / `"body"`、使えるプレースホルダは`{repo}` / `{user_name}`（`{issue_number}`は未作成のため不可）。修正指示時も同じプロンプトを使い、現在の計画と修正指示をユーザーメッセージとして渡す。
+- 画面: 新規タスク作成パネルの「自分で書く / AIに計画してもらう」切替、計画確認（タイトル・本文の直接編集、AIへの修正指示、「承認して登録」「やり直す」「キャンセル」）。デザインは[design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md)参照。
+
 #### 共通仕様
 
 - 認証は[6-2](#6-2-ネットワークアクセスの認証設計)の通りアプリレベルの追加認証は行わず、ネットワーク境界（MVPでは同一LAN内アクセスであること）に委ねる。
@@ -205,9 +221,19 @@ Content-Type: application/json
 - 現在のラベルが`needs-human-decision`でない場合は409。未登録リポジトリは404。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では他の書き込み系APIと同様に403。
 - ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタン（確認ダイアログ付き）から呼ばれる。デザインは[design-prompt-dashboard-diff-relabel.md](./design-prompt-dashboard-diff-relabel.md)参照。
 
+**inbox API（issue #288）**
+
+- `POST /api/projects/{repo}/inbox`: inbox項目を作成する。ボディは`{"title"（必須）, "body"（任意）, "kind"（`bug`/`enhancement`/`other`、必須）}`。`create_issue`＋`inbox`ラベル＋種別ラベル1つを付与し、状態ラベルは付けずディスパッチもしない。種別が3つ以外・titleが空は400、対象リポジトリに`inbox`/種別ラベルが無い場合は作成前に`gh label create`で補う（`github_client.ensure_labels`）。応答は`201 {"issue_number": n}`。
+- `PATCH /api/projects/{repo}/inbox/{issue_number}`: タイトル・本文・種別の編集。種別変更時は旧種別ラベルを外して新種別ラベルを付与する（冪等）。`inbox`ラベルが無いissue（通常のissue）は409で拒否する。
+- `DELETE /api/projects/{repo}/inbox/{issue_number}`: `not planned`でクローズする（`state_reason: not_planned`）。`inbox`ラベルが無いissueは409。
+- 昇格: `POST /api/projects/{repo}/issues`（[#287の承認時登録](#2-3-指示出しapi内部api)）のボディに`issueNumber`を渡すと、新規作成せず、そのinbox項目のタイトル・本文を更新→`inbox`除去→`status:todo`付与（`immediate`ならさらにディスパッチ）を行う（`instruct.handle_create_issue`の`existing_issue_number`）。`inbox`ラベルが無いissue番号は400。
+- 上記3つの書き込みAPIは`ORCHESTRATOR_READ_ONLY=1`では403。一覧は`GET /api/projects/{repo}/issues`・`POST .../refresh`の応答の`inbox`配列（OPENなinbox項目、`{number, title, kind, body, created_at}`、登録日時の新しい順）で取得し、通常の`issues`にはinbox項目を含めない。`GET /api/state`の`project_status[].inbox`にも同じ配列を載せる。`kind`は付与された種別ラベルから導出し、0個・複数なら`other`。
+
 ### 2-4. ダッシュボードの画面設計
 
-視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claude Designへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claudeのチャットへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
+
+- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。
 
 #### コメント添付ファイル（画像・動画）の表示（issue #218）
 
@@ -245,9 +271,10 @@ echo "<指示内容>" | claude -p \
 - 同様に`--append-system-prompt`で、動作確認用にorchestrator・dashboardを別インスタンスとして起動・停止する場合は`bin/dev_instance.sh start|stop`を使い、`pkill` / `killall` / ポートからPIDを探してのkillなど名前・ポート指定で止める操作をしないよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION`、issue #238）。運用インスタンス・他worktreeのインスタンスは`ps`上で見分けがつかず、そうした停止操作が運用中のプロセスを巻き込むため。`bin/dev_instance.sh`は起動したプロセスグループをworktree内の`.dev-run/`へ記録し、`stop`は記録とPGID・目印環境変数が一致するものだけをkillする。同内容はproducer-deskの`CLAUDE.md`にも記載している。さらにissue #241で、確認用ダッシュボードは`NODE_ENV`を外して起動する（`NODE_ENV=production`のままだと`next dev`が500になる）こと、確認用インスタンスは読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）で`nosetech/producer-desk`を対象に起動するため実issueへの書き込みが起きないこと、画面の見た目を確認できなかった場合はその原因をPRコメント・最終応答に明記することを指示文へ追加した。issue #244で、dashboardもorchestratorと同じ環境変数`PROJECTS_CONFIG_PATH`等で設定ファイルを読むようにし、確認用ダッシュボードのために`config/projects.yaml`等を直接置いたり書き換えたりせず`bin/dev_instance.sh`の環境変数経由で渡すよう指示文へ追加した。読み取り専用モードでは、ディスパッチ・ラベル変更・issueコメント投稿・Slack通知（`close_watcher` / `comment_watcher` / `ci_watcher`による自動書き込みを含む）を行わず、書き込み系の内部API（指示・再実行・issue作成・設定変更・プロンプト編集）は403を返し、参照系APIと再取得（`POST /api/refresh`系）のみ動作する。
 - 同様に`--append-system-prompt`で、Agent Runnerが調査結果の報告等の目的で`gh issue comment`等を用いてissueに直接コメントを投稿する場合は、本文末尾に`github_client.BOT_COMMENT_MARKER`（`<!-- producer-desk:bot-comment -->`）を必ず付与するよう毎回明示する（`agent_runner.py`の`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）。オーケストレータ内部の通知処理（`github_client.post_comment`）はこのマーカーを自動付与するが、Agent Runner自身が`gh`コマンドを生で叩く経路はこの仕組みを経由しないため付与漏れが起こり得る。マーカーが無いと[2-3「共通仕様」](#共通仕様)のコメント監視処理（`comment_watcher.py`）が自分自身の投稿を人間からの新規指示と誤検知し、同一内容を無限に再ディスパッチしてしまう（ラベルも`needs-human-decision`→`status:in-progress`に巻き戻る。issue #43）。
 - 同じ指示（`AGENT_RUNNER_COMMENT_MARKER_INSTRUCTION`）内で、セッション終了時の最終応答は3-2の通り`run_agent_runner`が自動的に「Agent Runner実行結果:」というissueコメントとして無条件に投稿する旨も明示し、対応完了時にAgent Runner自身が重ねて完了報告コメントを投稿する必要はないことを伝える。能動的なissueコメント投稿は、長時間かかる作業の途中経過報告など、最終応答を待たずに人間へ可視化する価値がある場合に限定する。当初この案内が無かったため、AI自身の能動的な完了報告コメントと、オーケストレータによる無条件の自動投稿とがほぼ同時刻・同内容で重複して投稿される事例が複数のissueで発生した（issue #84）。
-- `DesignSync`が権限不足等で使えない場合はフォールバックしない。ブラウザ操作ツールでの代替取得（チャットへの問い合わせ等）は不正確になりうるため`DesignSync`の代替にはせず、その旨を実行結果コメントに明記してその場で作業を停止し、`needs-human-decision`として人間の確認を仰ぐ。`DesignSync`で値を取得できた場合、実装後はブラウザ操作ツール（`mcp__claude-in-chrome__*`）で完成品とデザインのプレビューを並べて最終的な見た目の一致を確認する（これは数値の取得手段ではなく完成後のセルフレビュー用途）。
+- `Artifact`ツールが使えない場合（未ログイン・ツール無効等）はフォールバックしない。ブラウザ操作ツールでの代替取得は不正確になりうるため`Artifact`の代替にはせず、その旨を実行結果コメントに明記してその場で作業を停止し、`needs-human-decision`として人間の確認を仰ぐ。`Artifact`で値を取得できた場合、実装後はブラウザ操作ツール（`mcp__claude-in-chrome__*`）で完成品とデザインのプレビューを並べて最終的な見た目の一致を確認する（これは数値の取得手段ではなく完成後のセルフレビュー用途）。
 - `--chrome` フラグにより、Claude in Chrome連携を明示的に有効化する。`claude -p`（非対話モード）はこの連携がデフォルト無効で、フラグなしでは`mcp__claude-in-chrome__*`ツール自体が存在せず、上記の実装後確認が機能しない（issue #33の追加原因調査で判明）。
-  - **運用上の前提**: `DesignSync`の利用には`claude.ai`ログインへのデザインシステムアクセス権限が必要。**この権限は一度`/design-login`（または通常のclaude.aiログインでのデザインアクセス許可）を実行すればmacOSキーチェーン（サービス名`Claude Code-credentials`）に永続化され、同一ホスト・同一OSユーザーで動く以降の`claude` CLI呼び出し（Agent Runnerの`claude -p`を含む）から自動的に利用できる。** そのためAgent Runner自身が実行時に認証フロー（ブラウザでのOAuth同意等、人間の操作が必要な手順）を行うことはできないし、行う必要もない。運用開始前にホスト上で一度だけ人間が`/design-login`を実行しておけば、以降のAgent Runner実行では追加の認証操作なしに`DesignSync`が使える想定（Chrome連携時の「事前にログイン状態を維持しておく」運用と同じパターン）。実行時に権限が無い場合、Agent Runnerはその旨を実行結果コメントに明記し、`needs-human-decision`として人間の確認を仰ぐ。
+  - **運用上の前提**: デザインは Claude の Artifacts にあり、`Artifact`ツール（`list`/`read`）で取得する（旧Claude Designの`DesignSync`は使わない）。利用にはClaude Codeが`claude.ai`アカウントで`/login`済みであることが必要で、同一ホスト・同一OSユーザーで動く以降の`claude` CLI呼び出し（Agent Runnerの`claude -p`を含む）からその認証が使える。`claude -p`では`Artifact`ツールが既定で無効のため、下記のとおり環境変数`CLAUDE_CODE_ARTIFACT=1`で有効化する。Agent Runner自身が実行時に認証フロー（ブラウザでのOAuth同意等、人間の操作が必要な手順）を行うことはできないし、行う必要もない。運用開始前にホスト上で一度だけ人間が`claude.ai`にログインしておけば足りる（Chrome連携時の「事前にログイン状態を維持しておく」運用と同じパターン）。実行時に`Artifact`が使えない場合、Agent Runnerはその旨を実行結果コメントに明記し、`needs-human-decision`として人間の確認を仰ぐ。
+- **`Artifact`ツールの有効化（issue #292）**: `claude -p`は`Artifact`ツールが既定で無効（ツール一覧・`ToolSearch`にも出ない）のため、`--chrome`と同様に子プロセスの環境変数`CLAUDE_CODE_ARTIFACT=1`で明示的に有効化する（`OLLAMA_BENCH_PATH`と同じ階層で`run_agent_runner`が設定。`env_overrides`で上書き可能な順序は変えない）。全プロジェクト・(A)/(B)両方に適用し、プロジェクトごとの設定は設けない。使うかどうかは各プロジェクトのCLAUDE.mdの指示に委ねる。検証はClaude Code v2.1.322で、`--tools default,Artifact`や`CLAUDE_CODE_ARTIFACT_TOOLSET=1`では有効にならなかった。**この環境変数は`claude`本体から見つけた非公式のもので、CLIのバージョンアップで挙動が変わりうる。** 親プロセスの`CLAUDE_CODE_DISABLE_ARTIFACT`は子プロセスへ引き継がない。`publish`/`delete`もヘッドレスで使えうるが、`--dangerously-skip-permissions`で動く他のツールと同水準として許容する。
 - **ユーザー個別のClaude Code設定は適用されない**: Agent Runnerは`claude -p`によるheadless（非対話）実行であるため、対話セッションでは有効なユーザー個別の`~/.claude/settings.json`のカスタマイズ（`mcp_tool`タイプの`SessionStart`フック等）やグローバル`CLAUDE.md`の指示は、Agent Runner実行時には適用されない場合がある。実際に、利用者の`~/.claude/settings.json`に設定されたInkdropノート読み込み用`SessionStart`フック（`mcp_tool`タイプ）が「mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)」というエラーで機能せず、フック経由で読み込むはずだった回答言語ルールが一切適用されなかった事例が確認されている（issue #139）。この制約により、Agent Runnerへ指示を確実に伝える手段は、本節の`--append-system-prompt`か、対象プロジェクト自身の`CLAUDE.md`（worktreeのcwd配下にあり確実に読み込まれる）に明記する方法のみである。
 
 ### 3-2. 監視方法
@@ -295,10 +322,10 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）と、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下8種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下9種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -308,6 +335,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
   | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
   | `dev_instance_instruction` | 動作確認用のorchestrator・dashboardを`bin/dev_instance.sh`経由で起動・停止させ、名前・ポート指定のkill（`pkill`等）の禁止、`NODE_ENV`の除去、読み取り専用モード、見た目を確認できなかった場合の原因明記の指示（issue #238・#241） | なし |
+  | `plan_issue_instruction` | 新規タスク作成の「AIに計画してもらう」で、やりたいことからissueのタイトル・本文を作成させる指示（出力JSON形式、読み取り専用の制約。issue #287） | `"title"` / `"body"` |
   | `approve_default_message` | 判断待ち承認時の定型コメント | なし |
   | `user_name` | ユーザーの呼称（既定「ユーザー」） | なし |
 
@@ -600,12 +628,13 @@ tarballを新バージョンの別ディレクトリに展開する運用のた�
 - **対象ファイルと検証**: `config/projects.yaml`はPyYAMLが利用可能な場合にYAMLとしてパース可能か検証、`config/sessions.json`は標準ライブラリの`json`でパース可能か検証してからコピーする（不正な場合は移行を中止）。`.env`はそのままコピー。`logs/`は必須ではないため`--with-logs`指定時のみ対象
 - **`config/usage.db`のスキーマバージョニング**: `orchestrator/orchestrator/usage_store.py`にSQLiteの`PRAGMA user_version`を使った最小限のスキーマバージョン管理（`SCHEMA_VERSION`定数）を導入した。新規作成時・スキーマバージョン管理導入以前に作成されたDB（`user_version`が未設定=0）ではバージョンを書き込むだけで通す一方、`SCHEMA_VERSION`と異なる値が設定されている場合は`_connect()`が`RuntimeError`で処理を止める。`migrate.sh`側も独立した定数`EXPECTED_USAGE_DB_SCHEMA_VERSION`を持ち、コピー前に`PRAGMA user_version`を比較して不一致なら自動移行せずエラーで停止する（将来テーブル定義を変更する際は、`usage_store.py`の`SCHEMA_VERSION`と`migrate.sh`の`EXPECTED_USAGE_DB_SCHEMA_VERSION`を両方インクリメントし、`_connect()`に変換ロジックを追加する運用を想定。現時点ではスキーマ変更の予定が無いため、フルのマイグレーションフレームワークは導入せず、この最小限の枠組みに留めている）。コピー自体は`sqlite3 <src> ".backup '<dst>'"`（オンラインバックアップAPI）で行うため、旧バージョンのオーケストレータを稼働させたまま実行しても不整合なコピーにならない（`scripts/backup_usage_db.sh`と同じ手法）
 - **上書き挙動**: 新展開先に同名ファイルが既に存在する場合、既定ではスキップ（何度実行しても安全）。`--force`指定時は`<file>.bak-<timestamp>`へリネームしてバックアップした上で上書きする
+- **inbox用ラベルの作成（issue #288）**: ファイル移行の後に、新展開先の`config/projects.yaml`（`--force`無しでコピーがスキップされた場合も移行先の既存ファイルが対象）に載っている全リポジトリへ、`inbox` / `bug` / `enhancement` / `other`のうち不足しているラベルだけを`gh label create`で作成する（冪等）。`gh`未導入・未認証・権限不足・リポジトリ到達不可の場合は、ファイル移行の成否とは切り離して警告を出して続行し、失敗したリポジトリと手動実行手順を最後にまとめて表示する。`--skip-labels`で省略できる。新規プロジェクトは`add_project.sh`が同じラベルを作成する。ラベルの名前・色・説明は`labels.py`の`INBOX_LABEL_DEFS`・`add_project.sh`・`migrate.sh`で同じ値を持つ（変更時は3箇所を揃える）。
 - **旧ディレクトリの扱い**: 移行ツールは旧ディレクトリを読み取り専用で扱い、削除・アーカイブは行わない。新バージョンの動作確認（`bin/start.sh`起動後、ダッシュボードでプロジェクト一覧・利用量履歴が表示されること）が済むまで旧バージョンを併用できるようにするため、削除するかどうかは利用者の判断に委ねる（SETUP.md「10. アップグレード手順」参照）
 
 ## 成果物
 
 - 本書（データモデル定義、状態遷移フロー、API仕様、Agent Runner連携仕様、通知フロー、権限設計、配布パッケージ化設計）
-- [design-prompt-dashboard.md](./design-prompt-dashboard.md)（Claude Designへの画面設計委譲プロンプト）
+- [design-prompt-dashboard.md](./design-prompt-dashboard.md)（Claudeのチャットでの画面設計用プロンプト。デザイン本体はArtifacts）
 
 ## 参考
 

@@ -30,6 +30,10 @@ class QueueSnapshot:
 
     running: int | None = None
     waiting: list[int] = field(default_factory=list)
+    # 計画生成ジョブ（issue #287。負のissue番号でキューに積まれる）の実行中・待機数。
+    # `running`/`waiting`には実issueのみを含め、計画生成ジョブは含めない。
+    planning: bool = False
+    plan_waiting: int = 0
 
 
 class DispatchQueue:
@@ -74,13 +78,29 @@ class DispatchQueue:
         with self._lock:
             return len(self._queues[repo])
 
-    def snapshot(self, repo: str) -> QueueSnapshot:
-        """実行中のissue番号と、待機中のissue番号（FIFO順）をロック配下で取得する（issue #233）。"""
+    def snapshot(self, repo: str, *, include_plans: bool = False) -> QueueSnapshot:
+        """実行中のissue番号と、待機中のissue番号（FIFO順）をロック配下で取得する（issue #233）。
+
+        既定では計画生成ジョブ（負の番号、issue #287）を`running`/`waiting`から除き、
+        件数のみ`planning`/`plan_waiting`で返す。`include_plans=True`のときは
+        計画生成ジョブの番号も`waiting`に含める（キュー順位の算出用）。
+        """
         with self._lock:
             queue = self._queues.get(repo)
+            numbers = [number for number, _ in queue] if queue else []
+            current = self._current.get(repo)
+            if include_plans:
+                return QueueSnapshot(
+                    running=current,
+                    waiting=numbers,
+                    planning=current is not None and current < 0,
+                    plan_waiting=sum(1 for n in numbers if n < 0),
+                )
             return QueueSnapshot(
-                running=self._current.get(repo),
-                waiting=[number for number, _ in queue] if queue else [],
+                running=current if current is not None and current > 0 else None,
+                waiting=[n for n in numbers if n > 0],
+                planning=current is not None and current < 0,
+                plan_waiting=sum(1 for n in numbers if n < 0),
             )
 
     def is_current(self, repo: str, issue_number: int) -> bool:

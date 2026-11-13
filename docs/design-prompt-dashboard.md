@@ -1,4 +1,4 @@
-# Claude Designへの指示プロンプト: producer-desk ダッシュボード画面設計
+# Claudeチャットへの指示プロンプト: producer-desk ダッシュボード画面設計
 
 `producer-desk`（自走型AI開発オーケストレーションシステム）のダッシュボード画面のビジュアルデザインを依頼するためのプロンプトです。以下を丸ごとコピーし、Claude（Artifact機能等）に貼り付けて画面設計を依頼してください。
 
@@ -80,6 +80,8 @@
 - デザイン成果物（Artifact）ができたら、URLまたはコードをこのリポジトリの実装issueに添付し、Next.js実装のベースとする。
 - 本プロンプトでの初回デザイン後に指示入力欄の要件が追加された場合は、ゼロから作り直すのではなく [design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md) の差分プロンプトを使って既存デザインを更新すること。
 - 「プロジェクトの並行状況が分かる要素」（要素4）に状態別件数を追加し、「最近の活動ログ（タイムライン）」（要素2）を廃止する変更は [design-prompt-dashboard-diff-status-counts.md](./design-prompt-dashboard-diff-status-counts.md) の差分プロンプトを使うこと（issue #115）。
+- 新規タスク作成に「AIに計画してもらう」モード（計画確認・AI修正指示）を追加する変更は [design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md) の差分プロンプトを使うこと（issue #287）。
+- プロジェクト別issue一覧にinbox（一行メモ置き場）を追加する変更は [design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md) の差分プロンプトを使うこと（issue #288）。
 - 各プロジェクトチップにディスパッチキュー（実行中＋待機中のタスク）のミニ図を追加する変更は [design-prompt-dashboard-diff-queue.md](./design-prompt-dashboard-diff-queue.md) の差分プロンプトを使うこと（issue #233）。
 - レビュー承認時のマージ対象PR選択UIの追加は [design-prompt-dashboard-diff-pr-picker.md](./design-prompt-dashboard-diff-pr-picker.md) の差分プロンプトを使うこと（issue #206）。
 - 判断待ち・レビュー待ちカードでのAIコメント全文表示と、返信入力欄内への返信先コメント表示の追加は [design-prompt-dashboard-diff-comment-viewer.md](./design-prompt-dashboard-diff-comment-viewer.md) の差分プロンプトを使うこと（issue #193）。

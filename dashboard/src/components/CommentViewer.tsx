@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatCommentTime } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
@@ -54,6 +55,9 @@ export default function CommentViewer({
   onClose,
   onReply,
   replyDisabled,
+  pr,
+  onApprove,
+  approveDisabled,
 }: {
   /** 表示候補のコメント一覧（古い→新しい順、初期表示は末尾）。 */
   comments: IssueComment[];
@@ -64,6 +68,11 @@ export default function CommentViewer({
   onClose: () => void;
   onReply: () => void;
   replyDisabled?: boolean;
+  /** 対応PRの表示（レビュー待ちのみ。ヘッダーのメタ行に出す）。 */
+  pr?: ReactNode;
+  /** 指定時のみフッターに「承認」ボタンを出す（レビュー待ちのみ）。 */
+  onApprove?: () => void;
+  approveDisabled?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // リサイズのドラッグをダイアログ外で離しても閉じないよう、押下がオーバーレイ上で始まったときだけ閉じる。
@@ -139,6 +148,7 @@ export default function CommentViewer({
             <div className={styles.headerMeta}>
               <span className={styles.label}>{label}</span>
               <span className={styles.kind}>{kindLabel}</span>
+              {pr}
             </div>
             <div className={styles.title}>{title}</div>
           </div>
@@ -223,6 +233,29 @@ export default function CommentViewer({
           <button type="button" className={styles.closeBtn} onClick={onClose}>
             閉じる
           </button>
+          {onApprove && (
+            <button
+              type="button"
+              className={styles.approveBtn}
+              onClick={onApprove}
+              disabled={approveDisabled}
+              title="承認してPRをマージします"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+              承認
+            </button>
+          )}
           <button
             type="button"
             className={styles.replyBtn}
