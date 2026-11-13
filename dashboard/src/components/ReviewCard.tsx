@@ -11,6 +11,7 @@ import { useApp } from "./AppContext";
 import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
 import DispatchDiagnosis from "./DispatchDiagnosis";
+import PrBadge from "./PrBadge";
 import styles from "./ReviewCard.module.css";
 
 // orchestrator/orchestrator/instruct.py の handle_instruct（STATUS_IN_REVIEW分岐）の
@@ -56,67 +57,6 @@ function ReplyIcon() {
     >
       <path d="M9 17 4 12l5-5" />
       <path d="M4 12h11a5 5 0 0 1 0 10" />
-    </svg>
-  );
-}
-
-function PrIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="18" r="3" />
-      <path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-3" />
-      <path d="M12 3 9 6l3 3" />
-    </svg>
-  );
-}
-
-function PrCandidateIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ flex: "none" }}
-    >
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="6" r="3" />
-      <path d="M6 9v6M18 9v1a2 2 0 0 1-2 2H8" />
-    </svg>
-  );
-}
-
-function PrNoneIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ flex: "none" }}
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 8v4M12 16h.01" />
     </svg>
   );
 }
@@ -208,10 +148,6 @@ export default function ReviewCard({
   const summary = last ? commentSummary(last) : null;
   const titleUrl =
     last?.url ?? `https://github.com/${review.repo}/issues/${review.number}`;
-  const prUrl =
-    review.pr_number != null
-      ? `https://github.com/${review.repo}/pull/${review.pr_number}`
-      : null;
   const repoName = review.repo.split("/")[1];
 
   // 対応PRが一意に特定できている（候補ちょうど1件）場合のみ従来の確認ダイアログ。
@@ -325,33 +261,12 @@ export default function ReviewCard({
             <path d="M15 3h6v6M10 14 21 3" />
           </svg>
         </a>
-        {prUrl ? (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noreferrer"
-            className={styles.prLink}
-          >
-            <PrIcon />
-            PR #{review.pr_number}
-          </a>
-        ) : (review.pr_candidates ?? []).length > 1 ? (
-          <span
-            className={styles.prCandidateChip}
-            title="対応PRの候補が複数あります。承認時にマージするPRを選択します"
-          >
-            <PrCandidateIcon />
-            PR候補 {(review.pr_candidates ?? []).length}件
-          </span>
-        ) : (
-          <span
-            className={styles.prNoneChip}
-            title="このissueに対応するPRを特定できませんでした"
-          >
-            <PrNoneIcon />
-            PR未特定
-          </span>
-        )}
+        <PrBadge
+          repo={review.repo}
+          prNumber={review.pr_number}
+          candidates={review.pr_candidates}
+          className={styles.prBadge}
+        />
       </div>
       {summary && (
         <div className={styles.summary}>
@@ -432,6 +347,18 @@ export default function ReviewCard({
             onReply(review.repo, review.number, review.title, review.comments);
           }}
           replyDisabled={busy}
+          pr={
+            <PrBadge
+              repo={review.repo}
+              prNumber={review.pr_number}
+              candidates={review.pr_candidates}
+            />
+          }
+          onApprove={() => {
+            setViewerOpen(false);
+            openConfirm();
+          }}
+          approveDisabled={busy}
         />
       )}
 
