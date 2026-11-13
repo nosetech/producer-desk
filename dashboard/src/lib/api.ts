@@ -5,6 +5,7 @@ import {
   type DispatchStatus,
   type Dispatch,
   type ExecutionMode,
+  type InboxKind,
   type InstructAction,
   type InstructResult,
   type IssueDetail,
@@ -207,18 +208,64 @@ export async function postIssuePlan(
   return data as { title: string; body: string };
 }
 
+/**
+ * issueを作成して登録する。`issueNumber`を渡すと新規作成せず、そのinbox項目を
+ * 通常のissue（`status:todo`）へ昇格する（issue #288）。
+ */
 export function postCreateIssue(
   repo: string,
   title: string,
   prompt: string,
   dispatch: Dispatch,
   progressId?: string,
+  issueNumber?: number,
 ): Promise<CreateIssueResult> {
   return fetch(`${repoPath(repo)}/issues`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, prompt, dispatch, progressId }),
+    body: JSON.stringify({ title, prompt, dispatch, progressId, issueNumber }),
   }).then((res) => parseJsonOrThrow<CreateIssueResult>(res));
+}
+
+export interface InboxInput {
+  kind: InboxKind;
+  title: string;
+  body: string;
+}
+
+/** inbox項目を登録する（issue #288）。ディスパッチはされない。 */
+export function postInbox(
+  repo: string,
+  input: InboxInput,
+): Promise<{ issue_number: number }> {
+  return fetch(`${repoPath(repo)}/inbox`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<{ issue_number: number }>(res));
+}
+
+/** inbox項目のタイトル・本文・種別を編集する（issue #288）。 */
+export function patchInbox(
+  repo: string,
+  issueNumber: number,
+  input: InboxInput,
+): Promise<{ issue_number: number }> {
+  return fetch(`${repoPath(repo)}/inbox/${issueNumber}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<{ issue_number: number }>(res));
+}
+
+/** inbox項目を削除（not plannedでクローズ）する（issue #288）。 */
+export function deleteInbox(
+  repo: string,
+  issueNumber: number,
+): Promise<{ issue_number: number }> {
+  return fetch(`${repoPath(repo)}/inbox/${issueNumber}`, {
+    method: "DELETE",
+  }).then((res) => parseJsonOrThrow<{ issue_number: number }>(res));
 }
 
 export function fetchProjectSettings(

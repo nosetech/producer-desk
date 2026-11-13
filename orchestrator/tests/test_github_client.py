@@ -9,7 +9,9 @@ from orchestrator.aggregation import IssueSummary, PrCandidate
 from orchestrator.github_client import (
     BOT_COMMENT_MARKER,
     close_issue,
+    close_issue_not_planned,
     delete_branch,
+    ensure_labels,
     get_issue_detail,
     get_pr_branch,
     get_pr_status_check_rollup,
@@ -18,6 +20,7 @@ from orchestrator.github_client import (
     merge_pr,
     post_comment,
     resolve_pr_number,
+    update_issue,
 )
 
 
@@ -110,7 +113,7 @@ def test_list_issues_calls_gh_with_expected_arguments() -> None:
         "--state",
         "all",
         "--json",
-        "number,title,labels,comments,updatedAt,state",
+        "number,title,labels,comments,updatedAt,state,body,createdAt",
         "--limit",
         "100",
     ]
@@ -361,3 +364,43 @@ def test_get_issue_detail_treats_null_body_as_empty() -> None:
 
     assert detail["body"] == ""
     assert detail["comments"] == []
+
+
+# issue #288: inbox向けのGitHub操作。
+def test_update_issue_patches_title_and_body() -> None:
+    fake_run = _fake_run({})
+
+    update_issue("nosetech/project-a", 5, "題", "本文", run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert cmd == [
+        "gh",
+        "api",
+        "-X",
+        "PATCH",
+        "repos/nosetech/project-a/issues/5",
+        "-f",
+        "title=題",
+        "-f",
+        "body=本文",
+    ]
+
+
+def test_close_issue_not_planned_sets_state_reason() -> None:
+    fake_run = _fake_run({})
+
+    close_issue_not_planned("nosetech/project-a", 5, run=fake_run)
+
+    [cmd] = fake_run.calls  # type: ignore[attr-defined]
+    assert "state=closed" in cmd and "state_reason=not_planned" in cmd
+
+
+def test_ensure_labels_creates_only_missing_labels() -> None:
+    fake_run = _fake_run([{"name": "bug"}, {"name": "inbox"}])
+    defs = (("inbox", "c5def5", "d1"), ("bug", "d73a4a", "d2"), ("other", "ededed", "d3"))
+
+    created = ensure_labels("nosetech/project-a", defs, run=fake_run)
+
+    assert created == ["other"]
+    calls = fake_run.calls  # type: ignore[attr-defined]
+    assert calls[1][:5] == ["gh", "label", "create", "other", "--repo"]

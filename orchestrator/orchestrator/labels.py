@@ -28,6 +28,26 @@ STATUS_LABELS = frozenset(
     }
 )
 
+# inbox（バグ・機能アイデアの一行メモ置き場、issue #288）を表す補助ラベル。5つの状態ラベル
+# （`STATUS_LABELS`）には含めない（排他的ラベルの対象にしない）。inbox項目はこのラベルと
+# 種別ラベル1つだけを持ち、状態ラベル未付与＝管理対象外という既存仕様により判断待ち一覧・
+# 最近の活動・状態別件数には出ない。昇格時にこのラベルを外して`status:todo`を付与する。
+INBOX_LABEL = "inbox"
+INBOX_KIND_BUG = "bug"
+INBOX_KIND_ENHANCEMENT = "enhancement"
+INBOX_KIND_OTHER = "other"
+# inbox項目の種別ラベル（ちょうど1つを付与する）。
+INBOX_KIND_LABELS: tuple[str, ...] = (INBOX_KIND_BUG, INBOX_KIND_ENHANCEMENT, INBOX_KIND_OTHER)
+# 対象リポジトリに必要なinbox用ラベルの定義（名前, 色, 説明）。
+# dist/scripts/add_project.sh・migrate.sh（ラベル作成）と同じ値を使う
+# （どちらかを変更したら他方も更新すること）。
+INBOX_LABEL_DEFS: tuple[tuple[str, str, str], ...] = (
+    (INBOX_LABEL, "c5def5", "未計画のメモ（producer-desk inbox）"),
+    (INBOX_KIND_BUG, "d73a4a", "Something isn't working"),
+    (INBOX_KIND_ENHANCEMENT, "a2eeef", "New feature or request"),
+    (INBOX_KIND_OTHER, "ededed", "その他（producer-desk inbox）"),
+)
+
 # STATUS_CLOSEDを除く、issueが着手済み（producer-deskの管理対象）であることを示す
 # 4つのラベル。close_watcher.pyがクローズ検知時に「元々管理していたissueか」を
 # 判定するために使う（docs/basic-design.md 1章「管理対象外issueの扱い」）。

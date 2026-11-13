@@ -234,9 +234,24 @@ export interface IssueDetail {
   comments: IssueComment[];
 }
 
+/** inbox項目の種別（issue #288）。GitHubラベル `bug` / `enhancement` / `other` に対応。 */
+export type InboxKind = "bug" | "enhancement" | "other";
+
+/** inbox項目（`inbox`ラベル付きissue、issue #288）。 */
+export interface InboxItem {
+  number: number;
+  title: string;
+  kind: InboxKind;
+  body: string;
+  /** 登録日時（ISO 8601）。 */
+  created_at: string;
+}
+
 export interface ProjectIssuesResponse {
   repo: string;
   issues: ProjectIssue[];
+  /** OPENなinbox項目（登録日時の新しい順、issue #288）。 */
+  inbox?: InboxItem[];
 }
 
 /** GET /api/prompts の prompts 配列要素（issue #149）。 */

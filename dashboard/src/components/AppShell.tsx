@@ -9,6 +9,7 @@ import {
 import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
+  type InboxItem,
   type IssueComment,
   type ProjectExecutionSettings,
 } from "@/lib/types";
@@ -59,6 +60,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [composerMode, setComposerMode] = useState<ComposerMode>("new");
   const [replyTarget, setReplyTarget] = useState<IssueRef | null>(null);
   const [newTaskRepo, setNewTaskRepo] = useState("");
+  // 「計画する」の入力元になったinbox項目（issue #288）。承認すると新規作成ではなく昇格する。
+  const [newTaskInbox, setNewTaskInbox] = useState<InboxItem | null>(null);
 
   const [toast, setToast] = useState<{
     show: boolean;
@@ -173,9 +176,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const openNewTask = useCallback((repo: string) => {
+  const openNewTask = useCallback((repo: string, inbox?: InboxItem) => {
     setComposerMode("new");
     setNewTaskRepo(repo);
+    setNewTaskInbox(inbox ?? null);
     setComposerOpen(true);
   }, []);
 
@@ -220,6 +224,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               repos={repos}
               newTaskRepo={newTaskRepo}
               onNewTaskRepoChange={setNewTaskRepo}
+              inboxTarget={newTaskInbox}
             />
           </div>
           <BottomNav attentionCount={attentionCount} anyOrphan={anyOrphan} />
