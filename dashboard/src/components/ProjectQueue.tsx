@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -272,14 +271,16 @@ function QueueTooltip({
         {entry.title !== null && (
           <>
             {pinned ? (
-              <Link
-                href={`/projects/${repo}`}
+              <a
+                href={`https://github.com/${repo}/issues/${entry.number}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className={`${styles.tipTitle} ${styles.tipTitleLink}`}
-                title={`${repo} のissue一覧を開く`}
+                title={`GitHubで #${entry.number} を開く`}
                 onClick={onClose}
               >
                 {truncateQueueTitle(entry.title)}
-              </Link>
+              </a>
             ) : (
               <div className={styles.tipTitle}>
                 {truncateQueueTitle(entry.title)}
