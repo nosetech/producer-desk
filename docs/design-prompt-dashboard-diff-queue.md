@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: プロジェクトチップへのディスパッチキュー表示の追加（差分）
+# Claudeチャットへの追加指示プロンプト: プロジェクトチップへのディスパッチキュー表示の追加（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（[design-prompt-dashboard-diff-status-counts.md](./design-prompt-dashboard-diff-status-counts.md)の適用後を前提とします）。既に作成済みのモックアップがある場合は、それを更新する形で対応してください。ゼロから作り直す必要はありません。以下を丸ごとコピーし、既存デザインを作成したClaudeとのやり取りに貼り付けてください。
 
@@ -50,4 +50,4 @@ AIエージェントは1プロジェクトにつき同時に1つのタスクし�
 
 - この差分プロンプトは [design-prompt-dashboard.md](./design-prompt-dashboard.md) に対する追加変更であり、単独では使わない（最初のダッシュボードデザインが未作成の場合は、まず元のプロンプトを使うこと）。
 - 対応する仕様は [issue #233](https://github.com/nosetech/producer-desk/issues/233) を参照。キュー状態の取得元は `DispatchQueue`（[basic-design.md](./basic-design.md) 2-3）で、`GET /api/state` の `project_status[]` にキュー状態（実行中のissue番号・待機中のissue番号リスト・各issueのタイトル／状態ラベル）を載せる想定。
-- デザイン更新後は、`CLAUDE.md`「画面デザインの実装ルール」に従い `DesignSync` で `ProducerDesk.dc.html` ＋ `ProducerDesk.logic.js` を取得してから実装する（`truncated` を必ず確認する）。
+- デザイン更新後は、`CLAUDE.md`「画面デザインの実装ルール」に従い `Artifact` ツールで `project/ProducerDesk.dc.html` ＋ `project/ProducerDesk.logic.js` を取得してから実装する（欠けがないか必ず確認する）。

@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: コメント全文表示と返信UI内コメント表示（差分）
+# Claudeチャットへの追加指示プロンプト: コメント全文表示と返信UI内コメント表示（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（issue #193。[design-prompt-dashboard-diff.md](./design-prompt-dashboard-diff.md)の指示入力欄追加の後に依頼する想定）。既に作成済みのモックアップ（Artifact）がある場合は、それを更新する形で対応してください。ゼロから作り直す必要はありません。以下を丸ごとコピーし、既存デザインを作成したClaude（Artifact）とのやり取りに貼り付けてください。
 
@@ -44,4 +44,4 @@
 ## 補足（プロンプトの外）
 
 - この差分プロンプトは [design-prompt-dashboard.md](./design-prompt-dashboard.md) に対する追加変更であり、単独では使わない。
-- Claude Design側でデザインが更新されたら、実装時に`DesignSync`で実ソース（`ProducerDesk.dc.html`）を取得し、コメント表示部のスタイル値を読み取ってから実装すること（[CLAUDE.md](../CLAUDE.md)の「画面デザインの実装ルール」参照）。
+- Artifacts上のデザインが更新されたら、実装時に`Artifact`ツールで実ソース（`project/ProducerDesk.dc.html`）を取得し、コメント表示部のスタイル値を読み取ってから実装すること（[CLAUDE.md](../CLAUDE.md)の「画面デザインの実装ルール」参照）。

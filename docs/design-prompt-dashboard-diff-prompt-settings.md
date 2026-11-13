@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: Agent Runnerプロンプト設定画面の追加（差分）
+# Claudeチャットへの追加指示プロンプト: Agent Runnerプロンプト設定画面の追加（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（issue #149）。既に作成済みのデザインがある場合は、それを更新する形で対応してください。ゼロから作り直す必要はありません。以下を丸ごとコピーし、既存デザインを作成したClaudeとのやり取りに貼り付けてください。
 
@@ -65,4 +65,4 @@ Agent Runner（AIエージェント）を起動するたびに、システムプ
 
 - この差分プロンプトは [design-prompt-dashboard.md](./design-prompt-dashboard.md) に対する追加変更であり、単独では使わない。
 - 対応する仕様は [basic-design.md](./basic-design.md) の「Agent Runnerプロンプト設定管理」節（issue #149）を参照。
-- 作業ブランチ名の新規ファイルとして作成させ、マスターファイル（`ProducerDesk.dc.html`）へのマージは人間がClaude Design上でレビュー・承認した後に行う。
+- 作業ブランチ名の新規ファイルとして作成させ、マスターファイル（`ProducerDesk.dc.html`）へのマージは人間がArtifacts上でレビュー・承認した後に行う。

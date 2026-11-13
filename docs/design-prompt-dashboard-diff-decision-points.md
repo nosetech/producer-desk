@@ -1,4 +1,4 @@
-# Claude Designへの追加指示プロンプト: 返信UIの引用領域に「判断が必要な事項」を列挙する（差分）
+# Claudeチャットへの追加指示プロンプト: 返信UIの引用領域に「判断が必要な事項」を列挙する（差分）
 
 [design-prompt-dashboard.md](./design-prompt-dashboard.md)でお願いしたダッシュボードデザインに対する**追加の変更依頼**です（issue #234。[design-prompt-dashboard-diff-comment-viewer.md](./design-prompt-dashboard-diff-comment-viewer.md)の返信UI内コメント表示の後に依頼する想定）。既に作成済みのモックアップ（Artifact）がある場合は、それを更新する形で対応してください。ゼロから作り直す必要はありません。以下を丸ごとコピーし、既存デザインを作成したClaude（Artifact）とのやり取りに貼り付けてください。
 
@@ -40,4 +40,4 @@ AIの最終応答は、作業報告・変更内容・PR情報・「人間に判�
 
 - この差分プロンプトは [design-prompt-dashboard.md](./design-prompt-dashboard.md) に対する追加変更であり、単独では使わない。
 - 判断事項の書式（見出し文言・番号付きリスト・選択肢）は [basic-design.md](./basic-design.md) 3-6の「判断事項セクションの書式仕様」で定義する。
-- Claude Design側でデザインが更新されたら、実装時に`DesignSync`で実ソース（`ProducerDesk.dc.html`・`ProducerDesk.logic.js`）を取得し、`truncated`を確認したうえでスタイル値を読み取ってから実装すること（[CLAUDE.md](../CLAUDE.md)の「画面デザインの実装ルール」参照）。
+- Artifacts上のデザインが更新されたら、実装時に`Artifact`ツールで実ソース（`project/ProducerDesk.dc.html`・`project/ProducerDesk.logic.js`）を取得し、欠けがないか確認したうえでスタイル値を読み取ってから実装すること（[CLAUDE.md](../CLAUDE.md)の「画面デザインの実装ルール」参照）。
