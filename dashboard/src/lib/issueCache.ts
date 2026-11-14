@@ -1,10 +1,11 @@
-import type { ProjectIssue } from "./types";
+import type { InboxItem, ProjectIssue } from "./types";
 
 /** この時間内のキャッシュは新鮮とみなし、取得せずにそのまま表示する。 */
 export const ISSUE_CACHE_TTL_MS = 60_000;
 
 export interface IssueCacheEntry {
   issues: ProjectIssue[];
+  inbox: InboxItem[];
   fetchedAt: number;
 }
 
@@ -31,9 +32,10 @@ export function storeIssueCache(
   cache: Map<string, IssueCacheEntry>,
   repo: string,
   issues: ProjectIssue[],
+  inbox: InboxItem[],
   now: number,
 ): void {
-  cache.set(repo, { issues, fetchedAt: now });
+  cache.set(repo, { issues, inbox, fetchedAt: now });
 }
 
 /** repo省略時は全リポジトリ分を破棄する。 */

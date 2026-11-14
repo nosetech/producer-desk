@@ -112,9 +112,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       ),
     [settings.issueCacheTtlMs],
   );
-  const storeIssues = useCallback((repo: string, issues: ProjectIssue[]) => {
-    storeIssueCache(issueCache.current, repo, issues, Date.now());
-  }, []);
+  const storeIssues = useCallback(
+    (repo: string, issues: ProjectIssue[], inbox: InboxItem[]) => {
+      storeIssueCache(issueCache.current, repo, issues, inbox, Date.now());
+    },
+    [],
+  );
   // 操作元が対象リポジトリを特定できないため、全リポジトリ分を破棄する。
   const refreshAfterAction = useCallback((): Promise<void> => {
     invalidateIssueCache(issueCache.current);
