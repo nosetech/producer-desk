@@ -354,7 +354,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     if (mode === "and" && selMilestones.length > 1) {
       const keep = selMilestones[selMilestones.length - 1];
       setMetaMilestones([keep]);
-      setMetaNotice(
+      showToast(
         `issueのマイルストーンは1つのため、ANDでは「${keep}」の1つに絞りました。`,
       );
     }
@@ -611,8 +611,14 @@ export default function ProjectIssues({ repo }: { repo: string }) {
             notice={metaNotice}
             onToggleMilestone={toggleMilestone}
             onToggleTag={toggleTag}
+            onClearMilestones={() => {
+              setMetaMilestones([]);
+              setMetaNotice(null);
+            }}
+            onClearTags={() => setMetaTags([])}
             onModeChange={changeMetaMode}
             onClear={clearMeta}
+            onCloseDropdown={() => setMetaNotice(null)}
           />
         )}
 

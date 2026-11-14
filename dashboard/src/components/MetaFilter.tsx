@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { MatchMode, MetaFilterOption } from "@/lib/issueList";
 import { issueTags } from "@/lib/issueList";
 import type { ProjectIssue } from "@/lib/types";
@@ -44,8 +45,8 @@ const FlagIcon = ({ size }: { size: number }) => (
 
 const TagIcon = () => (
   <svg
-    width="12"
-    height="12"
+    width="13"
+    height="13"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -77,7 +78,235 @@ const CloseIcon = () => (
   </svg>
 );
 
-const cx = (...names: (string | false)[]) => names.filter(Boolean).join(" ");
+const cx = (...names: (string | false | null | undefined)[]) =>
+  names.filter(Boolean).join(" ");
+
+/** ボタン上の要約。未選択は「すべて」、複数は「v1.2 +1」形式。 */
+function summarize(selected: string[]): string {
+  if (selected.length === 0) return "すべて";
+  return selected[0] + (selected.length > 1 ? ` +${selected.length - 1}` : "");
+}
+
+const ChevronIcon = ({ open }: { open: boolean }) => (
+  <svg
+    width="12"
+    height="12"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    className={cx(styles.chevron, open && styles.chevronOpen)}
+  >
+    <path d="m6 9 6 6 6-6" />
+  </svg>
+);
+
+const InfoIcon = () => (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    style={{ flex: "none" }}
+  >
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 16v-4M12 8h.01" />
+  </svg>
+);
+
+interface MultiSelectProps {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  options: MetaFilterOption[];
+  selected: string[];
+  open: boolean;
+  /** ラジオ表示（ANDのマイルストーンは1つだけ選べる）。 */
+  single?: boolean;
+  head: string;
+  notice?: string | null;
+  mono?: boolean;
+  showDot?: boolean;
+  /** 右寄せ（モバイルで右側のドロップダウンが画面外に出ないようにする）。 */
+  alignRight?: boolean;
+  onToggleOpen: () => void;
+  onClose: () => void;
+  onToggle: (value: string) => void;
+  onClearGroup: () => void;
+}
+
+/** 複数選択できるコンボボックス（ドロップダウン）。 */
+function MultiSelect({
+  id,
+  label,
+  icon,
+  options,
+  selected,
+  open,
+  single,
+  head,
+  notice,
+  mono,
+  showDot,
+  alignRight,
+  onToggleOpen,
+  onClose,
+  onToggle,
+  onClearGroup,
+}: MultiSelectProps) {
+  const summary = summarize(selected);
+  const aria = `${label}で絞り込み: ${selected.length ? selected.join("、") : "すべて"}${single ? "（ANDでは1つのみ）" : ""}`;
+  return (
+    <div className={styles.dd}>
+      <button
+        type="button"
+        className={cx(
+          styles.trigger,
+          selected.length > 0 && styles.triggerOn,
+          open && styles.triggerOpen,
+        )}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={`${id}-pop`}
+        aria-label={aria}
+        title={aria}
+        onClick={onToggleOpen}
+      >
+        <span className={styles.triggerIcon}>{icon}</span>
+        <span className={styles.triggerLabel}>{label}</span>
+        <span
+          className={cx(
+            styles.summary,
+            mono && styles.summaryMono,
+            selected.length === 0 && styles.summaryEmpty,
+          )}
+        >
+          {summary}
+        </span>
+        <span style={{ flex: 1 }} />
+        <ChevronIcon open={open} />
+      </button>
+      {open && (
+        <div
+          id={`${id}-pop`}
+          role="dialog"
+          aria-label={`${label}を選択`}
+          className={cx(styles.pop, alignRight && styles.popRight)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onClose();
+          }}
+        >
+          <div className={styles.popHead}>
+            {single && (
+              <span className={styles.noticeIcon}>
+                <InfoIcon />
+              </span>
+            )}
+            <span>{head}</span>
+          </div>
+          {notice && (
+            <div className={styles.notice} role="status" aria-live="polite">
+              <span className={styles.noticeIcon}>
+                <InfoIcon />
+              </span>
+              <span style={{ textWrap: "pretty" }}>{notice}</span>
+            </div>
+          )}
+          <div className={styles.list} role="group" aria-label={label}>
+            {options.map((o) => {
+              const on = selected.includes(o.value);
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  aria-pressed={on}
+                  className={cx(styles.opt, on && styles.optOn)}
+                  title={
+                    single && !on && selected.length > 0
+                      ? "ANDではマイルストーンは1つだけ選べます（選択中のものと入れ替わります）"
+                      : undefined
+                  }
+                  onClick={() => onToggle(o.value)}
+                >
+                  <span
+                    className={cx(
+                      styles.box,
+                      single && styles.boxRadio,
+                      on && styles.boxOn,
+                    )}
+                  >
+                    {on &&
+                      (single ? (
+                        <span className={styles.radioDot} />
+                      ) : (
+                        <svg
+                          width="11"
+                          height="11"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3.4"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      ))}
+                  </span>
+                  {showDot && (
+                    <span
+                      className={styles.dot}
+                      style={{ background: tagDotColor(o.value) }}
+                    />
+                  )}
+                  <span
+                    className={cx(
+                      styles.optName,
+                      mono && styles.optNameMono,
+                      o.count === 0 && !on && styles.optNameEmpty,
+                    )}
+                  >
+                    {o.value}
+                  </span>
+                  <span className={styles.optCount}>{o.count}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={styles.popFoot}>
+            {selected.length > 0 && (
+              <button
+                type="button"
+                className={styles.popBtn}
+                onClick={onClearGroup}
+              >
+                <CloseIcon />
+                選択を解除
+              </button>
+            )}
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              className={styles.popBtnDim}
+              onClick={onClose}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface MetaFilterProps {
   milestones: MetaFilterOption[];
@@ -85,15 +314,19 @@ interface MetaFilterProps {
   selectedMilestones: string[];
   selectedTags: string[];
   mode: MatchMode;
-  /** ANDでマイルストーンを1つに絞ったことなどの注記。 */
+  /** ANDでマイルストーンを入れ替えたときの注記（マイルストーンのドロップダウン内に表示）。 */
   notice: string | null;
   onToggleMilestone: (milestone: string) => void;
   onToggleTag: (tag: string) => void;
+  onClearMilestones: () => void;
+  onClearTags: () => void;
   onModeChange: (mode: MatchMode) => void;
   onClear: () => void;
+  /** ドロップダウンを閉じたときに注記を消す。 */
+  onCloseDropdown: () => void;
 }
 
-/** ツールバー下のマイルストーン・タグのフィルタ行と、OR/ANDトグル（issue #303）。 */
+/** ツールバー下のマイルストーン・タグのコンボボックスと、OR/ANDトグル（issue #303）。PC幅は1行固定。 */
 export function MetaFilter({
   milestones,
   tags,
@@ -103,121 +336,88 @@ export function MetaFilter({
   notice,
   onToggleMilestone,
   onToggleTag,
+  onClearMilestones,
+  onClearTags,
   onModeChange,
   onClear,
+  onCloseDropdown,
 }: MetaFilterProps) {
+  const [open, setOpen] = useState<"ms" | "tg" | null>(null);
   if (milestones.length === 0 && tags.length === 0) return null;
   const selectedCount = selectedMilestones.length + selectedTags.length;
   const segOff = selectedCount < 2;
   const isAnd = mode === "and";
+  const close = () => {
+    setOpen(null);
+    onCloseDropdown();
+  };
+  const toggleOpen = (g: "ms" | "tg") => {
+    if (open === g) close();
+    else setOpen(g);
+  };
   const modeDesc = segOff
-    ? "条件を2つ以上選ぶと切り替えられます"
+    ? "2つ以上選ぶと切替可"
+    : isAnd
+      ? "すべてに一致"
+      : "いずれかに一致";
+  const modeTitle = segOff
+    ? "条件を2つ以上選ぶと OR / AND を切り替えられます"
     : isAnd
       ? "選んだ条件のすべてに一致"
       : "選んだ条件のいずれかに一致";
 
   return (
-    <div
-      className={styles.wrap}
-      role="group"
-      aria-label="マイルストーン・タグで絞り込み"
-    >
-      {milestones.length > 0 && (
-        <div className={styles.row}>
-          <span className={styles.label}>
-            <FlagIcon size={12} />
-            マイルストーン
-            {isAnd && milestones.length > 1 && (
-              <span
-                className={styles.note}
-                title="issueのマイルストーンは1つのため、ANDでは1つだけ選べます"
-              >
-                · 1つのみ
-              </span>
-            )}
-          </span>
-          <div
-            className={styles.chips}
-            role="group"
-            aria-label="マイルストーン（複数選択可・ANDでは1つ）"
-          >
-            {milestones.map((m) => {
-              const on = selectedMilestones.includes(m.value);
-              return (
-                <button
-                  key={m.value}
-                  type="button"
-                  aria-pressed={on}
-                  className={cx(
-                    styles.chip,
-                    styles.chipMs,
-                    on && styles.chipOn,
-                    m.count === 0 && styles.chipEmpty,
-                  )}
-                  title={
-                    isAnd && !on && selectedMilestones.length > 0
-                      ? "ANDではマイルストーンは1つだけ選べます（選択中のものと入れ替わります）"
-                      : `マイルストーン「${m.value}」で絞り込む`
-                  }
-                  onClick={() => onToggleMilestone(m.value)}
-                >
-                  {m.value}
-                  <span className={styles.count}>{m.count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+    <>
+      {open && (
+        <div className={styles.catcher} onClick={close} aria-hidden="true" />
       )}
-      {tags.length > 0 && (
-        <div className={styles.row}>
-          <span className={styles.label}>
-            <TagIcon />
-            タグ
-          </span>
-          <div
-            className={styles.chips}
-            role="group"
-            aria-label="タグ（複数選択可）"
-          >
-            {tags.map((t) => {
-              const on = selectedTags.includes(t.value);
-              return (
-                <button
-                  key={t.value}
-                  type="button"
-                  aria-pressed={on}
-                  className={cx(
-                    styles.chip,
-                    on && styles.chipOn,
-                    t.count === 0 && styles.chipEmpty,
-                  )}
-                  onClick={() => onToggleTag(t.value)}
-                >
-                  <span
-                    className={styles.dot}
-                    style={{ background: tagDotColor(t.value) }}
-                  />
-                  {t.value}
-                  <span className={styles.count}>{t.count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      <div className={styles.row}>
-        <span className={styles.label}>結合</span>
+      <div
+        className={cx(styles.wrap, open && styles.wrapOpen)}
+        role="group"
+        aria-label="マイルストーン・タグで絞り込み"
+      >
+        {milestones.length > 0 && (
+          <MultiSelect
+            id="mt-ms"
+            label="マイルストーン"
+            icon={<FlagIcon size={13} />}
+            options={milestones}
+            selected={selectedMilestones}
+            open={open === "ms"}
+            single={isAnd}
+            head={isAnd ? "ANDでは1つのみ選択できます" : "複数選択できます"}
+            notice={notice}
+            mono
+            onToggleOpen={() => toggleOpen("ms")}
+            onClose={close}
+            onToggle={onToggleMilestone}
+            onClearGroup={onClearMilestones}
+          />
+        )}
+        {tags.length > 0 && (
+          <MultiSelect
+            id="mt-tg"
+            label="タグ"
+            icon={<TagIcon />}
+            options={tags}
+            selected={selectedTags}
+            open={open === "tg"}
+            head="複数選択できます"
+            showDot
+            alignRight
+            onToggleOpen={() => toggleOpen("tg")}
+            onClose={close}
+            onToggle={onToggleTag}
+            onClearGroup={onClearTags}
+          />
+        )}
+        <span className={styles.divider} />
         <div className={styles.combo}>
           <div
             className={cx(styles.seg, segOff && styles.segOff)}
             role="group"
             aria-label="複数条件の結合方法"
-            title={
-              segOff
-                ? "条件を2つ以上選ぶと OR / AND を切り替えられます"
-                : "複数条件の結合方法"
-            }
+            title={modeTitle}
           >
             {(["or", "and"] as const).map((m) => (
               <button
@@ -235,40 +435,19 @@ export function MetaFilter({
           <span
             className={cx(styles.desc, segOff && styles.descOff)}
             aria-live="polite"
+            title={modeTitle}
           >
             {modeDesc}
           </span>
-          {selectedCount > 0 && (
-            <button type="button" className={styles.clear} onClick={onClear}>
-              <CloseIcon />
-              条件を解除（{selectedCount}）
-            </button>
-          )}
         </div>
+        {selectedCount > 0 && (
+          <button type="button" className={styles.clear} onClick={onClear}>
+            <CloseIcon />
+            条件を解除（{selectedCount}）
+          </button>
+        )}
       </div>
-      {notice && (
-        <div className={styles.notice} role="status" aria-live="polite">
-          <span className={styles.noticeIcon}>
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-              style={{ flex: "none" }}
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 16v-4M12 8h.01" />
-            </svg>
-          </span>
-          <span style={{ textWrap: "pretty" }}>{notice}</span>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 

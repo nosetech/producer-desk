@@ -1,102 +1,221 @@
-/* マイルストーン・タグの表示とフィルタ（issue #303）。
+/* マイルストーン・タグのコンボボックスフィルタ（issue #303）。PC幅は1行固定。
    Claude Artifactsデザイン feature/issue-303-milestone-tags の値に合わせる。 */
 
 .wrap {
   display: flex;
-  flex-direction: column;
-  gap: 9px;
-  margin: 0 14px;
-  padding: 11px 0 12px;
-  border-top: 1px dashed var(--border-subtle);
-}
-
-.row {
-  display: flex;
-  align-items: flex-start;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 10px;
   min-width: 0;
+  margin: 0 14px;
+  padding: 10px 0 11px;
+  border-top: 1px dashed var(--border-subtle);
+  position: relative;
 }
 
-.label {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 6px;
-  flex: none;
-  width: 118px;
-  min-height: 28px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
+.wrapOpen {
+  z-index: 31;
 }
 
-.note {
-  flex-basis: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
+.catcher {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: transparent;
 }
 
-.chips {
+.dd {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 120px;
+  max-width: 240px;
 }
 
-.chip {
+.trigger {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  flex: none;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  height: 30px;
   box-sizing: border-box;
-  padding: 5px 10px;
-  border-radius: 9px;
+  padding: 0 9px 0 10px;
+  border-radius: 8px;
   border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-secondary);
+  background: var(--surface-2);
+  color: var(--text-primary);
   font-family: inherit;
   font-size: 12.5px;
-  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.12s;
 }
 
-.chip:hover {
+.trigger:hover {
   border-color: var(--accent-blue);
 }
 
-.chipMs {
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-
-.chipOn,
-.chipOn:hover {
+.triggerOn {
   border-color: var(--accent-blue);
   background: var(--accent-blue-bg);
+}
+
+.triggerOpen {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+.triggerIcon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.triggerLabel {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-primary);
 }
 
-.chipEmpty:not(.chipOn) {
-  opacity: 0.55;
+.summaryMono {
+  font-family: var(--font-mono);
 }
 
-.count {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 600;
+.summaryEmpty {
+  color: var(--text-secondary);
+}
+
+.chevron {
+  flex: none;
+  color: var(--text-secondary);
+  transition: transform 0.15s;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 272px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.3);
+}
+
+.popHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 2px;
+  font-size: 11px;
   color: var(--text-tertiary);
 }
 
-.chipOn .count {
+.noticeIcon {
+  display: inline-flex;
+  margin-top: 1px;
   color: var(--accent-blue);
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 252px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 0 9px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.opt:hover {
+  background: var(--surface-2);
+}
+
+.optOn,
+.optOn:hover {
+  background: var(--accent-blue-bg);
+  font-weight: 600;
+}
+
+.box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 5px;
+  border: 1.5px solid var(--text-tertiary);
+  background: transparent;
+  color: #fff;
+}
+
+.boxRadio {
+  border-radius: 50%;
+}
+
+.boxOn {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+}
+
+.radioDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .dot {
@@ -106,11 +225,85 @@
   flex: none;
 }
 
-.combo {
+.optName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optNameMono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.optNameEmpty {
+  opacity: 0.55;
+}
+
+.optCount {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.optOn .optCount {
+  color: var(--accent-blue);
+}
+
+.popFoot {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 2px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.popBtn,
+.popBtnDim {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.popBtn {
+  border: 1px solid transparent;
+  color: var(--accent-blue);
+}
+
+.popBtn:hover {
+  background: var(--accent-blue-bg);
+}
+
+.popBtnDim {
+  border: 1px solid var(--border-subtle);
+  padding: 0 10px;
+  color: var(--text-secondary);
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  background: var(--border-subtle);
+}
+
+.combo {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -170,6 +363,9 @@
 
 .desc {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -181,9 +377,12 @@
 .clear {
   display: inline-flex;
   align-items: center;
+  flex: none;
   gap: 6px;
+  height: 30px;
   box-sizing: border-box;
-  padding: 5px 10px;
+  margin-left: auto;
+  padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -197,25 +396,6 @@
 
 .clear:hover {
   background: var(--accent-blue-bg);
-}
-
-.notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  padding: 7px 10px;
-  border-radius: 9px;
-  border: 1px solid var(--accent-blue);
-  background: var(--accent-blue-bg);
-  color: var(--text-primary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.noticeIcon {
-  display: inline-flex;
-  margin-top: 2px;
-  color: var(--accent-blue);
 }
 
 /* 行・カード内のマイルストーン／タグ表示 */
@@ -275,43 +455,57 @@
 
 @media (max-width: 640px) {
   .wrap {
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 8px;
     margin: 0 12px;
     padding: 11px 0 12px;
   }
 
-  .row {
-    flex-direction: column;
-    gap: 6px;
+  .dd {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    max-width: none;
   }
 
-  .note {
-    flex-basis: auto;
+  .trigger {
+    width: 100%;
+    height: 40px;
   }
 
-  .label {
-    width: auto;
-    min-height: auto;
+  .pop {
+    width: min(300px, calc(100vw - 44px));
   }
 
-  .chips {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    flex: none;
-    margin: 0 -12px;
-    padding: 0 12px 2px;
-    scrollbar-width: none;
+  .popRight {
+    left: auto;
+    right: 0;
   }
 
-  .chip,
-  .clear {
-    min-height: 40px;
-    padding: 8px 11px;
+  .opt {
+    min-height: 44px;
+  }
+
+  .popBtn,
+  .popBtnDim {
+    height: 40px;
+  }
+
+  .divider {
+    display: none;
+  }
+
+  .combo {
+    flex: 1 1 auto;
   }
 
   .segBtn {
     min-width: 54px;
     height: 36px;
+  }
+
+  .clear {
+    height: 40px;
+    margin-left: 0;
   }
 
   .line {
