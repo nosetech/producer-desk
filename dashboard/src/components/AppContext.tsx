@@ -31,7 +31,11 @@ export interface AppContextValue {
   refreshAfterAction: () => Promise<void>;
   /** プロジェクト別issue一覧のクライアントキャッシュ（issue #198）。 */
   lookupIssues: (repo: string) => IssueCacheLookup;
-  storeIssues: (repo: string, issues: ProjectIssue[]) => void;
+  storeIssues: (
+    repo: string,
+    issues: ProjectIssue[],
+    inbox: InboxItem[],
+  ) => void;
   showToast: (text: string, isError?: boolean) => void;
   openReply: (
     repo: string,

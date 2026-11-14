@@ -133,7 +133,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     initialCache.kind === "miss" ? [] : initialCache.entry.issues,
   );
   // OPENなinbox項目（issue #288）。一覧と同じ再取得で更新する。
-  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [inbox, setInbox] = useState<InboxItem[]>(
+    initialCache.kind === "miss" ? [] : initialCache.entry.inbox,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -193,7 +195,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq !== requestSeq.current) return;
           await refresh();
           if (seq !== requestSeq.current) return;
-          storeIssues(repo, data.issues);
+          storeIssues(repo, data.issues, data.inbox ?? []);
           setIssues(data.issues);
           setInbox(data.inbox ?? []);
           setLoad("ready");
