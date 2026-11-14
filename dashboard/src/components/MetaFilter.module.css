@@ -1,0 +1,337 @@
+/* マイルストーン・タグの表示とフィルタ（issue #303）。
+   Claude Artifactsデザイン feature/issue-303-milestone-tags の値に合わせる。 */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0 14px;
+  padding: 11px 0 12px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+  flex: none;
+  width: 118px;
+  min-height: 28px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.note {
+  flex-basis: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+
+.chip:hover {
+  border-color: var(--accent-blue);
+}
+
+.chipMs {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.chipOn,
+.chipOn:hover {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--text-primary);
+}
+
+.chipEmpty:not(.chipOn) {
+  opacity: 0.55;
+}
+
+.count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.chipOn .count {
+  color: var(--accent-blue);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.combo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+}
+
+.segOff {
+  opacity: 0.55;
+}
+
+.segBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.segBtn:hover:not(:disabled):not(.segBtnOn) {
+  color: var(--text-primary);
+}
+
+.segBtnOn {
+  background: var(--bg-page);
+  color: var(--text-primary);
+  box-shadow: var(--shadow);
+  cursor: default;
+}
+
+.segBtn:disabled {
+  cursor: not-allowed;
+}
+
+.segBtnOn:disabled {
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+
+.desc {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.descOff {
+  color: var(--text-tertiary);
+}
+
+.clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.clear:hover {
+  background: var(--accent-blue-bg);
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.noticeIcon {
+  display: inline-flex;
+  margin-top: 2px;
+  color: var(--accent-blue);
+}
+
+/* 行・カード内のマイルストーン／タグ表示 */
+.line {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rowChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.rowChipOn {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
+.rowChipMs {
+  border-radius: 6px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.rowChipMore {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: default;
+}
+
+.rowChipExtra {
+  display: none;
+}
+
+.rowDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    gap: 10px;
+    margin: 0 12px;
+    padding: 11px 0 12px;
+  }
+
+  .row {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .note {
+    flex-basis: auto;
+  }
+
+  .label {
+    width: auto;
+    min-height: auto;
+  }
+
+  .chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    flex: none;
+    margin: 0 -12px;
+    padding: 0 12px 2px;
+    scrollbar-width: none;
+  }
+
+  .chip,
+  .clear {
+    min-height: 40px;
+    padding: 8px 11px;
+  }
+
+  .segBtn {
+    min-width: 54px;
+    height: 36px;
+  }
+
+  .line {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .rowChip {
+    background: var(--bg-panel);
+  }
+
+  .rowChipMs {
+    background: transparent;
+  }
+
+  .rowChipExtra {
+    display: inline-flex;
+  }
+
+  .rowChipMore {
+    display: none;
+  }
+}

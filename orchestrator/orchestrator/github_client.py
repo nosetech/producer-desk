@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 
 from orchestrator.aggregation import IssueSummary, PrCandidate
 
-ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state,body,createdAt"
+ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state,body,createdAt,milestone"
 
 ISSUE_DETAIL_FIELDS = "body,comments,author,url,createdAt"
 
@@ -83,6 +83,7 @@ def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]
             state=issue["state"],
             body=issue.get("body") or "",
             created_at=issue.get("createdAt") or "",
+            milestone=(issue.get("milestone") or {}).get("title"),
         )
         for issue in raw_issues
     ]

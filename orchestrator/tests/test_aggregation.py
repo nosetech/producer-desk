@@ -600,3 +600,30 @@ def test_closed_inbox_item_is_not_listed_anywhere() -> None:
 
     assert build_inbox(issues) == []
     assert build_project_issues(issues) == []
+
+
+def test_build_project_issues_includes_milestone_and_tags_excluding_status_labels() -> None:
+    issue = IssueSummary(
+        repo="nosetech/project-a",
+        number=1,
+        title="t",
+        labels=[STATUS_IN_PROGRESS, "bug", "enhancement"],
+        comments=[],
+        updated_at="2026-08-01T00:00:00Z",
+        milestone="v1.0",
+    )
+    plain = IssueSummary(
+        repo="nosetech/project-a",
+        number=2,
+        title="t2",
+        labels=[],
+        comments=[],
+        updated_at="2026-07-01T00:00:00Z",
+    )
+
+    by_number = {i.number: i for i in build_project_issues([issue, plain])}
+
+    assert by_number[1].milestone == "v1.0"
+    assert by_number[1].tags == ["bug", "enhancement"]
+    assert by_number[2].milestone is None
+    assert by_number[2].tags == []

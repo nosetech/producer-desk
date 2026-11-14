@@ -79,6 +79,43 @@ def test_list_issues_parses_gh_output_into_issue_summaries() -> None:
     ]
 
 
+def test_list_issues_parses_milestone_title() -> None:
+    fake_run = _fake_run(
+        [
+            {
+                "number": 1,
+                "title": "a",
+                "labels": [],
+                "comments": [],
+                "updatedAt": "2026-08-03T05:27:16Z",
+                "state": "OPEN",
+                "milestone": {"number": 3, "title": "v1.0"},
+            },
+            {
+                "number": 2,
+                "title": "b",
+                "labels": [],
+                "comments": [],
+                "updatedAt": "2026-08-03T05:27:16Z",
+                "state": "OPEN",
+                "milestone": None,
+            },
+        ]
+    )
+
+    result = list_issues("nosetech/project-a", run=fake_run)
+
+    assert [i.milestone for i in result] == ["v1.0", None]
+
+
+def test_list_issues_requests_milestone_field() -> None:
+    fake_run = _fake_run([])
+
+    list_issues("nosetech/project-a", run=fake_run)
+
+    assert "milestone" in fake_run.calls[0][fake_run.calls[0].index("--json") + 1].split(",")
+
+
 def test_list_issues_parses_closed_state() -> None:
     fake_run = _fake_run(
         [
@@ -113,7 +150,7 @@ def test_list_issues_calls_gh_with_expected_arguments() -> None:
         "--state",
         "all",
         "--json",
-        "number,title,labels,comments,updatedAt,state,body,createdAt",
+        "number,title,labels,comments,updatedAt,state,body,createdAt,milestone",
         "--limit",
         "100",
     ]
