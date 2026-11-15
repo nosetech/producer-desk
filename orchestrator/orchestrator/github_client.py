@@ -11,6 +11,7 @@ import subprocess
 from collections.abc import Callable, Iterable
 
 from orchestrator.aggregation import IssueSummary, PrCandidate
+from orchestrator.labels import STATUS_LABELS
 
 ISSUE_LIST_FIELDS = "number,title,labels,comments,updatedAt,state,body,createdAt,milestone"
 
@@ -42,6 +43,8 @@ FindOpenPrByBranchFn = Callable[[str, str], dict | None]
 AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
 GetIssueDetailFn = Callable[[str, int], dict]
 ListOpenMilestonesFn = Callable[[str], list[str]]
+ListRepoLabelsFn = Callable[[str], list[str]]
+UpdateIssueMetaFn = Callable[..., None]
 GetPrStatusCheckRollupFn = Callable[[str, int], list[dict]]
 
 
@@ -110,6 +113,47 @@ def list_open_milestones(repo: str, *, run: RunFn = subprocess.run) -> list[str]
         check=True,
     )
     return [line for line in result.stdout.splitlines() if line]
+
+
+def list_repo_labels(repo: str, *, run: RunFn = subprocess.run) -> list[str]:
+    """リポジトリのラベル名一覧を取得する（issue #305）。状態ラベル5種は除外する。"""
+    result = run(
+        ["gh", "label", "list", "--repo", repo, "--json", "name", "--limit", "500"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    names = [label["name"] for label in json.loads(result.stdout)]
+    return [name for name in names if name not in STATUS_LABELS]
+
+
+def update_issue_meta(
+    repo: str,
+    issue_number: int,
+    *,
+    milestone: str | None = None,
+    clear_milestone: bool = False,
+    add_labels: Iterable[str] = (),
+    remove_labels: Iterable[str] = (),
+    run: RunFn = subprocess.run,
+) -> None:
+    """issueのマイルストーン・ラベルを`gh issue edit`で更新する（issue #305）。
+
+    `milestone`指定でそのタイトルのマイルストーンを設定、`clear_milestone`で解除。
+    どちらも未指定ならマイルストーンは変更しない。変更が何も無ければ`gh`は呼ばない。
+    """
+    cmd = ["gh", "issue", "edit", str(issue_number), "--repo", repo]
+    if milestone is not None:
+        cmd += ["--milestone", milestone]
+    elif clear_milestone:
+        cmd.append("--remove-milestone")
+    for label in add_labels:
+        cmd += ["--add-label", label]
+    for label in remove_labels:
+        cmd += ["--remove-label", label]
+    if len(cmd) == 6:
+        return
+    run(cmd, capture_output=True, text=True, check=True)
 
 
 def get_issue_detail(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> dict:
