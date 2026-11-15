@@ -17,6 +17,7 @@ from orchestrator.github_client import (
     get_pr_status_check_rollup,
     list_issues,
     list_linked_prs,
+    list_open_milestones,
     merge_pr,
     post_comment,
     resolve_pr_number,
@@ -441,3 +442,26 @@ def test_ensure_labels_creates_only_missing_labels() -> None:
     assert created == ["other"]
     calls = fake_run.calls  # type: ignore[attr-defined]
     assert calls[1][:5] == ["gh", "label", "create", "other", "--repo"]
+
+
+def test_list_open_milestones_returns_titles_of_open_milestones() -> None:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="v2.0.0\nprototype 0.2.0\n", stderr=""
+        )
+
+    assert list_open_milestones("nosetech/project-a", run=run) == ["v2.0.0", "prototype 0.2.0"]
+    cmd = calls[0]
+    assert cmd[:2] == ["gh", "api"]
+    assert "repos/nosetech/project-a/milestones?state=open&per_page=100" in cmd
+    assert "--paginate" in cmd
+
+
+def test_list_open_milestones_returns_empty_when_none() -> None:
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    assert list_open_milestones("nosetech/project-a", run=run) == []

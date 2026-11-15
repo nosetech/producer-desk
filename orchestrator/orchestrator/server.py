@@ -55,6 +55,7 @@ from orchestrator.github_client import (
     GetIssueDetailFn,
     GetPrBranchFn,
     ListLinkedPrsFn,
+    ListOpenMilestonesFn,
     MergePrFn,
     PostCommentFn,
 )
@@ -67,6 +68,7 @@ from orchestrator.github_client import get_issue_detail as gh_get_issue_detail
 from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
+from orchestrator.github_client import list_open_milestones as gh_list_open_milestones
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.github_client import update_issue as gh_update_issue
@@ -308,6 +310,7 @@ def _make_handler(
     get_pr_branch: GetPrBranchFn,
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
+    list_open_milestones: ListOpenMilestonesFn,
     sync_worktree: SyncWorktreeFn,
     get_issue_detail: GetIssueDetailFn,
     dashboard_settings: dict[str, float],
@@ -441,6 +444,18 @@ def _make_handler(
                 return
             self._send_json(200, detail)
 
+        def _open_milestones(self, repo: str) -> list[str] | None:
+            """オープン中マイルストーン一覧（issue #308）。取得失敗時は`None`を返す。
+
+            フィルタ選択肢の絞り込み用の補助情報のため、失敗してもissue一覧自体は返し、
+            ダッシュボード側は絞り込まず従来どおり全マイルストーンを選択肢にする。
+            """
+            try:
+                return list_open_milestones(repo)
+            except subprocess.CalledProcessError as e:
+                logger.warning("オープン中マイルストーンの取得に失敗しました (%s): %s", repo, e)
+                return None
+
         def _handle_list_issues(self, repo: str) -> None:
             """プロジェクト別issue一覧（issue #116）。
 
@@ -465,6 +480,7 @@ def _make_handler(
                         for i in build_project_issues(issues, dispatch_queue.is_active)
                     ],
                     "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
+                    "open_milestones": self._open_milestones(repo),
                 },
             )
 
@@ -528,6 +544,7 @@ def _make_handler(
                         for i in build_project_issues(issues, dispatch_queue.is_active)
                     ],
                     "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
+                    "open_milestones": self._open_milestones(repo),
                     "state": self._state_payload(state),
                 },
             )
@@ -1216,6 +1233,7 @@ def make_server(
     get_pr_branch: GetPrBranchFn = gh_get_pr_branch,
     delete_branch: DeleteBranchFn = gh_delete_branch,
     list_issues: ListIssuesFn = gh_list_issues,
+    list_open_milestones: ListOpenMilestonesFn = gh_list_open_milestones,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     get_issue_detail: GetIssueDetailFn = gh_get_issue_detail,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
@@ -1250,6 +1268,7 @@ def make_server(
         get_pr_branch=get_pr_branch,
         delete_branch=delete_branch,
         list_issues=list_issues,
+        list_open_milestones=list_open_milestones,
         sync_worktree=sync_worktree,
         get_issue_detail=get_issue_detail,
         update_execution_settings=update_execution_settings,

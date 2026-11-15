@@ -72,6 +72,35 @@ describe("buildMetaFilterOptions", () => {
     });
   });
 
+  it("オープン中のマイルストーンだけを選択肢にする（issue #308）", () => {
+    const withClosed = [
+      issue({ number: 1, milestone: "v1" }),
+      issue({ number: 2, milestone: "v2" }),
+      issue({ number: 3, milestone: "old" }),
+    ];
+    expect(
+      buildMetaFilterOptions(withClosed, withClosed, ["v1", "v2"]).milestones,
+    ).toEqual([
+      { value: "v1", count: 1 },
+      { value: "v2", count: 1 },
+    ]);
+    expect(
+      buildMetaFilterOptions(withClosed, withClosed, []).milestones,
+    ).toEqual([]);
+  });
+
+  it("オープン中一覧がnull（取得失敗）なら絞り込まない", () => {
+    const withClosed = [
+      issue({ number: 1, milestone: "v1" }),
+      issue({ number: 3, milestone: "old" }),
+    ];
+    expect(
+      buildMetaFilterOptions(withClosed, withClosed, null).milestones.map(
+        (m) => m.value,
+      ),
+    ).toEqual(["old", "v1"]);
+  });
+
   it("マイルストーン・タグが無ければ空", () => {
     expect(buildMetaFilterOptions([issue({})])).toEqual({
       milestones: [],

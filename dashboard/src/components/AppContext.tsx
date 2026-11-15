@@ -35,6 +35,7 @@ export interface AppContextValue {
     repo: string,
     issues: ProjectIssue[],
     inbox: InboxItem[],
+    openMilestones: string[] | null,
   ) => void;
   showToast: (text: string, isError?: boolean) => void;
   openReply: (

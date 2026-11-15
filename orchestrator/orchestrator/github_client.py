@@ -41,6 +41,7 @@ GetCurrentBranchFn = Callable[[str], str]
 FindOpenPrByBranchFn = Callable[[str, str], dict | None]
 AppendPrIssueReferenceFn = Callable[[str, int, int, str], None]
 GetIssueDetailFn = Callable[[str, int], dict]
+ListOpenMilestonesFn = Callable[[str], list[str]]
 GetPrStatusCheckRollupFn = Callable[[str, int], list[dict]]
 
 
@@ -87,6 +88,28 @@ def list_issues(repo: str, *, run: RunFn = subprocess.run) -> list[IssueSummary]
         )
         for issue in raw_issues
     ]
+
+
+def list_open_milestones(repo: str, *, run: RunFn = subprocess.run) -> list[str]:
+    """対象リポジトリのオープン中マイルストーンのタイトル一覧を取得する（issue #308）。
+
+    `gh issue list`の`milestone`には状態（open/closed）が含まれないため、
+    `gh api repos/{repo}/milestones?state=open --paginate`で別途取得する。
+    """
+    result = run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/milestones?state=open&per_page=100",
+            "--paginate",
+            "--jq",
+            ".[].title",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
 
 
 def get_issue_detail(repo: str, issue_number: int, *, run: RunFn = subprocess.run) -> dict:

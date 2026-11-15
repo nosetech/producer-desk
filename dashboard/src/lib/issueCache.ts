@@ -6,6 +6,8 @@ export const ISSUE_CACHE_TTL_MS = 60_000;
 export interface IssueCacheEntry {
   issues: ProjectIssue[];
   inbox: InboxItem[];
+  /** オープン中マイルストーン。`null`は未取得・取得失敗（絞り込まない）。 */
+  openMilestones: string[] | null;
   fetchedAt: number;
 }
 
@@ -34,8 +36,9 @@ export function storeIssueCache(
   issues: ProjectIssue[],
   inbox: InboxItem[],
   now: number,
+  openMilestones: string[] | null = null,
 ): void {
-  cache.set(repo, { issues, inbox, fetchedAt: now });
+  cache.set(repo, { issues, inbox, openMilestones, fetchedAt: now });
 }
 
 /** repo省略時は全リポジトリ分を破棄する。 */
