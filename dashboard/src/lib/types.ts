@@ -221,6 +221,10 @@ export interface ProjectIssue {
   updated_at: string;
   /** `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。 */
   is_orphaned: boolean;
+  /** マイルストーンのタイトル（issue #303）。未設定はnull。古いキャッシュでは欠ける。 */
+  milestone?: string | null;
+  /** 状態ラベル以外のラベル名（issue #303）。古いキャッシュでは欠ける。 */
+  tags?: string[];
 }
 
 /** GET /api/projects/{repo}/issues/{n} の応答（issue #231）。返信UIの引用表示用。 */

@@ -90,6 +90,8 @@ class IssueSummary:
     # inbox項目（issue #288）の表示用。`gh issue list`が返すissue本文・作成日時（ISO 8601）。
     body: str = ""
     created_at: str = ""
+    # マイルストーンのタイトル（issue #303）。未設定ならNone。
+    milestone: str | None = None
 
 
 @dataclass
@@ -252,6 +254,10 @@ class ProjectIssue:
     updated_at: str
     # `status:in-progress`なのに対応するAgent Runnerが実行中でない孤立状態か（issue #50）。
     is_orphaned: bool
+    # マイルストーンのタイトル（issue #303）。未設定ならNone。
+    milestone: str | None = None
+    # 状態ラベル5種を除いたその他のラベル名（issue #303）。
+    tags: list[str] = field(default_factory=list)
 
 
 def build_project_issues(
@@ -276,6 +282,8 @@ def build_project_issues(
                 updated_at=issue.updated_at,
                 is_orphaned=label is not None
                 and _is_orphaned_in_progress(issue, label, is_dispatch_active),
+                milestone=issue.milestone,
+                tags=[name for name in issue.labels if name not in STATUS_LABELS],
             )
         )
     result.sort(key=lambda i: i.updated_at, reverse=True)

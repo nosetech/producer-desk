@@ -1634,9 +1634,10 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
                 repo=repo,
                 number=1,
                 title="作業中の孤立issue",
-                labels=[STATUS_IN_PROGRESS],
+                labels=[STATUS_IN_PROGRESS, "bug"],
                 comments=[{"body": "c"}],
                 updated_at="2026-08-01T00:00:00Z",
+                milestone="v1.0",
             ),
             IssueSummary(
                 repo=repo,
@@ -1673,6 +1674,10 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
         assert by_number[1]["label"] == STATUS_IN_PROGRESS
         assert by_number[1]["is_orphaned"] is True
         assert by_number[1]["comments_count"] == 1
+        assert by_number[1]["milestone"] == "v1.0"
+        assert by_number[1]["tags"] == ["bug"]
+        assert by_number[2]["milestone"] is None
+        assert by_number[2]["tags"] == []
         assert by_number[2]["label"] is None
         assert by_number[2]["is_orphaned"] is False
         assert by_number[3]["label"] == STATUS_CLOSED
