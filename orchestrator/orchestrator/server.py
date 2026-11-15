@@ -103,7 +103,6 @@ from orchestrator.issue_meta import (
 from orchestrator.issue_plan import (
     PLAN_ISSUE_SPEC,
     IssuePlan,
-    PlanError,
     PlanRunner,
     generate_plan,
     parse_model_choice,
@@ -117,6 +116,13 @@ from orchestrator.labels import (
     gh_add_label,
     gh_get_labels,
     gh_remove_label,
+)
+from orchestrator.plan_jobs import (
+    STATUS_FAILED,
+    STATUS_QUEUED,
+    STATUS_SUCCEEDED,
+    PlanJob,
+    PlanJobStore,
 )
 from orchestrator.polling import ListIssuesFn, fetch_project_issues, now_iso, poll_once
 from orchestrator.polling_health import PollingHealth
@@ -166,6 +172,11 @@ ISSUES_META_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/meta
 INBOX_ITEM_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/inbox/(?P<issue_number>\d+)$")
 
 ISSUE_PLANS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issue-plans$")
+# issue #299: 計画ジョブの個別取得・直接編集・破棄、修正指示（revise）・再試行（retry）。
+ISSUE_PLAN_ITEM_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issue-plans/(?P<job_id>[0-9a-f]+)"
+    r"(?:/(?P<action>revise|retry))?$"
+)
 # プロジェクト別issue一覧の取得（issue #116）。作成（POST）と同一パス・別メソッド。
 LIST_ISSUES_PATH = CREATE_ISSUE_PATH
 # プロジェクト単位のissue・ラベル情報の再取得（issue #197）。
@@ -335,6 +346,7 @@ def _make_handler(
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
     plan_runner: PlanRunner | None = None,
+    plan_store: PlanJobStore | None = None,
     generate_plan_fn: GeneratePlanFn = generate_plan,
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
@@ -405,6 +417,14 @@ def _make_handler(
                 return
             if self.path == "/api/usage":
                 self._handle_usage()
+                return
+            plans_get = ISSUE_PLANS_PATH.match(self.path)
+            if plans_get:
+                self._handle_list_plans(plans_get.group("repo"))
+                return
+            plan_item_get = ISSUE_PLAN_ITEM_PATH.match(self.path)
+            if plan_item_get and not plan_item_get.group("action"):
+                self._handle_get_plan(plan_item_get.group("repo"), plan_item_get.group("job_id"))
                 return
             if self.path == "/api/settings":
                 self._send_json(200, dict(dashboard_settings))
@@ -648,13 +668,21 @@ def _make_handler(
                 self._handle_refresh_project(refresh_match.group("repo"))
                 return
 
-            # 計画生成はGitHubへ書き込まない（issueは作成しない）ため読み取り専用でも許可する。
+            if self._reject_if_read_only():
+                return
+
             plans_match = ISSUE_PLANS_PATH.match(self.path)
             if plans_match:
                 self._handle_issue_plan(plans_match.group("repo"))
                 return
 
-            if self._reject_if_read_only():
+            plan_item_match = ISSUE_PLAN_ITEM_PATH.match(self.path)
+            if plan_item_match and plan_item_match.group("action"):
+                self._handle_plan_action(
+                    plan_item_match.group("repo"),
+                    plan_item_match.group("job_id"),
+                    plan_item_match.group("action"),
+                )
                 return
 
             instruct_match = INSTRUCT_PATH.match(self.path)
@@ -695,6 +723,13 @@ def _make_handler(
             if self._reject_if_read_only():
                 return
 
+            plan_patch_match = ISSUE_PLAN_ITEM_PATH.match(self.path)
+            if plan_patch_match and not plan_patch_match.group("action"):
+                self._handle_edit_plan(
+                    plan_patch_match.group("repo"), plan_patch_match.group("job_id")
+                )
+                return
+
             meta_match = ISSUES_META_PATH.match(self.path)
             if meta_match:
                 self._handle_update_issues_meta(meta_match.group("repo"))
@@ -727,6 +762,13 @@ def _make_handler(
 
         def do_DELETE(self) -> None:  # noqa: N802
             if self._reject_if_read_only():
+                return
+
+            plan_delete_match = ISSUE_PLAN_ITEM_PATH.match(self.path)
+            if plan_delete_match and not plan_delete_match.group("action"):
+                self._handle_delete_plan(
+                    plan_delete_match.group("repo"), plan_delete_match.group("job_id")
+                )
                 return
 
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
@@ -1049,66 +1091,158 @@ def _make_handler(
                 if progress_id:
                     progress_store.clear(progress_id)
 
-        def _handle_issue_plan(self, repo: str) -> None:
-            """issue #287: やりたいことからissueの計画（タイトル・本文）を生成して返す。"""
+        def _plan_job_json(self, job: PlanJob) -> dict:
+            data = job.to_json()
+            data["queuePosition"] = (
+                plan_runner.position(job.repo, job.id) if plan_runner is not None else None
+            )
+            return data
+
+        def _plan_unavailable(self, repo: str) -> bool:
+            """計画機能が使えない（未登録repo・ストア未設定）場合にエラーを返してTrue。"""
             if repo not in known_repos:
                 self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
-                return
-            if plan_runner is None:
+                return True
+            if plan_runner is None or plan_store is None:
                 self._send_json(503, {"error": "計画生成は利用できません"})
+                return True
+            return False
+
+        def _find_plan(self, repo: str, job_id: str) -> PlanJob | None:
+            job = plan_store.get(job_id) if plan_store is not None else None
+            if job is None or job.repo != repo:
+                self._send_json(404, {"error": f"計画ジョブが見つかりません: {job_id}"})
+                return None
+            return job
+
+        def _enqueue_plan(
+            self,
+            job: PlanJob,
+            previous_plan: IssuePlan | None,
+            instruction: str | None,
+        ) -> None:
+            project = projects_by_repo[job.repo]
+            request_text, model = job.request, job.model
+            plan_runner.enqueue(
+                project,
+                job.id,
+                lambda: generate_plan_fn(
+                    project,
+                    request_text,
+                    previous_plan,
+                    instruction,
+                    model_override=parse_model_choice(model),
+                ),
+            )
+
+        def _handle_list_plans(self, repo: str) -> None:
+            """issue #299: 計画ジョブ一覧（inbox項目と`inboxIssueNumber`で突き合わせる）。"""
+            if self._plan_unavailable(repo):
                 return
-            progress_id: str | None = None
+            jobs = [self._plan_job_json(j) for j in plan_store.list(repo)]
+            self._send_json(200, {"jobs": jobs})
+
+        def _handle_get_plan(self, repo: str, job_id: str) -> None:
+            if self._plan_unavailable(repo):
+                return
+            job = self._find_plan(repo, job_id)
+            if job is not None:
+                self._send_json(200, self._plan_job_json(job))
+
+        def _handle_issue_plan(self, repo: str) -> None:
+            """issue #299: 計画ジョブを登録して202で即時返す（完了は待たない）。"""
+            if self._plan_unavailable(repo):
+                return
             try:
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
+                request_text = payload.get("request")
+                if not isinstance(request_text, str) or not request_text.strip():
+                    raise ValueError("requestは空でない文字列である必要があります")
+                model = payload.get("model")
+                if model is not None and not isinstance(model, str):
+                    raise ValueError("modelは文字列である必要があります")
+                inbox_number = payload.get("inboxIssueNumber")
+                if inbox_number is not None and (
+                    not isinstance(inbox_number, int) or isinstance(inbox_number, bool)
+                ):
+                    raise ValueError("inboxIssueNumberは整数である必要があります")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            job = plan_store.create(repo, request_text.strip(), model, inbox_number)
+            self._enqueue_plan(job, None, None)
+            # 実行開始後の状態ではなく、受け付けた時点の状態を返す。
+            self._send_json(202, {"id": job.id, "status": STATUS_QUEUED})
+
+        def _handle_plan_action(self, repo: str, job_id: str, action: str) -> None:
+            """issue #299: 修正指示（revise）・失敗ジョブの再試行（retry）。"""
+            if self._plan_unavailable(repo):
+                return
+            job = self._find_plan(repo, job_id)
+            if job is None:
+                return
+            if plan_runner.is_active(job.id):
+                self._send_json(409, {"error": "この計画は実行中です"})
+                return
+            previous = IssuePlan(job.result["title"], job.result["body"]) if job.result else None
+            if action == "revise":
                 try:
                     payload = self._read_json_body()
-                    if not isinstance(payload, dict):
-                        raise ValueError("リクエストボディはJSONオブジェクトである必要があります")
-                    pid = payload.get("progressId")
-                    progress_id = pid if isinstance(pid, str) else None
-                    request_text = payload.get("request")
-                    if not isinstance(request_text, str) or not request_text.strip():
-                        raise ValueError("requestは空でない文字列である必要があります")
-                    previous = payload.get("previousPlan")
-                    previous_plan: IssuePlan | None = None
-                    if previous is not None:
-                        if (
-                            not isinstance(previous, dict)
-                            or not isinstance(previous.get("title"), str)
-                            or not isinstance(previous.get("body"), str)
-                        ):
-                            raise ValueError("previousPlanはtitle・bodyを持つ必要があります")
-                        previous_plan = IssuePlan(previous["title"], previous["body"])
-                    instruction = payload.get("instruction")
-                    if instruction is not None and not isinstance(instruction, str):
-                        raise ValueError("instructionは文字列である必要があります")
+                    instruction = payload.get("instruction") if isinstance(payload, dict) else None
+                    if not isinstance(instruction, str) or not instruction.strip():
+                        raise ValueError("instructionは空でない文字列である必要があります")
+                    model = payload.get("model")
+                    if model is not None and not isinstance(model, str):
+                        raise ValueError("modelは文字列である必要があります")
                 except ValueError as e:
                     self._send_json(400, {"error": str(e)})
                     return
-                on_stage = (
-                    (lambda stage: progress_store.set(progress_id, stage))
-                    if progress_id
-                    else (lambda _stage: None)
-                )
-                project = projects_by_repo[repo]
-                try:
-                    plan = plan_runner.submit(
-                        project,
-                        lambda: generate_plan_fn(
-                            project,
-                            request_text,
-                            previous_plan,
-                            instruction,
-                            model_override=parse_model_choice(payload.get("model")),
-                        ),
-                        on_stage=on_stage,
-                    )
-                except PlanError as e:
-                    self._send_json(e.status, {"error": str(e), "code": e.code})
+                if job.status != STATUS_SUCCEEDED or previous is None:
+                    self._send_json(409, {"error": "確認待ちの計画のみ修正できます"})
                     return
-                self._send_json(200, {"title": plan.title, "body": plan.body})
-            finally:
-                if progress_id:
-                    progress_store.clear(progress_id)
+                updated = plan_store.mark_revising(job.id, instruction.strip(), model)
+                self._enqueue_plan(updated, previous, instruction.strip())
+            else:
+                if job.status != STATUS_FAILED:
+                    self._send_json(409, {"error": "失敗した計画のみ再試行できます"})
+                    return
+                # 修正の失敗は直前の計画と最後の修正指示で、初回の失敗は依頼内容から再試行する。
+                instruction = job.history[-1]["instruction"] if previous and job.history else None
+                updated = plan_store.mark_retrying(job.id, instruction)
+                self._enqueue_plan(updated, previous if instruction else None, instruction)
+            self._send_json(202, {"id": job.id, "status": STATUS_QUEUED})
+
+        def _handle_edit_plan(self, repo: str, job_id: str) -> None:
+            """確認画面での直接編集（タイトル・本文）を保存する。"""
+            if self._plan_unavailable(repo):
+                return
+            try:
+                payload = self._read_json_body()
+                title = payload.get("title") if isinstance(payload, dict) else None
+                body = payload.get("body") if isinstance(payload, dict) else None
+                if not isinstance(title, str) or not isinstance(body, str):
+                    raise ValueError("title・bodyは文字列である必要があります")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            if self._find_plan(repo, job_id) is None:
+                return
+            job = plan_store.save_edit(job_id, title, body)
+            if job is None:
+                self._send_json(409, {"error": "計画が確認待ちではないため編集できません"})
+                return
+            self._send_json(200, self._plan_job_json(job))
+
+        def _handle_delete_plan(self, repo: str, job_id: str) -> None:
+            """破棄、または承認（issue登録）後の削除。"""
+            if self._plan_unavailable(repo):
+                return
+            if self._find_plan(repo, job_id) is None:
+                return
+            plan_store.delete(job_id)
+            self._send_json(200, {"id": job_id})
 
         def _handle_create_inbox(self, repo: str) -> None:
             """inbox項目を作成する（issue #288）。ディスパッチはしない。"""
@@ -1301,6 +1435,7 @@ def make_server(
     polling_health: PollingHealth | None = None,
     polling_interval_seconds: float = DEFAULT_POLLING_INTERVAL_SECONDS,
     plan_runner: PlanRunner | None = None,
+    plan_store: PlanJobStore | None = None,
     generate_plan_fn: GeneratePlanFn = generate_plan,
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
@@ -1335,6 +1470,7 @@ def make_server(
         fetch_attachment_fn=fetch_attachment_fn,
         read_only=read_only,
         plan_runner=plan_runner,
+        plan_store=plan_store,
         generate_plan_fn=generate_plan_fn,
         update_issue=update_issue,
         close_issue_not_planned=close_issue_not_planned,

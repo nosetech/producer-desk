@@ -7,18 +7,21 @@ export default function Toast({
   text,
   error = false,
   warn = false,
+  quiet = false,
 }: {
   show: boolean;
   text: string;
   error?: boolean;
   /** 一部失敗の警告（issue #305）。 */
   warn?: boolean;
+  /** 控えめな通知（依頼の受付・計画の完了。issue #299）。 */
+  quiet?: boolean;
 }) {
   if (!show) return null;
 
   return (
     <div
-      className={`${styles.toast} ${error ? styles.toastError : ""} ${warn && !error ? styles.toastWarn : ""}`}
+      className={`${styles.toast} ${error ? styles.toastError : ""} ${warn && !error ? styles.toastWarn : ""} ${quiet && !error && !warn ? styles.toastQuiet : ""}`}
       role={error ? "alert" : "status"}
     >
       <svg
@@ -32,7 +35,12 @@ export default function Toast({
         strokeLinejoin="round"
         className={styles.icon}
       >
-        {error ? (
+        {quiet && !error && !warn ? (
+          <>
+            <path d="M22 2 11 13" />
+            <path d="M22 2 15 22l-4-9-9-4Z" />
+          </>
+        ) : error ? (
           <>
             <circle cx="12" cy="12" r="9" />
             <path d="M12 8v4M12 16h.01" />

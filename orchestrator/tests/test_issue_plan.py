@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from orchestrator.issue_plan import (
     generate_plan,
     parse_plan_output,
 )
+from orchestrator.plan_jobs import PlanJobStore
 from orchestrator.prompts import validate_prompt_text
 
 
@@ -126,9 +128,10 @@ def test_generate_plan_missing_worktree(tmp_path) -> None:
 
 
 def test_plan_runner_serializes_with_issue_dispatch(tmp_path) -> None:
-    """計画生成は実issueのディスパッチと同じキューで順番に処理される。"""
+    """計画生成は実issueのディスパッチと同じキューで順番に処理され、結果はストアへ書かれる。"""
     order: list[str] = []
     release = threading.Event()
+    finished: list[str] = []
     runner_ref: list[PlanRunner] = []
 
     def dispatch_fn(repo: str, number: int, message: str) -> None:
@@ -139,32 +142,80 @@ def test_plan_runner_serializes_with_issue_dispatch(tmp_path) -> None:
             release.wait(timeout=5)
 
     queue = DispatchQueue(dispatch_fn)
-    runner = PlanRunner(queue)
+    store = PlanJobStore(tmp_path / "jobs.json")
+    runner = PlanRunner(queue, store, on_finished=lambda job: finished.append(job.status))
     runner_ref.append(runner)
-    stages: list[str] = []
     queue.enqueue("o/r", 5, "msg")
-    # issueが実行中なので、計画生成はキューで待機する
-    result: list[IssuePlan] = []
-    t = threading.Thread(
-        target=lambda: result.append(
-            runner.submit(
-                _project(tmp_path),
-                lambda: (order.append("plan"), IssuePlan("T", "B"))[1],
-                on_stage=stages.append,
-            )
-        )
+    job = store.create("o/r", "req", None, None)
+    # enqueueは待たずに即時戻る。issueが実行中なので、計画生成はキューで待機する
+    runner.enqueue(
+        _project(tmp_path), job.id, lambda: (order.append("plan"), IssuePlan("T", "B"))[1]
     )
-    t.start()
-    while queue.snapshot("o/r").plan_waiting == 0:
-        pass
     snap = queue.snapshot("o/r")
     assert snap.running == 5 and snap.waiting == []  # 計画ジョブは実issueの表示に混ざらない
+    assert runner.position("o/r", job.id) == 1
+    assert store.get(job.id).status == "queued"
     release.set()
-    t.join(timeout=10)
+    for _ in range(100):
+        if finished:
+            break
+        time.sleep(0.05)
 
     assert order == ["issue5", "plan"]
-    assert result == [IssuePlan("T", "B")]
-    assert stages[-1] == "plan_running"
+    done = store.get(job.id)
+    assert done.status == "succeeded" and done.result == {"title": "T", "body": "B"}
+    assert finished == ["succeeded"]
+    assert runner.position("o/r", job.id) is None
+
+
+def test_plan_runner_records_failure_with_code(tmp_path) -> None:
+    runner_ref: list[PlanRunner] = []
+    queue = DispatchQueue(lambda repo, n, m: runner_ref[0].run_job(n))
+    store = PlanJobStore(tmp_path / "jobs.json")
+    finished: list[str] = []
+    runner = PlanRunner(queue, store, on_finished=lambda job: finished.append(job.status))
+    runner_ref.append(runner)
+    job = store.create("o/r", "req", None, None)
+
+    def boom() -> IssuePlan:
+        raise PlanError("時間切れ", 504, "timeout")
+
+    runner.enqueue(_project(tmp_path), job.id, boom)
+    for _ in range(100):
+        if finished:
+            break
+        time.sleep(0.05)
+
+    failed = store.get(job.id)
+    assert failed.status == "failed" and failed.error == {"code": "timeout", "message": "時間切れ"}
+
+
+def test_plan_runner_skips_discarded_job(tmp_path) -> None:
+    ran: list[int] = []
+    runner_ref: list[PlanRunner] = []
+    gate = threading.Event()
+
+    def dispatch_fn(repo: str, number: int, message: str) -> None:
+        if number < 0:
+            runner_ref[0].run_job(number)
+        else:
+            gate.wait(timeout=5)
+
+    queue = DispatchQueue(dispatch_fn)
+    store = PlanJobStore(tmp_path / "jobs.json")
+    runner = PlanRunner(queue, store)
+    runner_ref.append(runner)
+    queue.enqueue("o/r", 1, "")
+    job = store.create("o/r", "req", None, None)
+    runner.enqueue(_project(tmp_path), job.id, lambda: (ran.append(1), IssuePlan("T", "B"))[1])
+    store.delete(job.id)  # キュー待ち中に破棄
+    gate.set()
+    for _ in range(40):
+        if not runner.is_active(job.id):
+            break
+        time.sleep(0.05)
+
+    assert ran == [] and store.get(job.id) is None
 
 
 def test_parse_model_choice() -> None:

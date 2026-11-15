@@ -68,18 +68,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     text: string;
     error: boolean;
     warn: boolean;
+    quiet: boolean;
   }>({
     show: false,
     text: "",
     error: false,
     warn: false,
+    quiet: false,
   });
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = useCallback(
-    (text: string, isError = false, isWarn = false) => {
+    (text: string, isError = false, isWarn = false, isQuiet = false) => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
-      setToast({ show: true, text, error: isError, warn: isWarn });
+      setToast({
+        show: true,
+        text,
+        error: isError,
+        warn: isWarn,
+        quiet: isQuiet,
+      });
       toastTimer.current = setTimeout(
         () => setToast((t) => ({ ...t, show: false })),
         TOAST_DURATION_MS,
@@ -241,6 +249,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               text={toast.text}
               error={toast.error}
               warn={toast.warn}
+              quiet={toast.quiet}
             />
             <ComposerBar
               open={composerOpen}

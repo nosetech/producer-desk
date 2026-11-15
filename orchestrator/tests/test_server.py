@@ -1422,9 +1422,10 @@ def test_create_issue_invalid_dispatch_value_returns_400() -> None:
         server.shutdown()
 
 
-# issue #287: AIによるissue計画の生成API（POST /api/projects/{repo}/issue-plans）。
-def _plan_server(generate_plan_fn, **kwargs):
+# issue #299: AIによる計画のバックグラウンド実行API（issue-plans）。
+def _plan_server(generate_plan_fn, tmp_path, **kwargs):
     from orchestrator.issue_plan import PlanRunner
+    from orchestrator.plan_jobs import PlanJobStore
 
     runner_ref: list = []
 
@@ -1432,18 +1433,18 @@ def _plan_server(generate_plan_fn, **kwargs):
         runner_ref[0].run_job(number)
 
     dispatch_queue = DispatchQueue(dispatch_fn)
-    runner_ref.append(PlanRunner(dispatch_queue))
-    issue_creator = FakeIssueCreator(start_number=1)
+    plan_store = PlanJobStore(tmp_path / "plan_jobs.json")
+    runner_ref.append(PlanRunner(dispatch_queue, plan_store))
     server, _ = _run_server(
         StateStore(),
         projects=[PROJECT_A],
         dispatch_queue=dispatch_queue,
         plan_runner=runner_ref[0],
+        plan_store=plan_store,
         generate_plan_fn=generate_plan_fn,
-        create_issue=issue_creator.create_issue,
         **kwargs,
     )
-    return server, issue_creator
+    return server, plan_store
 
 
 def _post_status(server, path: str, payload: dict) -> tuple[int, dict]:
@@ -1453,7 +1454,37 @@ def _post_status(server, path: str, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read())
 
 
-def test_issue_plan_returns_plan_without_creating_issue() -> None:
+def _request(server, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _wait_plan(server, job_id: str, status: str) -> dict:
+    import time
+
+    path = f"/api/projects/nosetech/project-a/issue-plans/{job_id}"
+    for _ in range(100):
+        code, body = _request(server, "GET", path)
+        if code == 200 and body["status"] == status:
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"ジョブが{status}になりませんでした: {body}")
+
+
+PLANS = "/api/projects/nosetech/project-a/issue-plans"
+
+
+def test_issue_plan_submit_returns_202_immediately_and_result_is_stored(tmp_path) -> None:
     from orchestrator.issue_plan import IssuePlan
 
     seen: list = []
@@ -1462,65 +1493,90 @@ def test_issue_plan_returns_plan_without_creating_issue() -> None:
         seen.append((request, previous_plan, instruction))
         return IssuePlan("題", "本文")
 
-    server, issue_creator = _plan_server(generate)
+    server, _ = _plan_server(generate, tmp_path)
     try:
-        status, body = _post_status(
-            server,
-            "/api/projects/nosetech/project-a/issue-plans",
-            {
-                "request": "やりたい",
-                "previousPlan": {"title": "旧", "body": "旧本文"},
-                "instruction": "短く",
-            },
+        status, body = _request(
+            server, "POST", PLANS, {"request": "やりたい", "inboxIssueNumber": 7}
         )
 
-        assert (status, body) == (200, {"title": "題", "body": "本文"})
-        assert seen[0][0] == "やりたい" and seen[0][2] == "短く"
-        assert seen[0][1].title == "旧"
-        assert issue_creator.created == [] if hasattr(issue_creator, "created") else True
+        assert status == 202 and body["status"] == "queued"
+        job = _wait_plan(server, body["id"], "succeeded")
+        assert job["result"] == {"title": "題", "body": "本文"}
+        assert job["inboxIssueNumber"] == 7
+        assert seen[0][0] == "やりたい"
+        code, listing = _request(server, "GET", PLANS)
+        assert code == 200 and [j["id"] for j in listing["jobs"]] == [body["id"]]
     finally:
         server.shutdown()
 
 
-def test_issue_plan_error_is_returned_to_user() -> None:
-    from orchestrator.issue_plan import PlanError
+def test_issue_plan_revise_edit_retry_and_delete(tmp_path) -> None:
+    from orchestrator.issue_plan import IssuePlan, PlanError
 
-    def generate(*args, **kwargs):
-        raise PlanError("タイムアウトしました", 504)
+    calls: list = []
 
-    server, _ = _plan_server(generate)
+    def generate(project, request, previous_plan=None, instruction=None, model_override=None):
+        calls.append((previous_plan, instruction))
+        if instruction == "壊す":
+            raise PlanError("解釈不可", code="parse")
+        return IssuePlan("題" + str(len(calls)), "本文")
+
+    server, store = _plan_server(generate, tmp_path)
     try:
-        status, body = _post_status(
-            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
-        )
+        _, created = _request(server, "POST", PLANS, {"request": "x"})
+        job_id = created["id"]
+        _wait_plan(server, job_id, "succeeded")
+        item = f"{PLANS}/{job_id}"
 
-        assert status == 504 and "タイムアウト" in body["error"]
+        # 直接編集
+        status, edited = _request(server, "PATCH", item, {"title": "編集題", "body": "編集本文"})
+        assert status == 200 and edited["result"]["title"] == "編集題"
+
+        # 修正指示（失敗する指示）。直前の計画は残る
+        status, _ = _request(server, "POST", f"{item}/revise", {"instruction": "壊す"})
+        assert status == 202
+        failed = _wait_plan(server, job_id, "failed")
+        assert failed["error"]["code"] == "parse" and failed["result"]["title"] == "編集題"
+        assert calls[-1][0].title == "編集題" and calls[-1][1] == "壊す"
+
+        # 再試行は修正指示を引き継ぐ（履歴は増えない）
+        status, _ = _request(server, "POST", f"{item}/retry")
+        assert status == 202
+        _wait_plan(server, job_id, "failed")
+        assert calls[-1][1] == "壊す" and len(store.get(job_id).history) == 1
+
+        # 失敗中の修正は不可、破棄は可
+        assert _request(server, "POST", f"{item}/revise", {"instruction": "x"})[0] == 409
+        assert _request(server, "DELETE", item)[0] == 200
+        assert _request(server, "GET", item)[0] == 404
     finally:
         server.shutdown()
 
 
-def test_issue_plan_rejects_empty_request_and_unknown_repo() -> None:
-    server, _ = _plan_server(lambda *a, **k: None)
+def test_issue_plan_validation_and_unknown_repo(tmp_path) -> None:
+    server, _ = _plan_server(lambda *a, **k: None, tmp_path)
     try:
-        assert _post_status(server, "/api/projects/nosetech/project-a/issue-plans", {})[0] == 400
+        assert _request(server, "POST", PLANS, {})[0] == 400
+        assert _request(server, "POST", PLANS, {"request": "x", "inboxIssueNumber": "1"})[0] == 400
         assert (
-            _post_status(server, "/api/projects/nosetech/nope/issue-plans", {"request": "x"})[0]
+            _request(server, "POST", "/api/projects/nosetech/nope/issue-plans", {"request": "x"})[0]
             == 404
         )
+        assert _request(server, "GET", f"{PLANS}/abc123")[0] == 404
     finally:
         server.shutdown()
 
 
-def test_issue_plan_allowed_in_read_only_mode() -> None:
-    from orchestrator.issue_plan import IssuePlan
-
-    server, _ = _plan_server(lambda *a, **k: IssuePlan("T", "B"), read_only=True)
+def test_issue_plan_write_operations_rejected_in_read_only_mode(tmp_path) -> None:
+    server, store = _plan_server(lambda *a, **k: None, tmp_path, read_only=True)
     try:
-        status, body = _post_status(
-            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
-        )
-
-        assert status == 200 and body["title"] == "T"
+        job = store.create("nosetech/project-a", "x", None, None)
+        item = f"{PLANS}/{job.id}"
+        assert _request(server, "POST", PLANS, {"request": "x"})[0] == 403
+        assert _request(server, "POST", f"{item}/revise", {"instruction": "x"})[0] == 403
+        assert _request(server, "PATCH", item, {"title": "a", "body": "b"})[0] == 403
+        assert _request(server, "DELETE", item)[0] == 403
+        assert _request(server, "GET", PLANS)[0] == 200  # 参照は可能
     finally:
         server.shutdown()
 

@@ -163,19 +163,30 @@ Content-Type: application/json
 - `dispatch: "immediate"`: 作成直後に上記「既存issueへの指示」の `instruct` と同じ扱いで即時ディスパッチ（またはプロジェクトが実行中ならキュー）する。
 - `dispatch: "queued"`: `status:todo` のまま登録するだけでディスパッチしない。後日、ダッシュボードから当該issueに `instruct` を送ることで着手させる。
 
-#### AIによる計画作成（issue計画生成API、issue #287）
+#### AIによる計画作成（issue計画生成API、issue #287・#299）
 
-新規タスク作成で「AIに計画してもらう」を選んだとき、「やりたいこと」からissueのタイトル・本文（計画）をAIに作成させる。**この時点ではissueを作らない**。承認後の登録は既存の `POST /api/projects/{repo}/issues`（上記「新規タスクの作成」、`status:todo`付与・`immediate`/`queued`選択）をそのまま使う。
+新規タスク作成・inboxの「計画する」で「AIに計画してもらう」を選んだとき、「やりたいこと」からissueのタイトル・本文（計画）をAIに作成させる。**この時点ではissueを作らない**。承認後の登録は既存の `POST /api/projects/{repo}/issues`（上記「新規タスクの作成」、`status:todo`付与・`immediate`/`queued`選択。inbox由来は`issueNumber`付きで昇格）をそのまま使い、成功したら計画ジョブを`DELETE`で削除する。
 
-- `POST /api/projects/{repo}/issue-plans`
-  - リクエスト: `{ "request": string, "previousPlan"?: {"title","body"}, "instruction"?: string, "model"?: string, "progressId"?: string }`。`previousPlan`と`instruction`を渡すと、既存の計画に修正指示を反映した版を返す（何度でも繰り返せる）。`model`は`claude_code` / `litellm:<alias>`（省略時はプロジェクトの既定の実行手段）。
-  - 成功: `200 { "title", "body" }`。失敗: `{ "error", "code" }`。`code`は`parse`（出力からタイトル・本文を取り出せない、502）/ `timeout`（600秒、504）/ `limit`（利用リミット、429）/ `failed`（その他、502）。入力不正は400、未登録リポジトリは404。
+**バックグラウンド実行（issue #299）**: 計画は「依頼」として投入するだけで、実行はオーケストレータ側のキューで非同期に処理する。パネルを閉じる・リロードする・ブラウザを閉じても結果は失われない。完了・失敗は[Slackに通知](#5-2-メッセージフォーマット)する。
+
+- 計画ジョブの永続化: ローカルJSONファイル（`config/plan_jobs.json`、`PLAN_JOBS_PATH`で上書き可、.gitignore対象。`orchestrator/plan_jobs.py`の`PlanJobStore`）。GitHubが正のデータストアという方針のうえで、issue未作成の一時データだけを保持する。項目は`id`・`repo`・`request`・`model`・`inboxIssueNumber`（任意）・`status`（`queued` / `running` / `succeeded` / `failed`）・`result{title, body}`・`error{code, message}`・`history`（修正指示の履歴）・`pendingInstruction`・`version`・作成/更新日時。
+- 保持期間: **承認（issue登録）または破棄されるまで**保持する（時間経過での自動削除はしない）。inbox由来のジョブは、ポーリングの結果対象のinbox項目がOPENなinboxでなくなった時点（クローズ・昇格）で、完了済み（`succeeded`/`failed`）のものを破棄する。実行中のジョブは完了するまで残し、完了後の次回ポーリングで破棄する。新規タスク由来（`inboxIssueNumber`なし）は承認・破棄まで残る。
+- 再起動: `queued`/`running`のまま残ったジョブは、起動時に`failed`（`code=interrupted`、再試行可）にする。
+- API（いずれも`ORCHESTRATOR_READ_ONLY=1`では`POST`/`PATCH`/`DELETE`が403。`GET`は可）:
+  - `POST /api/projects/{repo}/issue-plans`: リクエスト `{ "request": string, "model"?: string, "inboxIssueNumber"?: int }`。ジョブを登録して`202 { "id", "status": "queued" }`を即時返す（完了を待たない）。`model`は`claude_code` / `litellm:<alias>`（省略時はプロジェクトの既定の実行手段）。入力不正は400、未登録リポジトリは404。
+  - `GET /api/projects/{repo}/issue-plans`: `{ "jobs": [...] }`。各ジョブは上記項目に加え`queuePosition`（キュー待ちの順位、1始まり。待機中でなければnull）を持つ。inbox一覧の状態表示は`inboxIssueNumber`で突き合わせる。
+  - `GET /api/projects/{repo}/issue-plans/{id}`: 個別取得（404: 存在しない）。
+  - `PATCH /api/projects/{repo}/issue-plans/{id}`: `{ "title", "body" }`。確認画面での直接編集の保存（AIは呼ばない）。`succeeded`のほか、修正に失敗して直前の計画が残っている`failed`も保存でき、保存すると確認待ちへ戻る（「直前の計画に戻る」）。直前の計画が無い`failed`・実行中は409。
+  - `POST /api/projects/{repo}/issue-plans/{id}/revise`: `{ "instruction": string, "model"?: string }`。確認待ち（`succeeded`）の計画に修正指示を投入し、`202`で即時返す（バックグラウンドで再生成。実行中も直前の`result`は残り、成功で置き換わる。何度でも繰り返せる）。それ以外の状態は409。
+  - `POST /api/projects/{repo}/issue-plans/{id}/retry`: 失敗（`failed`）のジョブを再試行する（修正の失敗は直前の計画＋最後の修正指示で、初回の失敗は依頼内容から再実行。それ以外は409）。
+  - `DELETE /api/projects/{repo}/issue-plans/{id}`: 破棄（または承認後の削除）。
+  - 失敗種別（`error.code`）: `parse`（出力からタイトル・本文を取り出せない）/ `timeout`（600秒）/ `limit`（利用リミット）/ `failed`（その他）/ `interrupted`（再起動による中断）。
+- Slack通知: ジョブが`succeeded`または`failed`になった時点（修正指示による再生成も同様）で1回だけ通知する（`slack_notifier.PlanNotifier`。プロジェクト名・依頼内容の要約・結果（失敗は種別つき）・ダッシュボードへの導線（環境変数`DASHBOARD_URL`があればそのURL）を含む）。Webhook未設定・送信失敗は計画の結果に影響させない。読み取り専用モードでは通知しない。
 - 実行: `claude -p --output-format json --permission-mode plan`を、プロジェクトのworktreeを`cwd`にワンショット実行する。`--dangerously-skip-permissions`は使わず、`--disallowedTools Edit Write NotebookEdit Bash`で変更系ツールを禁止する（コード変更・ラベル操作・コメント投稿は行わせない）。実行前にworktreeを`origin/develop`最新のdetached HEADへ合わせる（未コミットの変更がある場合・fetch失敗時は触らずに続行）。
-- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す。キュー投入・worktree取得は`issue_plan.PlanRunner`に集約しており、将来worktreeを動的に作成して並行化する際はここを差し替える。
-- 進捗: `/api/progress/{progress_id}`のポーリングで、待機中は`plan_queued:<順位>`、実行中は`plan_running`を返す（ダッシュボードが「待機中（キュー◯番目）」「計画を作成中」を区別表示）。
-- 読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）: GitHubへ書き込まないため計画生成は許可する（その後のissue登録は403）。
+- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す。`issue_plan.PlanRunner`はキューに積むだけで呼び出し元を待たせず、キューのワーカーが`run_job`で実行して結果を`PlanJobStore`へ書き込む。キュー待ち中に破棄されたジョブは実行しない。将来worktreeを動的に作成して並行化する際はここを差し替える。
+- 進捗: ダッシュボードはジョブ一覧（`GET .../issue-plans`）のポーリングで、`status`と`queuePosition`から「キュー待ち（◯番目）」「計画中」「確認待ち」「失敗」を表示する（`/api/progress`は使わない）。
 - プロンプト: 出力形式（`{"title","body"}`のJSONをコードブロックで1つ）と調査の指示はプロンプト設定の`plan_issue_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で編集・リセットできる。必須トークンは`"title"` / `"body"`、使えるプレースホルダは`{repo}` / `{user_name}`（`{issue_number}`は未作成のため不可）。修正指示時も同じプロンプトを使い、現在の計画と修正指示をユーザーメッセージとして渡す。
-- 画面: 新規タスク作成パネルの「自分で書く / AIに計画してもらう」切替、計画確認（タイトル・本文の直接編集、AIへの修正指示、「承認して登録」「やり直す」「キャンセル」）。デザインは[design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md)参照。
+- 画面: 新規タスク作成パネルの「自分で書く / AIに計画してもらう」切替、計画確認（タイトル・本文の直接編集、AIへの修正指示、「承認して登録」「やり直す」「キャンセル」）。依頼後はパネルを閉じてよく、inbox一覧の各項目に計画の状態バッジ（キュー待ち/計画中/確認待ち/失敗）と、確認待ち・失敗の計画を開く導線を持つ。新規タスク由来の未承認計画は、新規作成パネルを開いたときに一覧で復元する。デザインは[design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md)（#287）と[design-prompt-dashboard-diff-plan-background.md](./design-prompt-dashboard-diff-plan-background.md)（#299）参照。
 
 #### 共通仕様
 
@@ -520,6 +531,16 @@ MCP `ollama-client`（サードパーティ`ollama-mcp`パッケージ）の`oll
 ```
 
 起動時点で既に`needs-human-decision`・`status:in-review`のissueは「既知」として扱い通知しない（[2-3「共通仕様」](#2-3-指示出しapi内部api)のコメント検知と同様、オーケストレータ再起動のたびに既存の判断待ち・レビュー待ちを再通知しないための方針）。以降のポーリングで新規に判断待ち・レビュー待ちになったissueのみを、それぞれ独立に（`DecisionNotifier`・`ReviewNotifier`として）通知する。`SLACK_WEBHOOK_URL`が未設定の場合は通知処理をスキップする（起動失敗にはしない）。
+
+AI計画ジョブ（issue #299）が`succeeded`または`failed`になった時点でも、同じWebhookへ通知する（[2-3 AIによる計画作成](#2-3-指示出しapi内部api)）。
+
+```json
+{
+  "text": ":white_check_mark: AI計画が完成しました（確認待ち）\n*プロジェクト*: nosetech/project-a（inbox #5）\n*依頼内容*: ログイン画面のエラー表示を直したい…\n*結果*: 成功\n<DASHBOARD_URL>"
+}
+```
+
+失敗時は`:warning: AI計画の作成に失敗しました`、`*結果*: 失敗（timeout: タイムアウト）`のように種別（`parse` / `timeout` / `limit` / `interrupted` / `failed`）を含める。ジョブ1件の完了ごとに1回だけ送る（修正指示による再生成の完了・失敗も同様）。ダッシュボードへの導線は環境変数`DASHBOARD_URL`があればそのURL、無ければ「ダッシュボードのissue一覧（inbox）で確認してください」の文言。読み取り専用モードでは通知しない。
 
 ### 5-2a. ポーリング異常の通知とヘルスチェック（issue #279）
 

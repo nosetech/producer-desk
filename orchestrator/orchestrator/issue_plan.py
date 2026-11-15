@@ -30,6 +30,7 @@ from orchestrator.config import EXECUTION_MODE_LITELLM_PROXY, Project
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.execution_mode import ExecutionSettings, parse_override_directive
 from orchestrator.litellm_proxy import build_env_overrides
+from orchestrator.plan_jobs import PlanJob, PlanJobStore
 from orchestrator.prompts import (
     USER_NAME_SPEC,
     PromptSpec,
@@ -45,10 +46,6 @@ logger = logging.getLogger(__name__)
 PLAN_TIMEOUT_SECONDS = 600
 # 計画生成ジョブがキューに積まれるときのissue番号は負数（実issueと衝突しない）。
 PLAN_JOB_NUMBER_START = -1
-
-# 進捗ポーリング（/api/progress/{progress_id}）で返す段階名。キュー順位は`queued:<順位>`。
-STAGE_PLAN_QUEUED_PREFIX = "plan_queued:"
-STAGE_PLAN_RUNNING = "plan_running"
 
 # 出力形式の必須トークン。編集で失われるとタイトル・本文を機械的に取り出せなくなる。
 PLAN_TITLE_KEY = '"title"'
@@ -284,71 +281,82 @@ def generate_plan(
 
 
 class PlanRunner:
-    """計画生成ジョブを既存のプロジェクト別FIFOキューに積み、完了まで待つ。
+    """計画ジョブを既存のプロジェクト別FIFOキューに積み、バックグラウンドで実行する（issue #299）。
 
-    ジョブは負のissue番号でキューに積み、キューのワーカー（`dispatch_fn`）が
-    `run_job`で実行する。呼び出し元（HTTPハンドラ）は`submit`で結果を待つ。
+    ジョブは負のissue番号でキューに積み、キューのワーカー（`dispatch_fn`）が`run_job`で
+    実行して結果を`PlanJobStore`へ書き込む。呼び出し元（HTTPハンドラ）は待たない。
     キューへの投入と実行の入れ替えポイントはこのクラスに集約している。
     """
 
-    def __init__(self, dispatch_queue: DispatchQueue) -> None:
+    def __init__(
+        self,
+        dispatch_queue: DispatchQueue,
+        store: PlanJobStore,
+        *,
+        on_finished: Callable[[PlanJob], None] | None = None,
+    ) -> None:
         self._queue = dispatch_queue
+        self._store = store
+        self._on_finished = on_finished
         self._lock = threading.Lock()
         self._next = PLAN_JOB_NUMBER_START
-        self._jobs: dict[int, _Job] = {}
+        self._pending: dict[int, tuple[str, Callable[[], IssuePlan]]] = {}
+        self._numbers: dict[str, int] = {}
 
-    def submit(
-        self,
-        project: Project,
-        run: Callable[[], IssuePlan],
-        *,
-        on_stage: Callable[[str], None],
-    ) -> IssuePlan:
+    def enqueue(self, project: Project, job_id: str, run: Callable[[], IssuePlan]) -> None:
         with self._lock:
             job_number = self._next
             self._next -= 1
-            job = _Job(run=run, on_stage=on_stage)
-            self._jobs[job_number] = job
+            self._pending[job_number] = (job_id, run)
+            self._numbers[job_id] = job_number
         self._queue.enqueue(project.repo, job_number, "")
-        # キュー順位を進捗として通知しつつ完了を待つ。
-        while not job.done.wait(timeout=1.0):
-            if not job.started:
-                snap = self._queue.snapshot(project.repo, include_plans=True)
-                if job_number in snap.waiting:
-                    on_stage(f"{STAGE_PLAN_QUEUED_PREFIX}{snap.waiting.index(job_number) + 1}")
+
+    def is_active(self, job_id: str) -> bool:
         with self._lock:
-            self._jobs.pop(job_number, None)
-        if job.error is not None:
-            raise job.error
-        assert job.result is not None
-        return job.result
+            return job_id in self._numbers
+
+    def position(self, repo: str, job_id: str) -> int | None:
+        """キュー待ちの順位（1始まり）。待機中でなければNone。"""
+        with self._lock:
+            number = self._numbers.get(job_id)
+        if number is None:
+            return None
+        snap = self._queue.snapshot(repo, include_plans=True)
+        if number in snap.waiting:
+            return snap.waiting.index(number) + 1
+        return None
 
     def run_job(self, job_number: int) -> None:
         with self._lock:
-            job = self._jobs.get(job_number)
-        if job is None:
+            entry = self._pending.get(job_number)
+        if entry is None:
             return
-        job.started = True
-        job.on_stage(STAGE_PLAN_RUNNING)
+        job_id, run = entry
+        job: PlanJob | None = None
         try:
-            job.result = job.run()
-        except PlanError as e:
-            job.error = e
-        except Exception as e:  # noqa: BLE001
-            logger.exception("計画生成で予期しないエラー")
-            job.error = PlanError(f"計画の生成中にエラーが発生しました: {e}")
+            # キュー待ち中に破棄されたジョブは実行しない。
+            if self._store.get(job_id) is None:
+                return
+            self._store.mark_running(job_id)
+            try:
+                plan = run()
+                job = self._store.mark_succeeded(job_id, plan.title, plan.body)
+            except PlanError as e:
+                job = self._store.mark_failed(job_id, e.code, str(e))
+            except Exception as e:  # noqa: BLE001
+                logger.exception("計画生成で予期しないエラー")
+                job = self._store.mark_failed(
+                    job_id, "failed", f"計画の生成中にエラーが発生しました: {e}"
+                )
         finally:
-            job.done.set()
-
-
-class _Job:
-    def __init__(self, run: Callable[[], IssuePlan], on_stage: Callable[[str], None]) -> None:
-        self.run = run
-        self.on_stage = on_stage
-        self.done = threading.Event()
-        self.started = False
-        self.result: IssuePlan | None = None
-        self.error: PlanError | None = None
+            with self._lock:
+                self._pending.pop(job_number, None)
+                self._numbers.pop(job_id, None)
+        if job is not None and self._on_finished is not None:
+            try:
+                self._on_finished(job)
+            except Exception:  # noqa: BLE001
+                logger.exception("計画ジョブ完了通知で予期しないエラー")
 
 
 def parse_model_choice(value: str | None) -> ExecutionSettings | None:
