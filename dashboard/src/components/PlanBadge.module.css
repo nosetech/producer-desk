@@ -1,0 +1,44 @@
+/* 計画の状態バッジ（issue #299）。Artifactsの feature/issue-299-plan-background（_pBadge）。 */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: none;
+  line-height: 16px;
+}
+
+.spin {
+  flex: none;
+  animation: spin 1.5s linear infinite;
+}
+
+.queued {
+  background: var(--accent-gray-bg);
+  color: var(--accent-gray);
+}
+
+.running {
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.review {
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber);
+}
+
+.failed {
+  background: var(--warn-bg);
+  color: var(--warn);
+}

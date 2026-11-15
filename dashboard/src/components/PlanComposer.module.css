@@ -583,3 +583,94 @@
     min-height: 40px;
   }
 }
+
+/* 未承認の計画の復元一覧（issue #299）。Artifactsの feature/issue-299-plan-background（_planBgVals）。 */
+.pendBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+
+.pendHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.pendCount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.pendRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 9px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.pendRow:hover {
+  border-color: var(--accent-blue);
+}
+
+.pendText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pendTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pendMeta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pendNote {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 2px 2px 0;
+  line-height: 1.5;
+}
+
+.selBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .pendRow {
+    min-height: 52px;
+  }
+}

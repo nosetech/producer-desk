@@ -897,3 +897,39 @@
     width: 100%;
   }
 }
+
+/* 計画の状態バッジ・行内の計画確認パネル（issue #299）。
+   Artifactsの feature/issue-299-plan-background（_ibPlanRow / _ipView）。 */
+.planBadgeRow {
+  display: flex;
+  margin-bottom: 4px;
+}
+
+.planOn {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.planPanel {
+  padding: 12px 14px 14px 16px;
+  background: var(--surface-2);
+  border-top: 1px dashed var(--border-subtle);
+  animation: fade 0.18s ease;
+}
+
+.planPanel > div {
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+
+@media (max-width: 640px) {
+  .planPanel {
+    padding: 8px;
+  }
+
+  .planPanel > div {
+    padding: 12px;
+  }
+}

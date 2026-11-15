@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useState } from "react";
-import { fetchProjectSettings, postCreateIssue, postInstruct } from "@/lib/api";
+import {
+  deleteIssuePlan,
+  fetchProjectSettings,
+  postCreateIssue,
+  postInstruct,
+} from "@/lib/api";
+import { usePlanJobs } from "@/lib/usePlanJobs";
 import {
   MODEL_DEFAULT,
   applyModelDirective,
@@ -482,7 +488,7 @@ export default function ComposerBar({
   const [plan, dispatchPlan] = useReducer(planReducer, undefined, () =>
     initialPlanState(),
   );
-  const { jobs, startJob } = useApp();
+  const { jobs, startJob, showToast } = useApp();
   const restorePanelRef = usePersistedSize(
     "composerPanel",
     ["width", "height"],
@@ -505,6 +511,9 @@ export default function ComposerBar({
 
   const newRepo = newTaskRepo || repos[0] || "";
   const isReply = mode === "reply";
+  const planJobs = usePlanJobs(newRepo, {
+    enabled: open && !isReply && newMode === "plan",
+  });
   const replyRepo = replyTarget?.repo;
 
   // 使用モデルの選択肢（available_models）と既定値の表示用に、対象repoの設定を取得する。
@@ -589,10 +598,9 @@ export default function ComposerBar({
       setError(null);
       // inbox項目から開いた場合は、その本文を「やりたいこと」の初期値に計画モードで開く。
       setNewMode(inboxTarget ? "plan" : "manual");
-      dispatchPlan({ type: "redo" });
       dispatchPlan({
-        type: "edit",
-        patch: { want: inboxTarget ? inboxWant(inboxTarget) : "" },
+        type: "reset",
+        want: inboxTarget ? inboxWant(inboxTarget) : "",
       });
     }
   }
@@ -630,6 +638,7 @@ export default function ComposerBar({
     dispatch: Dispatch,
     taskTitle: string = title,
     taskBody: string = prompt,
+    planJobId?: string,
   ) {
     if (!newRepo || !taskTitle.trim() || !taskBody.trim()) return;
     const repo = newRepo;
@@ -654,7 +663,11 @@ export default function ComposerBar({
           dispatch,
           progressId,
           promoteNumber,
-        ),
+        ).then(async (result) => {
+          // 承認（issue登録）に成功した計画ジョブは破棄する（issue #299）。
+          if (planJobId) await deleteIssuePlan(repo, planJobId).catch(() => {});
+          return result;
+        }),
       successMessage: promoteNumber
         ? `${shortRepoName(repo)} #${promoteNumber} をinboxから通常のissueに昇格しました。`
         : dispatch === "immediate"
@@ -664,9 +677,9 @@ export default function ComposerBar({
     onClose();
   }
 
-  const planBusy =
-    newMode === "plan" &&
-    (plan.phase === "queued" || plan.phase === "generating");
+  // 計画ジョブ（issue #299）。リポジトリに紐づくため、ジョブを開いている間は
+  // プロジェクト・作成方法の切替を止める（依頼自体はバックグラウンドで続く）。
+  const planBusy = newMode === "plan" && plan.job !== null;
 
   if (!open) return null;
 
@@ -931,6 +944,20 @@ export default function ComposerBar({
                     model={newModel}
                     state={plan}
                     dispatch={dispatchPlan}
+                    jobs={planJobs.jobs}
+                    loaded={planJobs.loaded}
+                    refresh={planJobs.refresh}
+                    inboxIssueNumber={inboxTarget?.number}
+                    onRequested={() => {
+                      onClose();
+                      showToast(
+                        "依頼しました。完了するとSlackに通知します",
+                        false,
+                        false,
+                        true,
+                      );
+                    }}
+                    onError={setError}
                     modelRow={
                       <div className={styles.modelRowNew}>
                         <ModelSelectRow
@@ -941,10 +968,10 @@ export default function ComposerBar({
                         />
                       </div>
                     }
-                    onApprove={(dispatch, t, b) =>
-                      handleCreateTask(dispatch, t, b)
+                    onApprove={(dispatch, t, b, jobId) =>
+                      handleCreateTask(dispatch, t, b, jobId)
                     }
-                    onCancel={onClose}
+                    onClose={onClose}
                   />
                 )}
               </div>

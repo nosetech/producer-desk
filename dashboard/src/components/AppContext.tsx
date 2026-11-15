@@ -38,7 +38,13 @@ export interface AppContextValue {
     openMilestones: string[] | null,
     repoLabels: string[] | null,
   ) => void;
-  showToast: (text: string, isError?: boolean, isWarn?: boolean) => void;
+  showToast: (
+    text: string,
+    isError?: boolean,
+    isWarn?: boolean,
+    /** 控えめな通知（グレー枠）。依頼の受付・計画の完了など（issue #299）。 */
+    isQuiet?: boolean,
+  ) => void;
   openReply: (
     repo: string,
     issueNumber: number,

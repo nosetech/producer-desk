@@ -1,7 +1,17 @@
 "use client";
 
-import { useState } from "react";
-import { deleteInbox, patchInbox, postInbox } from "@/lib/api";
+import { useCallback, useEffect, useReducer, useState } from "react";
+import {
+  deleteInbox,
+  deleteIssuePlan,
+  patchInbox,
+  postCreateIssue,
+  postInbox,
+  type PlanJob,
+} from "@/lib/api";
+import { MODEL_DEFAULT } from "@/lib/modelDirective";
+import { initialPlanState, planReducer } from "@/lib/planFlow";
+import { usePlanJobs } from "@/lib/usePlanJobs";
 import {
   DEFAULT_INBOX_KIND,
   INBOX_KINDS,
@@ -14,6 +24,8 @@ import { formatAbsoluteTime } from "@/lib/issueList";
 import type { InboxItem, InboxKind } from "@/lib/types";
 import { useApp } from "./AppContext";
 import { PlusIcon, WarningIcon } from "./Icons";
+import PlanBadge from "./PlanBadge";
+import PlanComposer from "./PlanComposer";
 import styles from "./InboxSection.module.css";
 
 // ProjectIssues.tsx（issue一覧画面）の上部に置くinboxセクション（issue #288）。
@@ -394,6 +406,89 @@ function DeleteDialog({
   );
 }
 
+/**
+ * inbox項目の計画を行の下に開く確認パネル（issue #299）。
+ * デザイン: Artifactsの feature/issue-299-plan-background（_ipView）。
+ */
+function InboxPlanPanel({
+  repo,
+  item,
+  job,
+  jobs,
+  loaded,
+  refresh,
+  onClose,
+  onApproved,
+}: {
+  repo: string;
+  item: InboxItem;
+  job: PlanJob;
+  jobs: PlanJob[];
+  loaded: boolean;
+  refresh: () => Promise<void>;
+  onClose: () => void;
+  onApproved: () => void;
+}) {
+  const { showToast } = useApp();
+  const [state, dispatch] = useReducer(planReducer, job, (j) =>
+    planReducer(initialPlanState(j.request), { type: "sync", job: j }),
+  );
+
+  // 計画が破棄された（別画面での操作・inboxのクローズ）ら閉じる。
+  useEffect(() => {
+    if (loaded && !jobs.some((j) => j.id === job.id)) onClose();
+  }, [loaded, jobs, job.id, onClose]);
+
+  const approve = useCallback(
+    async (title: string, body: string, jobId: string) => {
+      try {
+        // inbox項目を通常のissue（status:todo）へ昇格する。
+        await postCreateIssue(
+          repo,
+          title,
+          body,
+          "queued",
+          undefined,
+          item.number,
+        );
+        await deleteIssuePlan(repo, jobId).catch(() => {});
+        showToast(
+          `${repo} #${item.number} をinboxから通常のissue（status:todo）に昇格しました。`,
+        );
+        onApproved();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : String(e), true);
+      }
+    },
+    [repo, item.number, showToast, onApproved],
+  );
+
+  return (
+    <div
+      className={styles.planPanel}
+      role="region"
+      aria-label={`${repo} #${item.number} の計画`}
+    >
+      <PlanComposer
+        repo={repo}
+        model={MODEL_DEFAULT}
+        state={state}
+        dispatch={dispatch}
+        jobs={jobs}
+        loaded={loaded}
+        variant="inline"
+        inboxIssueNumber={item.number}
+        refresh={refresh}
+        onApprove={(_dispatch, title, body, jobId) =>
+          void approve(title, body, jobId)
+        }
+        onClose={onClose}
+        onError={(message) => showToast(message, true)}
+      />
+    </div>
+  );
+}
+
 export default function InboxSection({
   repo,
   items,
@@ -405,6 +500,30 @@ export default function InboxSection({
   onChanged: () => void;
 }) {
   const { openNewTask, showToast } = useApp();
+  const [planOpen, setPlanOpen] = useState<number | null>(null);
+  const closePlan = useCallback(() => setPlanOpen(null), []);
+  // 計画の完了・失敗は、控えめなトーストで知らせる（Slackにも通知済み）。
+  const planJobs = usePlanJobs(repo, {
+    onFinished: (job) => {
+      const target =
+        job.inboxIssueNumber !== null
+          ? `${repo} #${job.inboxIssueNumber}`
+          : repo;
+      showToast(
+        job.status === "succeeded"
+          ? `${target} の計画ができました。確認待ちです（Slackにも通知済み）`
+          : `${target} の計画の作成に失敗しました（Slackにも通知済み）`,
+        false,
+        false,
+        true,
+      );
+    },
+  });
+  const planByInbox = new Map(
+    planJobs.jobs
+      .filter((j) => j.inboxIssueNumber !== null)
+      .map((j) => [j.inboxIssueNumber as number, j]),
+  );
   const [open, setOpen] = useState(true);
   const [kind, setKind] = useState<InboxKind>(DEFAULT_INBOX_KIND);
   const [title, setTitle] = useState("");
@@ -611,6 +730,11 @@ export default function InboxSection({
                           <KindBadge kind={it.kind} />
                         </span>
                         <div className={styles.memo}>
+                          {planByInbox.has(it.number) && (
+                            <span className={styles.planBadgeRow}>
+                              <PlanBadge job={planByInbox.get(it.number)!} />
+                            </span>
+                          )}
                           <a
                             className={styles.memoTitle}
                             href={`https://github.com/${repo}/issues/${it.number}`}
@@ -629,16 +753,39 @@ export default function InboxSection({
                           {formatAbsoluteTime(it.created_at)}
                         </time>
                         <div className={styles.actions}>
-                          <button
-                            type="button"
-                            className={styles.plan}
-                            aria-label={`${repo} #${it.number} を計画する`}
-                            title="AIに計画してもらう（承認するとissueに昇格）"
-                            onClick={() => openNewTask(repo, it)}
-                          >
-                            <Icon d={PATHS.sparkle} />
-                            計画する
-                          </button>
+                          {!planByInbox.has(it.number) && (
+                            <button
+                              type="button"
+                              className={styles.plan}
+                              aria-label={`${repo} #${it.number} を計画する`}
+                              title="AIに計画してもらう（承認するとissueに昇格）"
+                              onClick={() => openNewTask(repo, it)}
+                            >
+                              <Icon d={PATHS.sparkle} />
+                              計画する
+                            </button>
+                          )}
+                          {planByInbox.has(it.number) &&
+                            planByInbox.get(it.number)!.status !== "queued" &&
+                            (planByInbox.get(it.number)!.status !== "running" ||
+                              planByInbox.get(it.number)!.result !== null) && (
+                              <button
+                                type="button"
+                                className={`${styles.plan} ${planOpen === it.number ? styles.planOn : ""}`}
+                                aria-expanded={planOpen === it.number}
+                                aria-label={`${repo} #${it.number} の計画を${planOpen === it.number ? "閉じる" : "開く"}`}
+                                onClick={() =>
+                                  setPlanOpen(
+                                    planOpen === it.number ? null : it.number,
+                                  )
+                                }
+                              >
+                                <Icon d={PATHS.sparkle} />
+                                {planOpen === it.number
+                                  ? "閉じる"
+                                  : "計画を開く"}
+                              </button>
+                            )}
                           <button
                             type="button"
                             className={styles.ghost}
@@ -660,6 +807,24 @@ export default function InboxSection({
                         </div>
                       </div>
                     )}
+                    {editing !== it.number &&
+                      planOpen === it.number &&
+                      planByInbox.has(it.number) && (
+                        <InboxPlanPanel
+                          repo={repo}
+                          item={it}
+                          job={planByInbox.get(it.number)!}
+                          jobs={planJobs.jobs}
+                          loaded={planJobs.loaded}
+                          refresh={planJobs.refresh}
+                          onClose={closePlan}
+                          onApproved={() => {
+                            closePlan();
+                            void planJobs.refresh();
+                            onChanged();
+                          }}
+                        />
+                      )}
                   </div>
                 ))}
               </div>

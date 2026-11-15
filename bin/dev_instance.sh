@@ -266,6 +266,7 @@ cmd_start() {
     # 運用インスタンスの実データと混ざらないよう、開発用ファイルを既定にする。
     export PROJECTS_CONFIG_PATH="${PROJECTS_CONFIG_PATH:-${DEV_DIR}/projects.yaml}"
     export SESSIONS_PATH="${SESSIONS_PATH:-${DEV_DIR}/sessions.json}"
+    export PLAN_JOBS_PATH="${PLAN_JOBS_PATH:-${DEV_DIR}/plan_jobs.json}"
     export EXECUTION_OVERRIDES_PATH="${EXECUTION_OVERRIDES_PATH:-${DEV_DIR}/execution_overrides.json}"
     export ORCHESTRATOR_PROMPTS_PATH="${ORCHESTRATOR_PROMPTS_PATH:-${DEV_DIR}/prompts.yaml}"
     # 実リポジトリを書き込み不可で参照する（下記のORCHESTRATOR_READ_ONLY）。ファイルは

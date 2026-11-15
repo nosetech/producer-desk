@@ -40,6 +40,18 @@
   color: var(--accent-amber);
 }
 
+/* 控えめな通知（issue #299）。Artifactsの feature/issue-299-plan-background（toast.quiet）。 */
+.toastQuiet {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  font-weight: 500;
+}
+
+.toastQuiet .icon {
+  color: var(--text-secondary);
+}
+
 .icon {
   flex-shrink: 0;
 }

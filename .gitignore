@@ -1,6 +1,7 @@
 # secrets / 実データ
 config/projects.yaml
 config/sessions.json
+config/plan_jobs.json
 config/usage.db
 config/execution_overrides.json
 config/prompts.yaml
@@ -51,6 +52,7 @@ orchestrator/dist/
 # 含まないパスにアンカーされる既存ルールの対象外のため個別に追加している）。
 dist/config/projects.yaml
 dist/config/sessions.json
+dist/config/plan_jobs.json
 dist/config/usage.db
 dist/logs/*
 !dist/logs/.gitkeep

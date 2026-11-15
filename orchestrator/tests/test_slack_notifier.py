@@ -198,3 +198,52 @@ def test_missing_webhook_url_skips_review_notification_but_still_tracks_state() 
     notifier.notify_new_reviews(AggregatedState(decisions=[], reviews=[_review_issue()]))
 
     assert webhook.posted == []
+
+
+# issue #299: AI計画ジョブの完了・失敗通知。
+def _plan_job(status: str, **kwargs):
+    from orchestrator.plan_jobs import PlanJob
+
+    return PlanJob(
+        id="a1",
+        repo="o/r",
+        request="ログイン画面を直したい\n詳細あり",
+        model=None,
+        inbox_issue_number=kwargs.pop("inbox_issue_number", None),
+        status=status,
+        created_at="t",
+        updated_at="t",
+        **kwargs,
+    )
+
+
+def test_plan_notifier_posts_success_and_failure_with_kind() -> None:
+    from orchestrator.slack_notifier import PlanNotifier
+
+    posted: list[dict] = []
+    notifier = PlanNotifier(
+        post_webhook=lambda url, payload: posted.append(payload), get_webhook_url=lambda: "u"
+    )
+
+    notifier.notify(_plan_job("succeeded", inbox_issue_number=5))
+    notifier.notify(_plan_job("failed", error={"code": "timeout", "message": "m"}))
+    notifier.notify(_plan_job("running"))
+
+    assert len(posted) == 2
+    assert "完成" in posted[0]["text"] and "inbox #5" in posted[0]["text"]
+    assert "o/r" in posted[0]["text"] and "ログイン画面を直したい 詳細あり" in posted[0]["text"]
+    assert "失敗" in posted[1]["text"] and "timeout" in posted[1]["text"]
+
+
+def test_plan_notifier_skips_without_webhook_and_swallows_send_errors() -> None:
+    from orchestrator.slack_notifier import PlanNotifier
+
+    PlanNotifier(
+        post_webhook=lambda *a: (_ for _ in ()).throw(AssertionError("呼ばれない")),
+        get_webhook_url=lambda: None,
+    ).notify(_plan_job("succeeded"))
+
+    def boom(url, payload):
+        raise OSError("down")
+
+    PlanNotifier(post_webhook=boom, get_webhook_url=lambda: "u").notify(_plan_job("succeeded"))
