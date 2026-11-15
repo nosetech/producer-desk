@@ -18,14 +18,14 @@ const TAG_COLOR_VAR: Record<string, string> = {
   chore: "--accent-gray",
 };
 
-function tagDotColor(tag: string): string {
+export function tagDotColor(tag: string): string {
   return `var(${TAG_COLOR_VAR[tag] ?? "--text-tertiary"})`;
 }
 
 /** PC幅の行に表示するタグの最大数。超過分は`+N`にまとめる（モバイル幅は折り返して全表示）。 */
 const TAG_MAX = 3;
 
-const FlagIcon = ({ size }: { size: number }) => (
+export const FlagIcon = ({ size }: { size: number }) => (
   <svg
     width={size}
     height={size}
@@ -43,7 +43,7 @@ const FlagIcon = ({ size }: { size: number }) => (
   </svg>
 );
 
-const TagIcon = () => (
+export const TagIcon = () => (
   <svg
     width="13"
     height="13"

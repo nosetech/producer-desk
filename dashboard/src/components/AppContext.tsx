@@ -38,7 +38,7 @@ export interface AppContextValue {
     openMilestones: string[] | null,
     repoLabels: string[] | null,
   ) => void;
-  showToast: (text: string, isError?: boolean) => void;
+  showToast: (text: string, isError?: boolean, isWarn?: boolean) => void;
   openReply: (
     repo: string,
     issueNumber: number,

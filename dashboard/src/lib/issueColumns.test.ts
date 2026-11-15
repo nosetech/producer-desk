@@ -15,7 +15,7 @@ describe("resizeColumn", () => {
   it("合計幅がコンテナを超えないようクランプする", () => {
     const w = resizeColumn(DEFAULT_COLUMN_WIDTHS, "status", 5000, 900);
     const sum = Object.values(w).reduce((a, b) => a + b, 0);
-    expect(sum + 32 + 12 * 5 + 160).toBeLessThanOrEqual(900);
+    expect(sum + 32 + 24 + 12 * 6 + 160).toBeLessThanOrEqual(900);
     expect(w.status).toBeGreaterThan(DEFAULT_COLUMN_WIDTHS.status);
   });
 
@@ -50,9 +50,9 @@ describe("parseColumnWidths", () => {
 });
 
 describe("columnsToTemplate", () => {
-  it("既定幅は従来のgrid定義と一致する", () => {
+  it("既定幅は選択チェックボックス列＋従来のgrid定義と一致する", () => {
     expect(columnsToTemplate(DEFAULT_COLUMN_WIDTHS)).toBe(
-      "58px minmax(0, 1fr) 116px 44px 78px 142px",
+      "24px 58px minmax(0, 1fr) 116px 44px 78px 142px",
     );
   });
 });
