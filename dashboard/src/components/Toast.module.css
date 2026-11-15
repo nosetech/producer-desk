@@ -35,6 +35,11 @@
   color: var(--warn);
 }
 
+.toastWarn {
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber);
+}
+
 .icon {
   flex-shrink: 0;
 }
@@ -42,5 +47,10 @@
 @media (max-width: 640px) {
   .toast {
     bottom: 86px;
+  }
+
+  /* 一括操作バー（画面下部固定のシート、issue #305）の表示中は、その上に出す。 */
+  :global(body[data-bulk-bar]) .toast {
+    bottom: 262px;
   }
 }

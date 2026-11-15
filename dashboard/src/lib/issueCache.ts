@@ -8,6 +8,8 @@ export interface IssueCacheEntry {
   inbox: InboxItem[];
   /** オープン中マイルストーン。`null`は未取得・取得失敗（絞り込まない）。 */
   openMilestones: string[] | null;
+  /** 変更UIの選択肢となるラベル（状態ラベル除く、issue #305）。`null`は未取得・取得失敗。 */
+  repoLabels: string[] | null;
   fetchedAt: number;
 }
 
@@ -37,8 +39,15 @@ export function storeIssueCache(
   inbox: InboxItem[],
   now: number,
   openMilestones: string[] | null = null,
+  repoLabels: string[] | null = null,
 ): void {
-  cache.set(repo, { issues, inbox, openMilestones, fetchedAt: now });
+  cache.set(repo, {
+    issues,
+    inbox,
+    openMilestones,
+    repoLabels,
+    fetchedAt: now,
+  });
 }
 
 /** repo省略時は全リポジトリ分を破棄する。 */

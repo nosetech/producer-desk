@@ -6,6 +6,8 @@ import {
   type Dispatch,
   type ExecutionMode,
   type InboxKind,
+  type IssuesMetaInput,
+  type IssuesMetaResult,
   type InstructAction,
   type InstructResult,
   type IssueDetail,
@@ -308,6 +310,18 @@ export function fetchIssueDetail(
   return fetch(`${repoPath(repo)}/issues/${issueNumber}`, {
     cache: "no-store",
   }).then((res) => parseJsonOrThrow<IssueDetail>(res));
+}
+
+/** issueのマイルストーン・ラベルを一括変更する（issue #305）。 */
+export function patchIssuesMeta(
+  repo: string,
+  input: IssuesMetaInput,
+): Promise<IssuesMetaResult> {
+  return fetch(`${repoPath(repo)}/issues/meta`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<IssuesMetaResult>(res));
 }
 
 export function fetchProjectIssues(

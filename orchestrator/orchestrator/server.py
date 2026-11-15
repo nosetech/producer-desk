@@ -56,8 +56,10 @@ from orchestrator.github_client import (
     GetPrBranchFn,
     ListLinkedPrsFn,
     ListOpenMilestonesFn,
+    ListRepoLabelsFn,
     MergePrFn,
     PostCommentFn,
+    UpdateIssueMetaFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import close_issue_not_planned as gh_close_issue_not_planned
@@ -69,9 +71,11 @@ from orchestrator.github_client import get_pr_branch as gh_get_pr_branch
 from orchestrator.github_client import list_issues as gh_list_issues
 from orchestrator.github_client import list_linked_prs as gh_list_linked_prs
 from orchestrator.github_client import list_open_milestones as gh_list_open_milestones
+from orchestrator.github_client import list_repo_labels as gh_list_repo_labels
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.github_client import update_issue as gh_update_issue
+from orchestrator.github_client import update_issue_meta as gh_update_issue_meta
 from orchestrator.inbox import (
     CloseNotPlannedFn,
     EnsureLabelsFn,
@@ -89,6 +93,12 @@ from orchestrator.instruct import (
     handle_create_issue,
     handle_instruct,
     handle_mark_in_review,
+)
+from orchestrator.issue_meta import (
+    InvalidMetaRequestError,
+    apply_meta,
+    parse_meta_request,
+    validate_choices,
 )
 from orchestrator.issue_plan import (
     PLAN_ISSUE_SPEC,
@@ -151,6 +161,8 @@ ISSUE_DETAIL_PATH = re.compile(
 CREATE_ISSUE_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues$")
 # AIによるissue計画の生成（issue #287）。issueは作成しない。
 INBOX_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/inbox$")
+# issueのマイルストーン・ラベル一括変更（issue #305）。
+ISSUES_META_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/meta$")
 INBOX_ITEM_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/inbox/(?P<issue_number>\d+)$")
 
 ISSUE_PLANS_PATH = re.compile(r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issue-plans$")
@@ -311,6 +323,8 @@ def _make_handler(
     delete_branch: DeleteBranchFn,
     list_issues: ListIssuesFn,
     list_open_milestones: ListOpenMilestonesFn,
+    list_repo_labels: ListRepoLabelsFn,
+    update_issue_meta: UpdateIssueMetaFn,
     sync_worktree: SyncWorktreeFn,
     get_issue_detail: GetIssueDetailFn,
     dashboard_settings: dict[str, float],
@@ -456,6 +470,14 @@ def _make_handler(
                 logger.warning("オープン中マイルストーンの取得に失敗しました (%s): %s", repo, e)
                 return None
 
+        def _repo_labels(self, repo: str) -> list[str] | None:
+            """変更UIの選択肢となるラベル一覧（状態ラベル除外、issue #305）。失敗時は`None`。"""
+            try:
+                return list_repo_labels(repo)
+            except subprocess.CalledProcessError as e:
+                logger.warning("ラベル一覧の取得に失敗しました (%s): %s", repo, e)
+                return None
+
         def _handle_list_issues(self, repo: str) -> None:
             """プロジェクト別issue一覧（issue #116）。
 
@@ -481,6 +503,7 @@ def _make_handler(
                     ],
                     "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
                     "open_milestones": self._open_milestones(repo),
+                    "labels": self._repo_labels(repo),
                 },
             )
 
@@ -545,6 +568,7 @@ def _make_handler(
                     ],
                     "inbox": [dataclasses.asdict(i) for i in build_inbox(issues)],
                     "open_milestones": self._open_milestones(repo),
+                    "labels": self._repo_labels(repo),
                     "state": self._state_payload(state),
                 },
             )
@@ -669,6 +693,11 @@ def _make_handler(
 
         def do_PATCH(self) -> None:  # noqa: N802
             if self._reject_if_read_only():
+                return
+
+            meta_match = ISSUES_META_PATH.match(self.path)
+            if meta_match:
+                self._handle_update_issues_meta(meta_match.group("repo"))
                 return
 
             settings_match = PROJECT_SETTINGS_PATH.match(self.path)
@@ -1108,6 +1137,32 @@ def _make_handler(
             self._refresh_store()
             self._send_json(201, {"issue_number": issue_number})
 
+        def _handle_update_issues_meta(self, repo: str) -> None:
+            """issueのマイルストーン・ラベルを一括変更する（issue #305）。
+
+            状態ラベルは変更対象外（400）。存在しないラベル・マイルストーンも400で、
+            GitHub側には作成しない。issueごとに実行し、部分失敗は200で`failed`に載せる。
+            """
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+            try:
+                request = parse_meta_request(self._read_json_body())
+                repo_labels = list_repo_labels(repo)
+                open_milestones = list_open_milestones(repo)
+                validate_choices(request, repo_labels=repo_labels, open_milestones=open_milestones)
+            except (InvalidMetaRequestError, json.JSONDecodeError) as e:
+                self._send_json(400, {"error": str(e)})
+                return
+            except subprocess.CalledProcessError as e:
+                self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                return
+            result = apply_meta(
+                repo, request, get_labels=get_labels, update_issue_meta=update_issue_meta
+            )
+            self._refresh_store()
+            self._send_json(200, result)
+
         def _handle_update_inbox(self, repo: str, issue_number: int) -> None:
             """inbox項目のタイトル・本文・種別を編集する（issue #288）。"""
             if repo not in known_repos:
@@ -1234,6 +1289,8 @@ def make_server(
     delete_branch: DeleteBranchFn = gh_delete_branch,
     list_issues: ListIssuesFn = gh_list_issues,
     list_open_milestones: ListOpenMilestonesFn = gh_list_open_milestones,
+    list_repo_labels: ListRepoLabelsFn = gh_list_repo_labels,
+    update_issue_meta: UpdateIssueMetaFn = gh_update_issue_meta,
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     get_issue_detail: GetIssueDetailFn = gh_get_issue_detail,
     update_execution_settings: UpdateExecutionSettingsFn = cfg_update_execution_settings,
@@ -1269,6 +1326,8 @@ def make_server(
         delete_branch=delete_branch,
         list_issues=list_issues,
         list_open_milestones=list_open_milestones,
+        list_repo_labels=list_repo_labels,
+        update_issue_meta=update_issue_meta,
         sync_worktree=sync_worktree,
         get_issue_detail=get_issue_detail,
         update_execution_settings=update_execution_settings,

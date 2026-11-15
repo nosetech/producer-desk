@@ -67,21 +67,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     show: boolean;
     text: string;
     error: boolean;
+    warn: boolean;
   }>({
     show: false,
     text: "",
     error: false,
+    warn: false,
   });
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = useCallback((text: string, isError = false) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ show: true, text, error: isError });
-    toastTimer.current = setTimeout(
-      () => setToast((t) => ({ ...t, show: false })),
-      TOAST_DURATION_MS,
-    );
-  }, []);
+  const showToast = useCallback(
+    (text: string, isError = false, isWarn = false) => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      setToast({ show: true, text, error: isError, warn: isWarn });
+      toastTimer.current = setTimeout(
+        () => setToast((t) => ({ ...t, show: false })),
+        TOAST_DURATION_MS,
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -118,6 +123,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       issues: ProjectIssue[],
       inbox: InboxItem[],
       openMilestones: string[] | null,
+      repoLabels: string[] | null,
     ) => {
       storeIssueCache(
         issueCache.current,
@@ -126,6 +132,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         inbox,
         Date.now(),
         openMilestones,
+        repoLabels,
       );
     },
     [],
@@ -229,7 +236,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Sidebar attentionCount={attentionCount} anyOrphan={anyOrphan} />
           <div className={styles.contentPane}>
             <div className={styles.screen}>{children}</div>
-            <Toast show={toast.show} text={toast.text} error={toast.error} />
+            <Toast
+              show={toast.show}
+              text={toast.text}
+              error={toast.error}
+              warn={toast.warn}
+            />
             <ComposerBar
               open={composerOpen}
               mode={composerMode}

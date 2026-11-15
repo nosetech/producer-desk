@@ -32,7 +32,9 @@ export const COLUMN_STORAGE_KEY = "producer-desk:issue-list-columns";
 
 // 列間の gap（12px × 5）と行の左右 padding（16px × 2）、タイトル列に最低限残す幅。
 const GRID_GAP = 12;
-const GRID_COLUMN_COUNT = 6;
+// 先頭の選択チェックボックス列（issue #305）を含めて7列。
+const GRID_COLUMN_COUNT = 7;
+const CHECKBOX_COLUMN_WIDTH = 24;
 const ROW_PADDING = 32;
 const MIN_TITLE_WIDTH = 160;
 
@@ -40,6 +42,7 @@ function maxTotalWidth(containerWidth: number): number {
   return (
     containerWidth -
     ROW_PADDING -
+    CHECKBOX_COLUMN_WIDTH -
     GRID_GAP * (GRID_COLUMN_COUNT - 1) -
     MIN_TITLE_WIDTH
   );
@@ -110,5 +113,5 @@ export function saveColumnWidths(widths: ColumnWidths): void {
 }
 
 export function columnsToTemplate(widths: ColumnWidths): string {
-  return `${widths.number}px minmax(0, 1fr) ${widths.status}px ${widths.comments}px ${widths.updated}px ${widths.actions}px`;
+  return `${CHECKBOX_COLUMN_WIDTH}px ${widths.number}px minmax(0, 1fr) ${widths.status}px ${widths.comments}px ${widths.updated}px ${widths.actions}px`;
 }

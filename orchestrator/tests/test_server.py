@@ -134,6 +134,7 @@ def _run_server(store: StateStore, **kwargs) -> tuple:
     # 判断待ちissueでもPR候補を解決するため（issue #270）、`gh pr list`も実際には叩かない。
     # オープン中マイルストーン取得（issue #308）も実際の`gh api`は叩かない。
     kwargs.setdefault("list_open_milestones", lambda repo: [])
+    kwargs.setdefault("list_repo_labels", lambda repo: [])
     kwargs.setdefault("list_linked_prs", lambda repo, n: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -2579,5 +2580,159 @@ def test_promote_rejects_non_inbox_issue_number() -> None:
 
         assert status == 400
         assert gh.updated == []
+    finally:
+        server.shutdown()
+
+
+class FakeIssueMeta:
+    def __init__(self, fail_on: set[int] | None = None) -> None:
+        self.calls: list[tuple[int, dict]] = []
+        self.fail_on = fail_on or set()
+
+    def update(self, repo: str, number: int, **kwargs) -> None:
+        if number in self.fail_on:
+            raise subprocess.CalledProcessError(1, ["gh"])
+        self.calls.append((number, kwargs))
+
+
+def _meta_server(meta: FakeIssueMeta, labels: FakeLabels | None = None, **kwargs):
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        get_labels=(labels or FakeLabels()).get_labels,
+        list_repo_labels=lambda repo: ["bug", "enhancement", "docs"],
+        list_open_milestones=lambda repo: ["v1", "v2"],
+        update_issue_meta=meta.update,
+        **kwargs,
+    )
+    return server
+
+
+META_PATH = "/api/projects/nosetech/project-a/issues/meta"
+
+
+def test_issues_meta_applies_milestone_and_label_diff_only() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta, FakeLabels({1: {"bug"}, 2: set()}))
+    try:
+        status, body = _patch(
+            server,
+            META_PATH,
+            {
+                "issues": [1, 2],
+                "milestone": {"mode": "set", "value": "v1"},
+                "add_labels": ["bug", "docs"],
+                "remove_labels": ["enhancement"],
+            },
+        )
+        assert status == 200
+        assert body == {"succeeded": [1, 2], "failed": []}
+        assert meta.calls[0][1]["add_labels"] == ["docs"]  # 既に付いているbugは追加しない
+        assert meta.calls[0][1]["remove_labels"] == []
+        assert meta.calls[1][1]["add_labels"] == ["bug", "docs"]
+        assert meta.calls[1][1]["milestone"] == "v1"
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_clear_milestone() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta)
+    try:
+        status, _ = _patch(server, META_PATH, {"issues": [3], "milestone": {"mode": "clear"}})
+        assert status == 200
+        assert meta.calls[0][1]["clear_milestone"] is True
+        assert meta.calls[0][1]["milestone"] is None
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"issues": [1], "add_labels": ["status:todo"]},
+        {"issues": [1], "remove_labels": ["needs-human-decision"]},
+        {"issues": [1], "add_labels": ["nothing-like-this"]},
+        {"issues": [1], "milestone": {"mode": "set", "value": "v9"}},
+        {"issues": [1], "milestone": {"mode": "set"}},
+        {"issues": [1], "add_labels": ["bug"], "remove_labels": ["bug"]},
+        {"issues": [], "add_labels": ["bug"]},
+        {"issues": list(range(1, 102)), "add_labels": ["bug"]},
+        {"issues": [1]},
+    ],
+)
+def test_issues_meta_rejects_invalid_requests_without_writing(payload: dict) -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta)
+    try:
+        status, _ = _patch(server, META_PATH, payload)
+        assert status == 400
+        assert meta.calls == []
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_reports_partial_failure() -> None:
+    meta = FakeIssueMeta(fail_on={2})
+    server = _meta_server(meta)
+    try:
+        status, body = _patch(server, META_PATH, {"issues": [1, 2, 3], "add_labels": ["bug"]})
+        assert status == 200
+        assert body["succeeded"] == [1, 3]
+        assert [f["number"] for f in body["failed"]] == [2]
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_unknown_repo_is_404() -> None:
+    server = _meta_server(FakeIssueMeta())
+    try:
+        status, _ = _patch(
+            server,
+            "/api/projects/nosetech/other/issues/meta",
+            {"issues": [1], "add_labels": ["bug"]},
+        )
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_is_rejected_in_read_only_mode() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta, read_only=True)
+    try:
+        status, _ = _patch(server, META_PATH, {"issues": [1], "add_labels": ["bug"]})
+        assert status == 403
+        assert meta.calls == []
+    finally:
+        server.shutdown()
+
+
+def test_list_issues_includes_repo_labels_or_null_on_failure() -> None:
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        list_repo_labels=lambda repo: ["bug"],
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["labels"] == ["bug"]
+    finally:
+        server.shutdown()
+
+    def boom(repo: str) -> list[str]:
+        raise subprocess.CalledProcessError(1, ["gh"])
+
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        list_repo_labels=boom,
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["labels"] is None
     finally:
         server.shutdown()

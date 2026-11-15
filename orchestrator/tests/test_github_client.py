@@ -18,10 +18,12 @@ from orchestrator.github_client import (
     list_issues,
     list_linked_prs,
     list_open_milestones,
+    list_repo_labels,
     merge_pr,
     post_comment,
     resolve_pr_number,
     update_issue,
+    update_issue_meta,
 )
 
 
@@ -465,3 +467,29 @@ def test_list_open_milestones_returns_empty_when_none() -> None:
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     assert list_open_milestones("nosetech/project-a", run=run) == []
+
+
+def test_list_repo_labels_excludes_status_labels() -> None:
+    run = _fake_run_raw(
+        [{"name": "bug"}, {"name": "status:todo"}, {"name": "needs-human-decision"}]
+    )
+    assert list_repo_labels("nosetech/project-a", run=run) == ["bug"]
+    assert run.calls[0][:3] == ["gh", "label", "list"]  # type: ignore[attr-defined]
+
+
+def test_update_issue_meta_builds_gh_issue_edit() -> None:
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, milestone="v1", add_labels=["bug"], remove_labels=["docs"], run=run)
+    assert run.calls[0] == [  # type: ignore[attr-defined]
+        "gh", "issue", "edit", "5", "--repo", "o/r",
+        "--milestone", "v1", "--add-label", "bug", "--remove-label", "docs",
+    ]  # fmt: skip
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, clear_milestone=True, run=run)
+    assert "--remove-milestone" in run.calls[0]  # type: ignore[attr-defined]
+
+
+def test_update_issue_meta_skips_gh_when_nothing_to_change() -> None:
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, run=run)
+    assert run.calls == []  # type: ignore[attr-defined]
