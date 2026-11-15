@@ -261,6 +261,29 @@ export interface ProjectIssuesResponse {
    * 選択肢をこれに絞る。取得失敗時は`null`（絞り込まず全マイルストーンを選択肢にする）。
    */
   open_milestones?: string[] | null;
+  /**
+   * 変更UIの選択肢となるラベル名一覧（状態ラベルを除く、issue #305）。取得失敗時は`null`
+   * （マイルストーン・ラベルの変更UIを無効にする）。
+   */
+  labels?: string[] | null;
+}
+
+/** マイルストーンの変更指定（issue #305）。 */
+export type MilestoneChange =
+  { mode: "keep" } | { mode: "clear" } | { mode: "set"; value: string };
+
+/** PATCH /api/projects/{owner}/{name}/issues/meta のリクエスト（issue #305）。 */
+export interface IssuesMetaInput {
+  issues: number[];
+  milestone: MilestoneChange;
+  add_labels: string[];
+  remove_labels: string[];
+}
+
+/** 一括変更の結果。部分失敗は`failed`に載る（issue #305）。 */
+export interface IssuesMetaResult {
+  succeeded: number[];
+  failed: { number: number; error: string }[];
 }
 
 /** GET /api/prompts の prompts 配列要素（issue #149）。 */

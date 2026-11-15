@@ -144,6 +144,10 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const [openMilestones, setOpenMilestones] = useState<string[] | null>(
     initialCache.kind === "miss" ? null : initialCache.entry.openMilestones,
   );
+  // 変更UIの選択肢となるラベル（状態ラベル除く、issue #305）。
+  const [repoLabels, setRepoLabels] = useState<string[] | null>(
+    initialCache.kind === "miss" ? null : initialCache.entry.repoLabels,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -213,10 +217,12 @@ export default function ProjectIssues({ repo }: { repo: string }) {
             data.issues,
             data.inbox ?? [],
             data.open_milestones ?? null,
+            data.labels ?? null,
           );
           setIssues(data.issues);
           setInbox(data.inbox ?? []);
           setOpenMilestones(data.open_milestones ?? null);
+          setRepoLabels(data.labels ?? null);
           setLoad("ready");
           // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
           if (mode === "manual") restartPoll.current();

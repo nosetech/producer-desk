@@ -118,6 +118,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       issues: ProjectIssue[],
       inbox: InboxItem[],
       openMilestones: string[] | null,
+      repoLabels: string[] | null,
     ) => {
       storeIssueCache(
         issueCache.current,
@@ -126,6 +127,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         inbox,
         Date.now(),
         openMilestones,
+        repoLabels,
       );
     },
     [],
