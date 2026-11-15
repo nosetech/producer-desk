@@ -113,8 +113,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     [settings.issueCacheTtlMs],
   );
   const storeIssues = useCallback(
-    (repo: string, issues: ProjectIssue[], inbox: InboxItem[]) => {
-      storeIssueCache(issueCache.current, repo, issues, inbox, Date.now());
+    (
+      repo: string,
+      issues: ProjectIssue[],
+      inbox: InboxItem[],
+      openMilestones: string[] | null,
+    ) => {
+      storeIssueCache(
+        issueCache.current,
+        repo,
+        issues,
+        inbox,
+        Date.now(),
+        openMilestones,
+      );
     },
     [],
   );

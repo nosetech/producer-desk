@@ -140,6 +140,10 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const [inbox, setInbox] = useState<InboxItem[]>(
     initialCache.kind === "miss" ? [] : initialCache.entry.inbox,
   );
+  // オープン中マイルストーン（issue #308）。`null`は未取得・取得失敗で、絞り込まない。
+  const [openMilestones, setOpenMilestones] = useState<string[] | null>(
+    initialCache.kind === "miss" ? null : initialCache.entry.openMilestones,
+  );
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -204,9 +208,15 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq !== requestSeq.current) return;
           await refresh();
           if (seq !== requestSeq.current) return;
-          storeIssues(repo, data.issues, data.inbox ?? []);
+          storeIssues(
+            repo,
+            data.issues,
+            data.inbox ?? [],
+            data.open_milestones ?? null,
+          );
           setIssues(data.issues);
           setInbox(data.inbox ?? []);
+          setOpenMilestones(data.open_milestones ?? null);
           setLoad("ready");
           // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
           if (mode === "manual") restartPoll.current();
@@ -318,7 +328,11 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const orphans = issues.filter((i) => i.is_orphaned);
   const options = buildFilterOptions(issues, showDone);
   const statusRows = filterIssues(issues, filter, showDone, sort);
-  const metaOptions = buildMetaFilterOptions(issues, statusRows);
+  const metaOptions = buildMetaFilterOptions(
+    issues,
+    statusRows,
+    openMilestones,
+  );
   // 一覧から消えたマイルストーン/タグ（クローズ・ラベル削除等）の選択は無視する。
   const selMilestones = metaMilestones.filter((m) =>
     metaOptions.milestones.some((o) => o.value === m),

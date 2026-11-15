@@ -114,11 +114,14 @@ export function issueTags(issue: ProjectIssue): string[] {
 /**
  * マイルストーン・タグの選択肢を返す。選択肢の集合・並びは`issues`全体から決め
  * （マイルストーンは名前順、タグは件数の多い順）、件数は`counted`（状態フィルタ後の
- * 一覧。省略時は`issues`）で数える。
+ * 一覧。省略時は`issues`）で数える。マイルストーンは`openMilestones`（オープン中の
+ * タイトル一覧、issue #308）に含まれるものだけを選択肢にする。`null`・省略時は
+ * 絞り込まない（取得失敗時の従来動作）。
  */
 export function buildMetaFilterOptions(
   issues: ProjectIssue[],
   counted: ProjectIssue[] = issues,
+  openMilestones: readonly string[] | null = null,
 ): {
   milestones: MetaFilterOption[];
   tags: MetaFilterOption[];
@@ -126,7 +129,12 @@ export function buildMetaFilterOptions(
   const milestoneNames = new Set<string>();
   const tagFreq = new Map<string, number>();
   for (const issue of issues) {
-    if (issue.milestone) milestoneNames.add(issue.milestone);
+    if (
+      issue.milestone &&
+      (openMilestones === null || openMilestones.includes(issue.milestone))
+    ) {
+      milestoneNames.add(issue.milestone);
+    }
     for (const tag of new Set(issueTags(issue))) {
       tagFreq.set(tag, (tagFreq.get(tag) ?? 0) + 1);
     }

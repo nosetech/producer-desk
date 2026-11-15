@@ -256,6 +256,11 @@ export interface ProjectIssuesResponse {
   issues: ProjectIssue[];
   /** OPENなinbox項目（登録日時の新しい順、issue #288）。 */
   inbox?: InboxItem[];
+  /**
+   * オープン中のマイルストーンのタイトル一覧（issue #308）。マイルストーンフィルタの
+   * 選択肢をこれに絞る。取得失敗時は`null`（絞り込まず全マイルストーンを選択肢にする）。
+   */
+  open_milestones?: string[] | null;
 }
 
 /** GET /api/prompts の prompts 配列要素（issue #149）。 */

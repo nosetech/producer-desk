@@ -132,6 +132,8 @@ def _run_server(store: StateStore, **kwargs) -> tuple:
     # （issue #70）で実際の`gh`コマンドを叩かないよう、空リストを返すフェイクを既定にする。
     kwargs.setdefault("list_issues", lambda repo: [])
     # 判断待ちissueでもPR候補を解決するため（issue #270）、`gh pr list`も実際には叩かない。
+    # オープン中マイルストーン取得（issue #308）も実際の`gh api`は叩かない。
+    kwargs.setdefault("list_open_milestones", lambda repo: [])
     kwargs.setdefault("list_linked_prs", lambda repo, n: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1681,6 +1683,45 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
         assert by_number[2]["label"] is None
         assert by_number[2]["is_orphaned"] is False
         assert by_number[3]["label"] == STATUS_CLOSED
+        # テスト既定のフェイクはオープン中マイルストーン無し（issue #308）。
+        assert body["open_milestones"] == []
+    finally:
+        server.shutdown()
+
+
+def test_list_project_issues_includes_open_milestones() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    store = StateStore()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_open_milestones=lambda repo: ["v2.0.0"],
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["open_milestones"] == ["v2.0.0"]
+    finally:
+        server.shutdown()
+
+
+def test_list_project_issues_falls_back_to_null_when_milestones_fail() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    store = StateStore()
+
+    def failing(repo: str) -> list[str]:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_open_milestones=failing,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert status == 200
+        assert body["open_milestones"] is None
     finally:
         server.shutdown()
 
