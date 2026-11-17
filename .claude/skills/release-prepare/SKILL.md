@@ -37,7 +37,11 @@ producer-deskのリリース準備を行ってください: 新バージョン�
 
 4. **コミット**
    - 前バージョンの特定: `git describe --tags --abbrev=0` を実行し、直近のバージョンタグを取得する（`master`・`develop`の履歴は毎回のリリースでステップ5②の`master`→`develop`マージにより共有祖先を保っているため、`develop`から切った本ブランチ上で実行しても正しく直近タグを指す。タグが1つも存在しない場合は初回リリース扱いとする）
-   - 変更点一覧の取得: `git log --oneline <前バージョンタグ>..HEAD`（初回リリースの場合はこのステップを省略）を確認する。`develop`へのマージは通常squash mergeのため、1コミットがおおむね1PRに対応する
+   - 変更点一覧の取得（初回リリースの場合はこのステップを省略）: **`git log <前バージョンタグ>..HEAD`は使わない。** リリースは`master`へのsquash mergeのため、タグのコミットには`develop`上の個別コミットが含まれず、このレンジは`develop`の全履歴（過去リリース分を含む数百件）を返してしまう（v1.5.0準備時に175件が返って発覚）。代わりに、前バージョンのタグを`develop`へ取り込んだ`master`→`develop`マージコミット（ステップ5②）を起点にする
+     1. 起点のマージコミットを特定する: `M=$(git log --first-parent --merges --format='%H %P' HEAD | awk -v t="$(git rev-parse <前バージョンタグ>^{commit})" '$3==t {print $1; exit}')`（第2親が前バージョンタグのコミットであるマージ）
+     2. 変更点一覧を取得する: `git log --oneline --no-merges "$M"..HEAD`。1コミットがおおむね1PRに対応する
+     3. `$M`が空の場合（マージ忘れ等）は自動で代替せず、人間に報告する。その場合は前バージョンタグのコミット本文（`git show -s --format=%B <前バージョンタグ>`）と`git diff <前バージョンタグ>..HEAD --stat`を突き合わせて範囲を判断する
+     4. 検算として、件数が前バージョンのリリースサマリ・直近のPR数と比べて極端に多くないか、`git diff <前バージョンタグ>..HEAD --stat`の変更内容と取得した一覧が整合するかを確認する（リリースPR作成後〜`master`→`develop`マージ前に`develop`へ入ったコミットは、`$M`の第1親側に含まれて取りこぼされる可能性があるため、該当がないかも見る）
    - 取得した一覧を読み、変更点を箇条書きで要約する（一覧をそのまま貼るのではなく、内容を要約した短い箇条書きにする）
    - 変更をコミットする。コミットメッセージは以下の形式にする（このメッセージがsquash mergeにより`master`にそのまま刻まれ、`release.yml`がリリースノート本文としてもこのメッセージ本文を再利用するため、二重にサマリを作文しない）
      - タイトル: `v$ARGUMENTS リリース`
@@ -56,7 +60,7 @@ producer-deskのリリース準備を行ってください: 新バージョン�
    - PRタイトルは手順4のコミットタイトルと同じ`v$ARGUMENTS リリース`にする。本リポジトリのsquash mergeのデフォルト設定は`squash_merge_commit_title: COMMIT_OR_PR_TITLE`（PRのコミットが1つならそのコミットタイトル、複数ならPRタイトルを採用）・`squash_merge_commit_message: COMMIT_MESSAGES`（PR内の各コミットメッセージ本文を連結）のため、レビュー指摘対応等で本PRに追加コミットが積まれた場合にPRタイトル側が採用されても結果が変わらないよう、あらかじめ両者を一致させておく。追加コミットが積まれた場合は、マージ前に`git commit --amend`等でコミットを1つにまとめ直すか、squash merge時に手順4のメッセージ内容になるようGitHub UIのコミットメッセージ編集欄で調整すること（本文のサマリが余計な内容で薄まるのを防ぐため）
    - PR本文には、更新したバージョン番号と、マージ後の手順を明記する。マージ後の手順には以下を両方含めること
      1. `git tag v$ARGUMENTS` → `git push origin v$ARGUMENTS`でリリースワークフローが起動すること
-     2. タグ付け後、`master`を`develop`にマージし、両ブランチの履歴を統合すること（`git checkout develop && git pull && git merge master && git push origin develop`）。`orchestrator/pyproject.toml`・`dashboard/package.json`・`package-lock.json`のバージョン番号でコンフリクトが発生する見込みだが、`master`側（今回リリースしたバージョン）を採用して解消する。この手順を省略すると、`master`と`develop`の履歴が共有祖先を失っていく（あるいは既に失っている場合はさらに乖離する）ため、次回以降のリリースPRで想定外の差分・コンフリクトが再発する（issue #110対応中、v0.1.1リリースPR #135で実際に発生・対応した問題）だけでなく、手順4の「前バージョンの特定」が誤動作する原因にもなる
+     2. タグ付け後、`master`を`develop`にマージし、両ブランチの履歴を統合すること（`git checkout develop && git pull && git merge master && git push origin develop`）。`orchestrator/pyproject.toml`・`dashboard/package.json`・`package-lock.json`のバージョン番号でコンフリクトが発生する見込みだが、`master`側（今回リリースしたバージョン）を採用して解消する。この手順を省略すると、`master`と`develop`の履歴が共有祖先を失っていく（あるいは既に失っている場合はさらに乖離する）ため、次回以降のリリースPRで想定外の差分・コンフリクトが再発する（issue #110対応中、v0.1.1リリースPR #135で実際に発生・対応した問題）だけでなく、手順4の「前バージョンの特定」・「変更点一覧の取得」（起点のマージコミットが見つからなくなる）が誤動作する原因にもなる
    - 通常の`feature/*`→`develop`のワークフロー（`Closes #<issue番号>`の記載等）とは異なる、バージョンリリース専用のPRであるため、対応するissue番号がない場合は`Closes #`の記載は不要（issue #110の対応の一環として作成した場合は、そのissue番号を参照する形でよい）
 
 6. **完了報告**
