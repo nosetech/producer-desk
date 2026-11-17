@@ -600,3 +600,106 @@ def test_closed_inbox_item_is_not_listed_anywhere() -> None:
 
     assert build_inbox(issues) == []
     assert build_project_issues(issues) == []
+
+
+def test_build_project_issues_includes_milestone_and_tags_excluding_status_labels() -> None:
+    issue = IssueSummary(
+        repo="nosetech/project-a",
+        number=1,
+        title="t",
+        labels=[STATUS_IN_PROGRESS, "bug", "enhancement"],
+        comments=[],
+        updated_at="2026-08-01T00:00:00Z",
+        milestone="v1.0",
+    )
+    plain = IssueSummary(
+        repo="nosetech/project-a",
+        number=2,
+        title="t2",
+        labels=[],
+        comments=[],
+        updated_at="2026-07-01T00:00:00Z",
+    )
+
+    by_number = {i.number: i for i in build_project_issues([issue, plain])}
+
+    assert by_number[1].milestone == "v1.0"
+    assert by_number[1].tags == ["bug", "enhancement"]
+    assert by_number[2].milestone is None
+    assert by_number[2].tags == []
+
+
+def _ci_wait_comment(pr_number: int) -> dict:
+    return {
+        "body": (
+            "待機中\n\n<!-- producer-desk:bot-comment -->\n"
+            f'<!-- producer-desk:ci-wait\n{{"pr_number": {pr_number}}}\n-->'
+        )
+    }
+
+
+def _in_progress(number: int, updated_at: str, comments: list[dict] | None = None) -> IssueSummary:
+    issue = _issue("nosetech/project-a", number, [STATUS_IN_PROGRESS], updated_at)
+    issue.comments = comments or []
+    return issue
+
+
+def test_build_project_issues_does_not_mark_ci_waiting_issue_as_orphaned() -> None:
+    # issue #314: CI待機マーカー付きのキュー外in-progressは停止の可能性として扱わない
+    issues = [_in_progress(1, "2026-08-01T00:00:00Z", [_ci_wait_comment(10)])]
+
+    result = build_project_issues(issues, is_dispatch_active=lambda repo, number: False)
+
+    assert result[0].is_orphaned is False
+
+
+def test_build_project_issues_marks_issue_without_marker_as_orphaned() -> None:
+    issues = [_in_progress(1, "2026-08-01T00:00:00Z", [{"body": "普通のコメント"}])]
+
+    result = build_project_issues(issues, is_dispatch_active=lambda repo, number: False)
+
+    assert result[0].is_orphaned is True
+
+
+def test_build_project_issues_marks_issue_orphaned_when_ci_wait_comment_is_stale() -> None:
+    comments = [_ci_wait_comment(10), {"body": "人間のコメント"}]
+    issues = [_in_progress(1, "2026-08-01T00:00:00Z", comments)]
+
+    result = build_project_issues(issues, is_dispatch_active=lambda repo, number: False)
+
+    assert result[0].is_orphaned is True
+
+
+def test_build_project_issues_does_not_mark_running_issue_as_orphaned() -> None:
+    issues = [_in_progress(1, "2026-08-01T00:00:00Z")]
+
+    result = build_project_issues(issues, is_dispatch_active=lambda repo, number: True)
+
+    assert result[0].is_orphaned is False
+
+
+def test_aggregate_project_is_orphaned_ignores_ci_waiting_latest_issue() -> None:
+    # 直近更新(#2)はCI待ち、古い(#1)は理由不明の孤立 → breakdown.orphaned>0と同じくTrue
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _in_progress(1, "2026-08-01T00:00:00Z"),
+            _in_progress(2, "2026-08-02T00:00:00Z", [_ci_wait_comment(10)]),
+        ]
+    }
+
+    state = aggregate(issues_by_repo, is_dispatch_active=lambda repo, number: False)
+
+    assert state.project_status[0].is_orphaned is True
+
+
+def test_aggregate_project_is_not_orphaned_when_all_issues_are_ci_waiting_or_running() -> None:
+    issues_by_repo = {
+        "nosetech/project-a": [
+            _in_progress(1, "2026-08-01T00:00:00Z"),
+            _in_progress(2, "2026-08-02T00:00:00Z", [_ci_wait_comment(10)]),
+        ]
+    }
+
+    state = aggregate(issues_by_repo, is_dispatch_active=lambda repo, number: number == 1)
+
+    assert state.project_status[0].is_orphaned is False

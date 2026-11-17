@@ -2,22 +2,30 @@
 
 import {
   useEffect,
-  useRef,
+  useState,
   type Dispatch as ReactDispatch,
   type ReactNode,
 } from "react";
-import { postIssuePlan, PlanApiError } from "@/lib/api";
+import {
+  deleteIssuePlan,
+  patchIssuePlan,
+  postIssuePlan,
+  postReviseIssuePlan,
+  postRetryIssuePlan,
+  type PlanJob,
+} from "@/lib/api";
 import { MODEL_DEFAULT } from "@/lib/modelDirective";
 import {
   canApprove,
+  derivePlanView,
   showReview,
   type PlanAction,
   type PlanErrorKind,
-  type PlanOp,
   type PlanState,
 } from "@/lib/planFlow";
-import { useStageProgress } from "@/lib/stageProgress";
+import { formatAbsoluteTime } from "@/lib/issueList";
 import type { Dispatch } from "@/lib/types";
+import PlanBadge from "./PlanBadge";
 import styles from "./PlanComposer.module.css";
 
 const ERRORS: Record<
@@ -40,9 +48,14 @@ const ERRORS: Record<
     code: "RATE_LIMIT · 429",
   },
   failed: {
-    title: "計画を作成できませんでした",
-    desc: "計画の作成中にエラーが発生しました。もう一度お試しください。",
+    title: "計画の作成に失敗しました",
+    desc: "計画の作成中にエラーが発生しました。再試行するか、ログを確認してください。",
     code: "PLAN_FAILED",
+  },
+  interrupted: {
+    title: "計画の作成が中断されました",
+    desc: "オーケストレータの再起動により処理が中断されました。再試行すると最初からやり直します。",
+    code: "INTERRUPTED",
   },
 };
 
@@ -231,84 +244,255 @@ export default function PlanComposer({
   model,
   state,
   dispatch,
+  jobs,
+  loaded,
+  variant = "compose",
+  inboxIssueNumber,
   modelRow,
+  refresh,
+  onRequested,
   onApprove,
-  onCancel,
+  onClose,
+  onError,
 }: {
   repo: string;
   /** モデル選択値（`MODEL_DEFAULT`なら既定のまま）。 */
   model: string;
   state: PlanState;
   dispatch: ReactDispatch<PlanAction>;
-  modelRow: ReactNode;
-  onApprove: (dispatch: Dispatch, title: string, body: string) => void;
-  onCancel: () => void;
+  /** プロジェクトの計画ジョブ一覧（ポーリング結果）。選択中のジョブの最新状態を反映する。 */
+  jobs: PlanJob[];
+  loaded: boolean;
+  /**
+   * compose: 新規作成パネル（依頼→パネルを閉じる、未承認の計画を一覧から選べる）。
+   * inline: inbox一覧の行内パネル（既存のジョブの確認のみ）。
+   */
+  variant?: "compose" | "inline";
+  /** inbox項目由来の計画のとき、その項目のissue番号。 */
+  inboxIssueNumber?: number;
+  modelRow?: ReactNode;
+  /** 操作直後にジョブ一覧を再取得する。 */
+  refresh: () => Promise<void>;
+  /** 計画を依頼した（compose）。パネルを閉じてトーストを出すのは呼び出し側。 */
+  onRequested?: () => void;
+  /** 承認（登録）。成功後の計画ジョブ削除は呼び出し側がジョブIDで行う。 */
+  onApprove: (
+    dispatch: Dispatch,
+    title: string,
+    body: string,
+    jobId: string,
+  ) => void | Promise<void>;
+  /** 計画を残したままパネルを閉じる。 */
+  onClose: () => void;
+  onError: (message: string) => void;
 }) {
-  const progress = useStageProgress();
-  const runId = useRef(0);
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  const [pending, setPending] = useState(false);
+  const inline = variant === "inline";
+  const job = state.job;
+  const view = derivePlanView(job);
 
-  // 実行中の進捗（キュー順位・作成中）をサーバのポーリング結果から反映する。
+  // ポーリング結果から、選択中のジョブの最新状態（キュー順位・結果・破棄）を反映する。
   useEffect(() => {
-    dispatch({ type: "stage", stage: progress.polledStage });
-  }, [progress.polledStage, dispatch]);
+    if (!job || !loaded) return;
+    const latest = jobs.find((j) => j.id === job.id) ?? null;
+    if (latest !== job) dispatch({ type: "sync", job: latest });
+  }, [jobs, loaded, job, dispatch]);
 
-  // アンマウント（パネルを閉じた）後の結果は捨てる。
-  useEffect(() => {
-    return () => {
-      runId.current += 1;
-    };
-  }, []);
+  // 同じプロジェクトの、新規タスク由来の未承認の計画（新規作成を開いたとき復元する）。
+  const restorable = inline
+    ? []
+    : jobs.filter((j) => j.inboxIssueNumber === null);
 
-  function run(op: PlanOp) {
-    const s = stateRef.current;
-    const instruction =
-      op === "revise" ? s.pendingFix || s.fix.trim() : undefined;
-    const id = ++runId.current;
-    // pendingFixはreducerがfixから取り出す。先にstartしてから通信する。
-    dispatch({ type: "start", op });
-    const progressId = progress.start();
-    postIssuePlan(
-      repo,
-      {
-        request: s.want.trim(),
-        ...(op === "revise"
-          ? { previousPlan: { title: s.title, body: s.body }, instruction }
-          : {}),
-        ...(model !== MODEL_DEFAULT ? { model } : {}),
-      },
-      progressId,
-    )
-      .then((plan) => {
-        if (id !== runId.current) return;
-        dispatch({ type: "succeeded", title: plan.title, body: plan.body });
-      })
-      .catch((e: unknown) => {
-        if (id !== runId.current) return;
-        dispatch({
-          type: "failed",
-          kind: e instanceof PlanApiError ? e.kind : "failed",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      })
-      .finally(() => {
-        if (id === runId.current) progress.stop();
-      });
+  async function act(fn: () => Promise<void>) {
+    setPending(true);
+    try {
+      await fn();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
   }
 
-  const ph = state.phase;
+  /** 直接編集した内容を保存する（閉じる・一覧へ戻るときに失わないため）。 */
+  async function saveEdits() {
+    if (
+      !job ||
+      view.phase !== "review" ||
+      !job.result ||
+      (job.result.title === state.title && job.result.body === state.body)
+    )
+      return;
+    await patchIssuePlan(repo, job.id, {
+      title: state.title,
+      body: state.body,
+    });
+  }
+
+  function request() {
+    void act(async () => {
+      const created = await postIssuePlan(repo, {
+        request: state.want.trim(),
+        ...(model !== MODEL_DEFAULT ? { model } : {}),
+        ...(inboxIssueNumber !== undefined ? { inboxIssueNumber } : {}),
+      });
+      void created;
+      await refresh();
+      onRequested?.();
+    });
+  }
+
+  function sendFix() {
+    if (!job) return;
+    const instruction = state.fix.trim();
+    if (!instruction) return;
+    void act(async () => {
+      await saveEdits().catch(() => {});
+      await postReviseIssuePlan(
+        repo,
+        job.id,
+        instruction,
+        model !== MODEL_DEFAULT ? model : undefined,
+      );
+      dispatch({ type: "revised" });
+      await refresh();
+    });
+  }
+
+  function retry() {
+    if (!job) return;
+    void act(async () => {
+      await postRetryIssuePlan(repo, job.id);
+      await refresh();
+    });
+  }
+
+  /** 失敗からの「直前の計画に戻る」（修正の失敗）／「計画を破棄」（初回の失敗）。 */
+  function back() {
+    if (!job) return;
+    void act(async () => {
+      if (view.op === "revise" && job.result) {
+        await patchIssuePlan(repo, job.id, {
+          title: job.result.title,
+          body: job.result.body,
+        });
+        await refresh();
+      } else {
+        await deleteIssuePlan(repo, job.id);
+        dispatch({ type: "reset" });
+        await refresh();
+      }
+    });
+  }
+
+  function discard() {
+    if (!job) return;
+    void act(async () => {
+      await deleteIssuePlan(repo, job.id);
+      dispatch({ type: "reset", want: inline ? undefined : state.want });
+      await refresh();
+      if (inline) onClose();
+    });
+  }
+
+  function close() {
+    void act(async () => {
+      await saveEdits().catch(() => {});
+      await refresh();
+      onClose();
+    });
+  }
+
+  function approve(dispatchKind: Dispatch) {
+    if (!job) return;
+    // 完了まで待ち、その間はpendingで再クリックを防ぐ。失敗はonErrorへ流し、編集内容は保持する。
+    void act(async () => {
+      await onApprove(
+        dispatchKind,
+        state.title.trim(),
+        state.body.trim(),
+        job.id,
+      );
+    });
+  }
+
+  const ph = view.phase;
   const busy = ph === "queued" || ph === "generating";
   const queued = ph === "queued";
-  const revise = state.op === "revise";
-  const review = showReview(state);
-  const locked = ph !== "review";
+  const revise = view.op === "revise";
+  const review = showReview(view);
+  const locked = ph !== "review" || pending;
   const hasFix = !!state.fix.trim();
-  const approvable = canApprove(state);
-  const err = state.err ? ERRORS[state.err] : null;
+  const approvable = canApprove(state) && !pending;
+  const err = view.err ? ERRORS[view.err] : null;
+  const wantLocked = ph !== "input" || inline;
 
   return (
     <div className={styles.stack}>
+      {!job && restorable.length > 0 && (
+        <div role="region" aria-label="未承認の計画" className={styles.pendBox}>
+          <div className={styles.pendHead}>
+            <span className={styles.label}>未承認の計画</span>
+            <span className={styles.pendCount}>{restorable.length}</span>
+            <span className={styles.spacer} />
+            <span className={styles.sub}>選ぶと内容を確認できます</span>
+          </div>
+          {restorable.map((j) => (
+            <button
+              key={j.id}
+              type="button"
+              className={styles.pendRow}
+              aria-label={`${repo} の計画（${j.status}）を開く`}
+              onClick={() => {
+                dispatch({ type: "edit", patch: { want: j.request } });
+                dispatch({ type: "sync", job: j });
+              }}
+            >
+              <PlanBadge job={j} />
+              <span className={styles.pendText}>
+                <span className={styles.pendTitle}>
+                  {j.result ? j.result.title : j.request}
+                </span>
+                <span className={styles.pendMeta}>
+                  {repo} · {formatAbsoluteTime(j.createdAt)}に依頼
+                </span>
+              </span>
+              {j.version > 0 && (
+                <span className={styles.ver}>v{j.version}</span>
+              )}
+            </button>
+          ))}
+          <span className={styles.pendNote}>
+            計画はバックグラウンドで作成されます。新しく依頼するときは下に入力してください。
+          </span>
+        </div>
+      )}
+      {job && !inline && (
+        <div className={styles.selBar}>
+          <button
+            type="button"
+            className={styles.ghostBtn}
+            disabled={pending}
+            onClick={() => {
+              void act(async () => {
+                await saveEdits().catch(() => {});
+                await refresh();
+                dispatch({ type: "reset", want: "" });
+              });
+            }}
+          >
+            未承認の計画へ
+          </button>
+          <PlanBadge job={job} />
+        </div>
+      )}
+      {inboxIssueNumber !== undefined && !inline && !job && (
+        <span className={styles.pendNote}>
+          inbox {repo} #{inboxIssueNumber}{" "}
+          の計画を依頼します。承認するとこのinbox項目が status:todo
+          に昇格します。
+        </span>
+      )}
       <div>
         <div className={styles.labelRow}>
           <span className={styles.label}>やりたいこと</span>
@@ -316,31 +500,31 @@ export default function PlanComposer({
             <span className={styles.sub}>計画の作成に使用した内容</span>
           )}
         </div>
-        {modelRow}
+        {!inline && modelRow}
         <textarea
-          className={`${styles.field} ${styles.want} ${ph !== "input" ? styles.wantLocked : ""}`}
+          className={`${styles.field} ${styles.want} ${wantLocked ? styles.wantLocked : ""}`}
           placeholder="やりたいことを自由に書いてください。AIがissueのタイトルと本文（背景・やること・完了条件）を下書きします。（例: 請求書の合計が明細と合わないときに気づけるようにしたい）"
           value={state.want}
           onChange={(e) =>
             dispatch({ type: "edit", patch: { want: e.target.value } })
           }
-          disabled={ph !== "input"}
+          disabled={wantLocked}
         />
       </div>
 
-      {ph === "input" && (
+      {ph === "input" && !inline && (
         <div className={styles.genRow}>
           <button
             type="button"
             className={styles.primaryBtn}
-            onClick={() => run("create")}
-            disabled={!state.want.trim()}
+            onClick={request}
+            disabled={!state.want.trim() || pending}
           >
             {sparkle}
-            計画を作成
+            計画を依頼
           </button>
           <span className={styles.genNote}>
-            作成された計画を確認・修正してから登録します。承認するまでissueは作成されません。
+            依頼するとバックグラウンドで作成され、完了するとSlackに通知します。承認するまでissueは作成されません。
           </span>
         </div>
       )}
@@ -367,7 +551,7 @@ export default function PlanComposer({
               <Spinner />
             )}
             {queued
-              ? `待機中 · キュー${state.queuePos}番目`
+              ? `待機中 · キュー${view.queuePos}番目`
               : revise
                 ? "修正を反映中"
                 : "計画を作成中"}
@@ -375,8 +559,8 @@ export default function PlanComposer({
           <Stage
             label={
               queued
-                ? `キューで待機中（${state.queuePos}番目）`
-                : state.wasQueued
+                ? `キューで待機中（${view.queuePos}番目）`
+                : false
                   ? "キューで待機"
                   : "キュー待ちなし"
             }
@@ -397,7 +581,7 @@ export default function PlanComposer({
             {queued
               ? `${repo} で実行中の作業が終わると、自動で計画の作成を始めます。`
               : revise
-                ? `「${state.pendingFix}」を反映しています。直前の計画は下に残っています。`
+                ? `「${view.pendingFix}」を反映しています。直前の計画は下に残っています。`
                 : "AIがタイトルと本文を下書きしています。完了まで入力はできません。"}
           </span>
         </div>
@@ -425,21 +609,17 @@ export default function PlanComposer({
               <span className={styles.errorDesc}>
                 {err.desc}
                 {revise &&
-                  state.ver > 0 &&
-                  ` 直前の計画（v${state.ver}）はそのまま残っています。`}
+                  view.ver > 0 &&
+                  ` 直前の計画（v${view.ver}）はそのまま残っています。`}
               </span>
               <span className={styles.errorCode}>
                 {err.code}
-                {state.errMessage ? ` · ${state.errMessage}` : ""}
+                {view.errMessage ? ` · ${view.errMessage}` : ""}
               </span>
             </div>
           </div>
           <div className={styles.btnRow}>
-            <button
-              type="button"
-              className={styles.retryBtn}
-              onClick={() => run(state.op)}
-            >
+            <button type="button" className={styles.retryBtn} onClick={retry}>
               <svg
                 width="14"
                 height="14"
@@ -459,9 +639,10 @@ export default function PlanComposer({
             <button
               type="button"
               className={styles.ghostBtn}
-              onClick={() => dispatch({ type: "back" })}
+              disabled={pending}
+              onClick={back}
             >
-              {revise && state.ver > 0 ? "直前の計画に戻る" : "入力に戻る"}
+              {revise && view.ver > 0 ? "直前の計画に戻る" : "計画を破棄"}
             </button>
           </div>
         </div>
@@ -474,7 +655,7 @@ export default function PlanComposer({
           >
             <div className={styles.reviewHead}>
               <span className={styles.label}>計画（下書き）</span>
-              <span className={styles.ver}>v{state.ver}</span>
+              <span className={styles.ver}>v{view.ver}</span>
               <span className={styles.spacer} />
               <span className={styles.sub}>
                 {locked
@@ -513,9 +694,9 @@ export default function PlanComposer({
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <div className={styles.labelRow} style={{ marginBottom: 0 }}>
                 <span className={styles.label}>AIに修正を指示</span>
-                {state.history.length > 0 && (
+                {view.history.length > 0 && (
                   <span className={styles.sub}>
-                    修正 {state.history.length}回
+                    修正 {view.history.length}回
                   </span>
                 )}
               </div>
@@ -533,7 +714,7 @@ export default function PlanComposer({
                       !e.shiftKey
                     ) {
                       e.preventDefault();
-                      if (!locked && hasFix) run("revise");
+                      if (!locked && hasFix) sendFix();
                     }
                   }}
                   disabled={locked}
@@ -543,7 +724,7 @@ export default function PlanComposer({
                 <button
                   type="button"
                   className={styles.fixBtn}
-                  onClick={() => run("revise")}
+                  onClick={sendFix}
                   disabled={locked || !hasFix}
                   aria-label="修正を指示"
                   title="修正を指示（Enter）"
@@ -552,9 +733,9 @@ export default function PlanComposer({
                   <span>修正を指示</span>
                 </button>
               </div>
-              {state.history.length > 0 && (
+              {view.history.length > 0 && (
                 <div className={styles.history}>
-                  {state.history.map((t, i) => (
+                  {view.history.map((t, i) => (
                     <div key={i} className={styles.historyItem}>
                       <span className={styles.historyNum}>{i + 1}.</span>
                       <span className={styles.historyText}>{t}</span>
@@ -586,61 +767,73 @@ export default function PlanComposer({
           </div>
           <div className={styles.actions}>
             <div className={styles.actionRow}>
+              {!inline && (
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  disabled={!approvable}
+                  aria-busy={pending}
+                  onClick={() => approve("immediate")}
+                >
+                  {pending ? (
+                    <Spinner />
+                  ) : (
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flex: "none" }}
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  )}
+                  {pending ? "登録中…" : "承認して登録 · 今すぐ着手"}
+                </button>
+              )}
               <button
                 type="button"
-                className={styles.primaryBtn}
+                className={inline ? styles.primaryBtn : styles.laterBtn}
                 disabled={!approvable}
-                onClick={() =>
-                  onApprove("immediate", state.title.trim(), state.body.trim())
-                }
+                aria-busy={pending}
+                onClick={() => approve("queued")}
               >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ flex: "none" }}
-                >
-                  <path d="M20 6 9 17l-5-5" />
-                </svg>
-                承認して登録 · 今すぐ着手
-              </button>
-              <button
-                type="button"
-                className={styles.laterBtn}
-                disabled={!approvable}
-                onClick={() =>
-                  onApprove("queued", state.title.trim(), state.body.trim())
-                }
-              >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ flex: "none" }}
-                >
-                  <rect x="3" y="5" width="18" height="16" rx="2" />
-                  <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
-                </svg>
-                承認して登録 · あとで着手（todo）
+                {pending ? (
+                  <Spinner />
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ flex: "none" }}
+                  >
+                    <rect x="3" y="5" width="18" height="16" rx="2" />
+                    <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+                  </svg>
+                )}
+                {pending
+                  ? "登録中…"
+                  : inline
+                    ? "承認して登録（status:todo）"
+                    : "承認して登録 · あとで着手（todo）"}
               </button>
             </div>
             <div className={styles.actionRow} style={{ gap: 8 }}>
               <button
                 type="button"
                 className={styles.ghostBtn}
-                disabled={busy}
-                onClick={() => dispatch({ type: "redo" })}
-                title="計画を破棄して、やりたいことの入力に戻ります"
+                disabled={busy || pending}
+                onClick={discard}
+                title="計画を破棄します"
               >
                 <svg
                   width="14"
@@ -656,15 +849,16 @@ export default function PlanComposer({
                   <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
                   <path d="M3 3v5h5" />
                 </svg>
-                やり直す
+                破棄
               </button>
               <button
                 type="button"
                 className={styles.ghostBtn}
-                onClick={onCancel}
-                title="計画を破棄して閉じます"
+                disabled={pending}
+                onClick={close}
+                title="計画は残したまま閉じます"
               >
-                キャンセル
+                閉じる
               </button>
             </div>
           </div>

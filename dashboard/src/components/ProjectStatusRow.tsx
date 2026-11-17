@@ -157,7 +157,7 @@ export default function ProjectStatusRow({
                 {project.isOrphaned && (
                   <span
                     className={styles.orphanBadge}
-                    title="作業中ラベルですが、対応するAgent Runnerが実行されていません（孤立状態の可能性があります）。"
+                    title="作業中ラベルですが、対応するAgent Runnerが実行されておらず、CI待ちでもありません（孤立状態の可能性があります）。"
                   >
                     <WarningIcon size={12} />
                   </span>

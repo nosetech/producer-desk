@@ -17,10 +17,13 @@ from orchestrator.github_client import (
     get_pr_status_check_rollup,
     list_issues,
     list_linked_prs,
+    list_open_milestones,
+    list_repo_labels,
     merge_pr,
     post_comment,
     resolve_pr_number,
     update_issue,
+    update_issue_meta,
 )
 
 
@@ -79,6 +82,43 @@ def test_list_issues_parses_gh_output_into_issue_summaries() -> None:
     ]
 
 
+def test_list_issues_parses_milestone_title() -> None:
+    fake_run = _fake_run(
+        [
+            {
+                "number": 1,
+                "title": "a",
+                "labels": [],
+                "comments": [],
+                "updatedAt": "2026-08-03T05:27:16Z",
+                "state": "OPEN",
+                "milestone": {"number": 3, "title": "v1.0"},
+            },
+            {
+                "number": 2,
+                "title": "b",
+                "labels": [],
+                "comments": [],
+                "updatedAt": "2026-08-03T05:27:16Z",
+                "state": "OPEN",
+                "milestone": None,
+            },
+        ]
+    )
+
+    result = list_issues("nosetech/project-a", run=fake_run)
+
+    assert [i.milestone for i in result] == ["v1.0", None]
+
+
+def test_list_issues_requests_milestone_field() -> None:
+    fake_run = _fake_run([])
+
+    list_issues("nosetech/project-a", run=fake_run)
+
+    assert "milestone" in fake_run.calls[0][fake_run.calls[0].index("--json") + 1].split(",")
+
+
 def test_list_issues_parses_closed_state() -> None:
     fake_run = _fake_run(
         [
@@ -113,7 +153,7 @@ def test_list_issues_calls_gh_with_expected_arguments() -> None:
         "--state",
         "all",
         "--json",
-        "number,title,labels,comments,updatedAt,state,body,createdAt",
+        "number,title,labels,comments,updatedAt,state,body,createdAt,milestone",
         "--limit",
         "100",
     ]
@@ -404,3 +444,52 @@ def test_ensure_labels_creates_only_missing_labels() -> None:
     assert created == ["other"]
     calls = fake_run.calls  # type: ignore[attr-defined]
     assert calls[1][:5] == ["gh", "label", "create", "other", "--repo"]
+
+
+def test_list_open_milestones_returns_titles_of_open_milestones() -> None:
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="v2.0.0\nprototype 0.2.0\n", stderr=""
+        )
+
+    assert list_open_milestones("nosetech/project-a", run=run) == ["v2.0.0", "prototype 0.2.0"]
+    cmd = calls[0]
+    assert cmd[:2] == ["gh", "api"]
+    assert "repos/nosetech/project-a/milestones?state=open&per_page=100" in cmd
+    assert "--paginate" in cmd
+
+
+def test_list_open_milestones_returns_empty_when_none() -> None:
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    assert list_open_milestones("nosetech/project-a", run=run) == []
+
+
+def test_list_repo_labels_excludes_status_labels() -> None:
+    run = _fake_run_raw(
+        [{"name": "bug"}, {"name": "status:todo"}, {"name": "needs-human-decision"}]
+    )
+    assert list_repo_labels("nosetech/project-a", run=run) == ["bug"]
+    assert run.calls[0][:3] == ["gh", "label", "list"]  # type: ignore[attr-defined]
+
+
+def test_update_issue_meta_builds_gh_issue_edit() -> None:
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, milestone="v1", add_labels=["bug"], remove_labels=["docs"], run=run)
+    assert run.calls[0] == [  # type: ignore[attr-defined]
+        "gh", "issue", "edit", "5", "--repo", "o/r",
+        "--milestone", "v1", "--add-label", "bug", "--remove-label", "docs",
+    ]  # fmt: skip
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, clear_milestone=True, run=run)
+    assert "--remove-milestone" in run.calls[0]  # type: ignore[attr-defined]
+
+
+def test_update_issue_meta_skips_gh_when_nothing_to_change() -> None:
+    run = _fake_run_raw("")
+    update_issue_meta("o/r", 5, run=run)
+    assert run.calls == []  # type: ignore[attr-defined]

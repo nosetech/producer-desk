@@ -153,32 +153,9 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-}
-
-.fullTextBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 0;
-  border: none;
-  background: transparent;
-  color: var(--accent-blue);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.fullTextBtn:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 @media (max-width: 640px) {
-  .fullTextBtn {
-    padding: 7px 0 3px;
-  }
 }
 
 .summaryText {
@@ -192,8 +169,48 @@
 
 .actions {
   display: flex;
-  gap: 24px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  column-gap: 24px;
+  row-gap: 10px;
   margin-top: 13px;
+}
+
+/* 承認・返信の組。幅が足りないときは「全文を表示」だけが次の行（右寄せ）に回る。 */
+.mainActs {
+  display: flex;
+  gap: 24px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* 全文を表示: 承認（緑塗り）・返信（枠線のみ）と並ぶセカンダリボタン。
+   ジョブ実行中も無効化しない（読み取り専用操作）。Artifactデザインの fullTextBtn に準拠。 */
+.fullTextBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    filter 0.12s,
+    box-shadow 0.12s;
+}
+
+.fullTextBtn:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
 }
 
 .btn {
@@ -242,10 +259,6 @@
 
   .prBadge {
     align-self: flex-end;
-  }
-
-  .actions {
-    flex-wrap: wrap;
   }
 }
 

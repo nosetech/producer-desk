@@ -35,6 +35,23 @@
   color: var(--warn);
 }
 
+.toastWarn {
+  background: var(--accent-amber-bg);
+  color: var(--accent-amber);
+}
+
+/* 控えめな通知（issue #299）。Artifactsの feature/issue-299-plan-background（toast.quiet）。 */
+.toastQuiet {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  font-weight: 500;
+}
+
+.toastQuiet .icon {
+  color: var(--text-secondary);
+}
+
 .icon {
   flex-shrink: 0;
 }
@@ -42,5 +59,10 @@
 @media (max-width: 640px) {
   .toast {
     bottom: 86px;
+  }
+
+  /* 一括操作バー（画面下部固定のシート、issue #305）の表示中は、その上に出す。 */
+  :global(body[data-bulk-bar]) .toast {
+    bottom: 262px;
   }
 }

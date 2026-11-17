@@ -2,19 +2,37 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchIssueDetail, postRefreshProject } from "@/lib/api";
+import {
+  fetchIssueDetail,
+  patchIssuesMeta,
+  postRefreshProject,
+} from "@/lib/api";
 import { replyQuoteSource } from "@/lib/comment";
 import {
   DEFAULT_FILTER,
   FILTER_ALL,
   FILTER_ORPHAN,
   buildFilterOptions,
+  buildMetaFilterOptions,
+  filterByMeta,
   filterIssues,
   formatAbsoluteTime,
   isClosed,
   issueStatusKey,
   issueStatusText,
+  type MatchMode,
 } from "@/lib/issueList";
+import {
+  buildMetaInput,
+  pruneSelection,
+  selectAllState,
+  summarizeMetaResult,
+  toggleSelectAll,
+  toggleSelected,
+  type MetaDraft,
+} from "@/lib/issueMeta";
+import { BulkBar, IssueMetaCell, WarnTriangle } from "./BulkEdit";
+import { MetaFilter } from "./MetaFilter";
 import {
   DEFAULT_COLUMN_WIDTHS,
   columnsToTemplate,
@@ -133,10 +151,32 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     initialCache.kind === "miss" ? [] : initialCache.entry.issues,
   );
   // OPENなinbox項目（issue #288）。一覧と同じ再取得で更新する。
-  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [inbox, setInbox] = useState<InboxItem[]>(
+    initialCache.kind === "miss" ? [] : initialCache.entry.inbox,
+  );
+  // オープン中マイルストーン（issue #308）。`null`は未取得・取得失敗で、絞り込まない。
+  const [openMilestones, setOpenMilestones] = useState<string[] | null>(
+    initialCache.kind === "miss" ? null : initialCache.entry.openMilestones,
+  );
+  // 変更UIの選択肢となるラベル（状態ラベル除く、issue #305）。
+  const [repoLabels, setRepoLabels] = useState<string[] | null>(
+    initialCache.kind === "miss" ? null : initialCache.entry.repoLabels,
+  );
+  // 行頭チェックボックスの選択、更新に失敗した行のエラー、個別編集ポップオーバーを開いている行
+  // （issue #305）。プロジェクト切替は`key={repo}`で初期化される。
+  const [selected, setSelected] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
+  const [failMap, setFailMap] = useState<Record<number, string>>({});
+  const [editingNum, setEditingNum] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
+  // マイルストーン/タグのフィルタ（issue #303）。プロジェクト切替は`key={repo}`で初期化される。
+  const [metaMilestones, setMetaMilestones] = useState<string[]>([]);
+  const [metaTags, setMetaTags] = useState<string[]>([]);
+  const [metaMode, setMetaMode] = useState<MatchMode>("or");
+  const [metaNotice, setMetaNotice] = useState<string | null>(null);
   const [sort, setSort] = useState<"desc" | "asc">("desc");
   const [columns, setColumns] = useState<ColumnWidths>(DEFAULT_COLUMN_WIDTHS);
   const columnsRef = useRef(columns);
@@ -193,9 +233,17 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           if (seq !== requestSeq.current) return;
           await refresh();
           if (seq !== requestSeq.current) return;
-          storeIssues(repo, data.issues);
+          storeIssues(
+            repo,
+            data.issues,
+            data.inbox ?? [],
+            data.open_milestones ?? null,
+            data.labels ?? null,
+          );
           setIssues(data.issues);
           setInbox(data.inbox ?? []);
+          setOpenMilestones(data.open_milestones ?? null);
+          setRepoLabels(data.labels ?? null);
           setLoad("ready");
           // 手動再取得の直後に定期更新が重ならないよう、タイマーを仕切り直す。
           if (mode === "manual") restartPoll.current();
@@ -306,13 +354,128 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const ready = load === "ready";
   const orphans = issues.filter((i) => i.is_orphaned);
   const options = buildFilterOptions(issues, showDone);
-  const rows = filterIssues(issues, filter, showDone, sort);
+  const statusRows = filterIssues(issues, filter, showDone, sort);
+  const metaOptions = buildMetaFilterOptions(
+    issues,
+    statusRows,
+    openMilestones,
+  );
+  // 一覧から消えたマイルストーン/タグ（クローズ・ラベル削除等）の選択は無視する。
+  const selMilestones = metaMilestones.filter((m) =>
+    metaOptions.milestones.some((o) => o.value === m),
+  );
+  const selTags = metaTags.filter((t) =>
+    metaOptions.tags.some((o) => o.value === t),
+  );
+  const metaSelected = selMilestones.length + selTags.length > 0;
+  const rows = filterByMeta(statusRows, selMilestones, selTags, metaMode);
+  const toggleMilestone = (m: string) => {
+    setMetaNotice(null);
+    if (selMilestones.includes(m)) {
+      setMetaMilestones(selMilestones.filter((x) => x !== m));
+    } else if (metaMode === "and" && selMilestones.length > 0) {
+      // issueのマイルストーンは1つなので、ANDでは1つだけ選べる（入れ替える）。
+      setMetaMilestones([m]);
+      setMetaNotice(
+        `ANDではマイルストーンは1つだけ選べます。「${selMilestones[selMilestones.length - 1]}」から「${m}」に切り替えました。`,
+      );
+    } else {
+      setMetaMilestones([...selMilestones, m]);
+    }
+  };
+  const toggleTag = (t: string) => {
+    setMetaNotice(null);
+    setMetaTags(
+      selTags.includes(t) ? selTags.filter((x) => x !== t) : [...selTags, t],
+    );
+  };
+  const changeMetaMode = (mode: MatchMode) => {
+    if (selMilestones.length + selTags.length < 2 || mode === metaMode) return;
+    setMetaNotice(null);
+    if (mode === "and" && selMilestones.length > 1) {
+      const keep = selMilestones[selMilestones.length - 1];
+      setMetaMilestones([keep]);
+      showToast(
+        `issueのマイルストーンは1つのため、ANDでは「${keep}」の1つに絞りました。`,
+      );
+    }
+    setMetaMode(mode);
+  };
+  const clearMeta = () => {
+    setMetaMilestones([]);
+    setMetaTags([]);
+    setMetaNotice(null);
+  };
+  // 再取得でクローズ等により一覧から消えたissueは選択から外す。
+  const selectedNums = pruneSelection(
+    selected,
+    issues.map((i) => i.number),
+  );
+  const visibleNums = rows.map((i) => i.number);
+  const allState = selectAllState(visibleNums, selectedNums);
+  const selectedIssues = issues.filter((i) => selectedNums.has(i.number));
+
+  /**
+   * マイルストーン・ラベルを変更する（issue #305）。部分失敗は`failed`に載るため、失敗した
+   * 行へエラー印を付ける。通信・検証・読み取り専用モード（403）のエラーはToastで通知する。
+   * 戻り値は全件成功したか。
+   */
+  const applyMeta = async (
+    nums: number[],
+    draft: MetaDraft,
+  ): Promise<{ ok: boolean; remaining: Set<number> }> => {
+    try {
+      const result = await patchIssuesMeta(
+        repo,
+        buildMetaInput(new Set(nums), draft),
+      );
+      const outcome = summarizeMetaResult(result);
+      setFailMap((prev) => {
+        const next = { ...prev };
+        for (const n of nums) delete next[n];
+        for (const f of result.failed) next[f.number] = f.error;
+        return next;
+      });
+      if (nums.length === 1 && outcome.hasFailure) {
+        showToast(
+          `#${nums[0]} の更新に失敗しました: ${result.failed[0].error}`,
+          true,
+        );
+      } else {
+        showToast(outcome.message, false, outcome.hasFailure);
+      }
+      if (result.succeeded.length > 0) void fetchIssues("poll");
+      return { ok: !outcome.hasFailure, remaining: outcome.remaining };
+    } catch (e) {
+      showToast(
+        `マイルストーン・ラベルを変更できませんでした: ${e instanceof Error ? e.message : "不明なエラー"}`,
+        true,
+      );
+      return { ok: false, remaining: new Set(nums) };
+    }
+  };
+  const applyBulk = async (draft: MetaDraft) => {
+    const result = await applyMeta([...selectedNums], draft);
+    // 成功時は選択を解除し、失敗分だけ選択に残す（通信エラー時は選択を維持）。
+    setSelected(result.remaining);
+  };
+  const applyOne = async (issueNumber: number, draft: MetaDraft) => {
+    const result = await applyMeta([issueNumber], draft);
+    if (result.ok) setEditingNum(null);
+  };
   const activeLabel = options.find((o) => o.key === filter)?.label ?? "";
   const doneCount = issues.filter(isClosed).length;
   const hiddenDone =
     filter === FILTER_ALL && !showDone && doneCount > 0
       ? ` · 完了 ${doneCount} 件は非表示`
       : "";
+  const metaText =
+    [...selMilestones, ...selTags].map((v) => `「${v}」`).join("") +
+    (selMilestones.length + selTags.length > 1
+      ? metaMode === "and"
+        ? "のすべて"
+        : "のいずれか"
+      : "");
   const doneSwitchLive = filter === FILTER_ALL;
 
   const statusByRepo = new Map(state.project_status.map((p) => [p.repo, p]));
@@ -320,6 +483,25 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     const counts = statusByRepo.get(r)?.counts;
     return counts ? Object.values(counts).reduce((a, b) => a + b, 0) : 0;
   };
+
+  const selectAllLabel =
+    allState === "all"
+      ? "表示中のissueの選択をすべて解除"
+      : `表示中のissue（${visibleNums.length}件）をすべて選択`;
+  const metaCell = (issue: ProjectIssue) => (
+    <IssueMetaCell
+      repo={repo}
+      issue={issue}
+      milestones={openMilestones}
+      labels={repoLabels}
+      selectedMilestones={selMilestones}
+      selectedTags={selTags}
+      open={editingNum === issue.number}
+      onOpen={() => setEditingNum(issue.number)}
+      onClose={() => setEditingNum(null)}
+      onApply={(draft) => applyOne(issue.number, draft)}
+    />
+  );
 
   return (
     <div className={styles.page}>
@@ -536,6 +718,27 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           </div>
         </div>
 
+        {ready && (
+          <MetaFilter
+            milestones={metaOptions.milestones}
+            tags={metaOptions.tags}
+            selectedMilestones={selMilestones}
+            selectedTags={selTags}
+            mode={metaMode}
+            notice={metaNotice}
+            onToggleMilestone={toggleMilestone}
+            onToggleTag={toggleTag}
+            onClearMilestones={() => {
+              setMetaMilestones([]);
+              setMetaNotice(null);
+            }}
+            onClearTags={() => setMetaTags([])}
+            onModeChange={changeMetaMode}
+            onClear={clearMeta}
+            onCloseDropdown={() => setMetaNotice(null)}
+          />
+        )}
+
         {load === "loading" && (
           <div className={styles.loading}>
             <div className={styles.loadingHead}>
@@ -701,12 +904,17 @@ export default function ProjectIssues({ repo }: { repo: string }) {
               この条件に一致するissueはありません
             </div>
             <div className={styles.noMatchBody}>
-              「{activeLabel}」のissueは現在0件です。
+              {metaSelected
+                ? `${filter === FILTER_ALL ? "" : `状態「${activeLabel}」で、`}${metaText}に一致するissueは現在0件です。`
+                : `「${activeLabel}」のissueは現在0件です。`}
             </div>
             <button
               type="button"
               className={styles.ghostBtn}
-              onClick={() => setFilter(FILTER_ALL)}
+              onClick={() => {
+                setFilter(FILTER_ALL);
+                clearMeta();
+              }}
             >
               絞り込みを解除
             </button>
@@ -715,7 +923,37 @@ export default function ProjectIssues({ repo }: { repo: string }) {
 
         {ready && rows.length > 0 && (
           <>
-            <div className={styles.head}>
+            {selectedNums.size > 0 && (
+              <BulkBar
+                repo={repo}
+                selected={selectedIssues}
+                milestones={openMilestones}
+                labels={repoLabels}
+                onApply={applyBulk}
+                onClear={() => {
+                  setSelected(new Set());
+                  setFailMap({});
+                }}
+              />
+            )}
+            <div
+              className={`${styles.head} ${selectedNums.size > 0 ? styles.headWithBar : ""}`}
+            >
+              <label className={styles.cbLabel}>
+                <input
+                  type="checkbox"
+                  className={styles.cb}
+                  checked={allState === "all"}
+                  ref={(el) => {
+                    if (el) el.indeterminate = allState === "some";
+                  }}
+                  onChange={() =>
+                    setSelected(toggleSelectAll(visibleNums, selectedNums))
+                  }
+                  aria-label={selectAllLabel}
+                  title={selectAllLabel}
+                />
+              </label>
               <span className={styles.headCell}>
                 #{columnHandle("number", "right")}
               </span>
@@ -734,22 +972,76 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 {columnHandle("actions", "left")}
               </span>
             </div>
+            <div className={styles.selectAllRow}>
+              <label className={styles.selectAllLabel}>
+                <input
+                  type="checkbox"
+                  className={styles.cb}
+                  checked={allState === "all"}
+                  ref={(el) => {
+                    if (el) el.indeterminate = allState === "some";
+                  }}
+                  onChange={() =>
+                    setSelected(toggleSelectAll(visibleNums, selectedNums))
+                  }
+                  aria-label={selectAllLabel}
+                />
+                {allState === "some"
+                  ? `${visibleNums.filter((n) => selectedNums.has(n)).length}/${visibleNums.length}件を選択中`
+                  : allState === "all"
+                    ? "すべて選択中"
+                    : "すべて選択"}
+              </label>
+              <span className={styles.selectAllCount}>
+                {visibleNums.length}件
+              </span>
+            </div>
             <div className={styles.rows}>
               {rows.map((issue) => {
                 const done = isClosed(issue);
                 const url = `https://github.com/${repo}/issues/${issue.number}`;
                 const ago = formatRelativeTime(issue.updated_at);
                 const absTime = `${formatAbsoluteTime(issue.updated_at)} に更新`;
+                const picked = selectedNums.has(issue.number);
+                const failMsg = failMap[issue.number];
                 const rowClass = [
                   styles.row,
                   done ? styles.rowDone : "",
                   issue.is_orphaned ? styles.rowOrphan : "",
+                  picked ? styles.rowSelected : "",
+                  editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
                 const cardClass = [
                   styles.card,
                   done ? styles.cardDone : "",
                   issue.is_orphaned ? styles.cardOrphan : "",
+                  picked ? styles.cardSelected : "",
+                  failMsg ? styles.cardFailed : "",
+                  editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
+                const checkbox = (
+                  <label className={styles.cbLabel}>
+                    <input
+                      type="checkbox"
+                      className={styles.cb}
+                      checked={picked}
+                      onChange={() =>
+                        setSelected(toggleSelected(selectedNums, issue.number))
+                      }
+                      aria-label={`#${issue.number} を選択`}
+                    />
+                  </label>
+                );
+                const failMark = failMsg && (
+                  <span
+                    className={styles.failMark}
+                    role="img"
+                    aria-label={`#${issue.number} の更新に失敗: ${failMsg}`}
+                    title={`#${issue.number} の更新に失敗: ${failMsg}`}
+                  >
+                    <WarnTriangle size={12} />
+                  </span>
+                );
                 const reply = () =>
                   openReplyWithQuote(issue.number, issue.title);
                 const replyBusy = replyLoading.has(issue.number);
@@ -765,7 +1057,13 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                       {({ iconTrigger, panel }) => (
                         <>
                           <div className={rowClass}>
-                            <span className={styles.num}>#{issue.number}</span>
+                            {checkbox}
+                            <span className={styles.numCell}>
+                              <span className={styles.num}>
+                                #{issue.number}
+                              </span>
+                              {failMark}
+                            </span>
                             <div className={styles.titleCell}>
                               <a
                                 className={`${styles.title} ${done ? styles.titleDone : ""}`}
@@ -776,6 +1074,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                               >
                                 {issue.title}
                               </a>
+                              {metaCell(issue)}
                               {issue.is_orphaned && (
                                 <span className={styles.orphanNote}>
                                   <WarningIcon size={12} />
@@ -807,6 +1106,8 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                           </div>
                           <div className={cardClass}>
                             <div className={styles.cardTop}>
+                              {checkbox}
+                              {failMark}
                               <StatusBadge issue={issue} />
                               {issue.is_orphaned && (
                                 <span className={styles.orphanNoteInline}>
@@ -827,6 +1128,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                             >
                               {issue.title}
                             </a>
+                            {metaCell(issue)}
                             <div className={styles.cardMeta}>
                               <span className={styles.metaItem} title={absTime}>
                                 <svg
@@ -884,6 +1186,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
             </div>
             <div className={styles.foot}>
               {rows.length} 件を表示{hiddenDone}
+              {metaSelected ? " · マイルストーン/タグで絞り込み中" : ""}
             </div>
           </>
         )}

@@ -132,6 +132,9 @@ def _run_server(store: StateStore, **kwargs) -> tuple:
     # （issue #70）で実際の`gh`コマンドを叩かないよう、空リストを返すフェイクを既定にする。
     kwargs.setdefault("list_issues", lambda repo: [])
     # 判断待ちissueでもPR候補を解決するため（issue #270）、`gh pr list`も実際には叩かない。
+    # オープン中マイルストーン取得（issue #308）も実際の`gh api`は叩かない。
+    kwargs.setdefault("list_open_milestones", lambda repo: [])
+    kwargs.setdefault("list_repo_labels", lambda repo: [])
     kwargs.setdefault("list_linked_prs", lambda repo, n: [])
     server = make_server(store, host="127.0.0.1", port=0, **kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1419,9 +1422,10 @@ def test_create_issue_invalid_dispatch_value_returns_400() -> None:
         server.shutdown()
 
 
-# issue #287: AIによるissue計画の生成API（POST /api/projects/{repo}/issue-plans）。
-def _plan_server(generate_plan_fn, **kwargs):
+# issue #299: AIによる計画のバックグラウンド実行API（issue-plans）。
+def _plan_server(generate_plan_fn, tmp_path, **kwargs):
     from orchestrator.issue_plan import PlanRunner
+    from orchestrator.plan_jobs import PlanJobStore
 
     runner_ref: list = []
 
@@ -1429,18 +1433,18 @@ def _plan_server(generate_plan_fn, **kwargs):
         runner_ref[0].run_job(number)
 
     dispatch_queue = DispatchQueue(dispatch_fn)
-    runner_ref.append(PlanRunner(dispatch_queue))
-    issue_creator = FakeIssueCreator(start_number=1)
+    plan_store = PlanJobStore(tmp_path / "plan_jobs.json")
+    runner_ref.append(PlanRunner(dispatch_queue, plan_store))
     server, _ = _run_server(
         StateStore(),
         projects=[PROJECT_A],
         dispatch_queue=dispatch_queue,
         plan_runner=runner_ref[0],
+        plan_store=plan_store,
         generate_plan_fn=generate_plan_fn,
-        create_issue=issue_creator.create_issue,
         **kwargs,
     )
-    return server, issue_creator
+    return server, plan_store
 
 
 def _post_status(server, path: str, payload: dict) -> tuple[int, dict]:
@@ -1450,7 +1454,37 @@ def _post_status(server, path: str, payload: dict) -> tuple[int, dict]:
         return e.code, json.loads(e.read())
 
 
-def test_issue_plan_returns_plan_without_creating_issue() -> None:
+def _request(server, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    host, port = server.server_address[0], server.server_address[1]
+    req = urllib.request.Request(
+        f"http://{host}:{port}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _wait_plan(server, job_id: str, status: str) -> dict:
+    import time
+
+    path = f"/api/projects/nosetech/project-a/issue-plans/{job_id}"
+    for _ in range(100):
+        code, body = _request(server, "GET", path)
+        if code == 200 and body["status"] == status:
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"ジョブが{status}になりませんでした: {body}")
+
+
+PLANS = "/api/projects/nosetech/project-a/issue-plans"
+
+
+def test_issue_plan_submit_returns_202_immediately_and_result_is_stored(tmp_path) -> None:
     from orchestrator.issue_plan import IssuePlan
 
     seen: list = []
@@ -1459,65 +1493,90 @@ def test_issue_plan_returns_plan_without_creating_issue() -> None:
         seen.append((request, previous_plan, instruction))
         return IssuePlan("題", "本文")
 
-    server, issue_creator = _plan_server(generate)
+    server, _ = _plan_server(generate, tmp_path)
     try:
-        status, body = _post_status(
-            server,
-            "/api/projects/nosetech/project-a/issue-plans",
-            {
-                "request": "やりたい",
-                "previousPlan": {"title": "旧", "body": "旧本文"},
-                "instruction": "短く",
-            },
+        status, body = _request(
+            server, "POST", PLANS, {"request": "やりたい", "inboxIssueNumber": 7}
         )
 
-        assert (status, body) == (200, {"title": "題", "body": "本文"})
-        assert seen[0][0] == "やりたい" and seen[0][2] == "短く"
-        assert seen[0][1].title == "旧"
-        assert issue_creator.created == [] if hasattr(issue_creator, "created") else True
+        assert status == 202 and body["status"] == "queued"
+        job = _wait_plan(server, body["id"], "succeeded")
+        assert job["result"] == {"title": "題", "body": "本文"}
+        assert job["inboxIssueNumber"] == 7
+        assert seen[0][0] == "やりたい"
+        code, listing = _request(server, "GET", PLANS)
+        assert code == 200 and [j["id"] for j in listing["jobs"]] == [body["id"]]
     finally:
         server.shutdown()
 
 
-def test_issue_plan_error_is_returned_to_user() -> None:
-    from orchestrator.issue_plan import PlanError
+def test_issue_plan_revise_edit_retry_and_delete(tmp_path) -> None:
+    from orchestrator.issue_plan import IssuePlan, PlanError
 
-    def generate(*args, **kwargs):
-        raise PlanError("タイムアウトしました", 504)
+    calls: list = []
 
-    server, _ = _plan_server(generate)
+    def generate(project, request, previous_plan=None, instruction=None, model_override=None):
+        calls.append((previous_plan, instruction))
+        if instruction == "壊す":
+            raise PlanError("解釈不可", code="parse")
+        return IssuePlan("題" + str(len(calls)), "本文")
+
+    server, store = _plan_server(generate, tmp_path)
     try:
-        status, body = _post_status(
-            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
-        )
+        _, created = _request(server, "POST", PLANS, {"request": "x"})
+        job_id = created["id"]
+        _wait_plan(server, job_id, "succeeded")
+        item = f"{PLANS}/{job_id}"
 
-        assert status == 504 and "タイムアウト" in body["error"]
+        # 直接編集
+        status, edited = _request(server, "PATCH", item, {"title": "編集題", "body": "編集本文"})
+        assert status == 200 and edited["result"]["title"] == "編集題"
+
+        # 修正指示（失敗する指示）。直前の計画は残る
+        status, _ = _request(server, "POST", f"{item}/revise", {"instruction": "壊す"})
+        assert status == 202
+        failed = _wait_plan(server, job_id, "failed")
+        assert failed["error"]["code"] == "parse" and failed["result"]["title"] == "編集題"
+        assert calls[-1][0].title == "編集題" and calls[-1][1] == "壊す"
+
+        # 再試行は修正指示を引き継ぐ（履歴は増えない）
+        status, _ = _request(server, "POST", f"{item}/retry")
+        assert status == 202
+        _wait_plan(server, job_id, "failed")
+        assert calls[-1][1] == "壊す" and len(store.get(job_id).history) == 1
+
+        # 失敗中の修正は不可、破棄は可
+        assert _request(server, "POST", f"{item}/revise", {"instruction": "x"})[0] == 409
+        assert _request(server, "DELETE", item)[0] == 200
+        assert _request(server, "GET", item)[0] == 404
     finally:
         server.shutdown()
 
 
-def test_issue_plan_rejects_empty_request_and_unknown_repo() -> None:
-    server, _ = _plan_server(lambda *a, **k: None)
+def test_issue_plan_validation_and_unknown_repo(tmp_path) -> None:
+    server, _ = _plan_server(lambda *a, **k: None, tmp_path)
     try:
-        assert _post_status(server, "/api/projects/nosetech/project-a/issue-plans", {})[0] == 400
+        assert _request(server, "POST", PLANS, {})[0] == 400
+        assert _request(server, "POST", PLANS, {"request": "x", "inboxIssueNumber": "1"})[0] == 400
         assert (
-            _post_status(server, "/api/projects/nosetech/nope/issue-plans", {"request": "x"})[0]
+            _request(server, "POST", "/api/projects/nosetech/nope/issue-plans", {"request": "x"})[0]
             == 404
         )
+        assert _request(server, "GET", f"{PLANS}/abc123")[0] == 404
     finally:
         server.shutdown()
 
 
-def test_issue_plan_allowed_in_read_only_mode() -> None:
-    from orchestrator.issue_plan import IssuePlan
-
-    server, _ = _plan_server(lambda *a, **k: IssuePlan("T", "B"), read_only=True)
+def test_issue_plan_write_operations_rejected_in_read_only_mode(tmp_path) -> None:
+    server, store = _plan_server(lambda *a, **k: None, tmp_path, read_only=True)
     try:
-        status, body = _post_status(
-            server, "/api/projects/nosetech/project-a/issue-plans", {"request": "x"}
-        )
-
-        assert status == 200 and body["title"] == "T"
+        job = store.create("nosetech/project-a", "x", None, None)
+        item = f"{PLANS}/{job.id}"
+        assert _request(server, "POST", PLANS, {"request": "x"})[0] == 403
+        assert _request(server, "POST", f"{item}/revise", {"instruction": "x"})[0] == 403
+        assert _request(server, "PATCH", item, {"title": "a", "body": "b"})[0] == 403
+        assert _request(server, "DELETE", item)[0] == 403
+        assert _request(server, "GET", PLANS)[0] == 200  # 参照は可能
     finally:
         server.shutdown()
 
@@ -1634,9 +1693,10 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
                 repo=repo,
                 number=1,
                 title="作業中の孤立issue",
-                labels=[STATUS_IN_PROGRESS],
+                labels=[STATUS_IN_PROGRESS, "bug"],
                 comments=[{"body": "c"}],
                 updated_at="2026-08-01T00:00:00Z",
+                milestone="v1.0",
             ),
             IssueSummary(
                 repo=repo,
@@ -1673,9 +1733,52 @@ def test_get_project_issues_returns_issues_with_status_and_orphan_flag() -> None
         assert by_number[1]["label"] == STATUS_IN_PROGRESS
         assert by_number[1]["is_orphaned"] is True
         assert by_number[1]["comments_count"] == 1
+        assert by_number[1]["milestone"] == "v1.0"
+        assert by_number[1]["tags"] == ["bug"]
+        assert by_number[2]["milestone"] is None
+        assert by_number[2]["tags"] == []
         assert by_number[2]["label"] is None
         assert by_number[2]["is_orphaned"] is False
         assert by_number[3]["label"] == STATUS_CLOSED
+        # テスト既定のフェイクはオープン中マイルストーン無し（issue #308）。
+        assert body["open_milestones"] == []
+    finally:
+        server.shutdown()
+
+
+def test_list_project_issues_includes_open_milestones() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    store = StateStore()
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_open_milestones=lambda repo: ["v2.0.0"],
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["open_milestones"] == ["v2.0.0"]
+    finally:
+        server.shutdown()
+
+
+def test_list_project_issues_falls_back_to_null_when_milestones_fail() -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    store = StateStore()
+
+    def failing(repo: str) -> list[str]:
+        raise subprocess.CalledProcessError(1, "gh")
+
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        list_open_milestones=failing,
+    )
+    try:
+        status, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert status == 200
+        assert body["open_milestones"] is None
     finally:
         server.shutdown()
 
@@ -2533,5 +2636,159 @@ def test_promote_rejects_non_inbox_issue_number() -> None:
 
         assert status == 400
         assert gh.updated == []
+    finally:
+        server.shutdown()
+
+
+class FakeIssueMeta:
+    def __init__(self, fail_on: set[int] | None = None) -> None:
+        self.calls: list[tuple[int, dict]] = []
+        self.fail_on = fail_on or set()
+
+    def update(self, repo: str, number: int, **kwargs) -> None:
+        if number in self.fail_on:
+            raise subprocess.CalledProcessError(1, ["gh"])
+        self.calls.append((number, kwargs))
+
+
+def _meta_server(meta: FakeIssueMeta, labels: FakeLabels | None = None, **kwargs):
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        get_labels=(labels or FakeLabels()).get_labels,
+        list_repo_labels=lambda repo: ["bug", "enhancement", "docs"],
+        list_open_milestones=lambda repo: ["v1", "v2"],
+        update_issue_meta=meta.update,
+        **kwargs,
+    )
+    return server
+
+
+META_PATH = "/api/projects/nosetech/project-a/issues/meta"
+
+
+def test_issues_meta_applies_milestone_and_label_diff_only() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta, FakeLabels({1: {"bug"}, 2: set()}))
+    try:
+        status, body = _patch(
+            server,
+            META_PATH,
+            {
+                "issues": [1, 2],
+                "milestone": {"mode": "set", "value": "v1"},
+                "add_labels": ["bug", "docs"],
+                "remove_labels": ["enhancement"],
+            },
+        )
+        assert status == 200
+        assert body == {"succeeded": [1, 2], "failed": []}
+        assert meta.calls[0][1]["add_labels"] == ["docs"]  # 既に付いているbugは追加しない
+        assert meta.calls[0][1]["remove_labels"] == []
+        assert meta.calls[1][1]["add_labels"] == ["bug", "docs"]
+        assert meta.calls[1][1]["milestone"] == "v1"
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_clear_milestone() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta)
+    try:
+        status, _ = _patch(server, META_PATH, {"issues": [3], "milestone": {"mode": "clear"}})
+        assert status == 200
+        assert meta.calls[0][1]["clear_milestone"] is True
+        assert meta.calls[0][1]["milestone"] is None
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"issues": [1], "add_labels": ["status:todo"]},
+        {"issues": [1], "remove_labels": ["needs-human-decision"]},
+        {"issues": [1], "add_labels": ["nothing-like-this"]},
+        {"issues": [1], "milestone": {"mode": "set", "value": "v9"}},
+        {"issues": [1], "milestone": {"mode": "set"}},
+        {"issues": [1], "add_labels": ["bug"], "remove_labels": ["bug"]},
+        {"issues": [], "add_labels": ["bug"]},
+        {"issues": list(range(1, 102)), "add_labels": ["bug"]},
+        {"issues": [1]},
+    ],
+)
+def test_issues_meta_rejects_invalid_requests_without_writing(payload: dict) -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta)
+    try:
+        status, _ = _patch(server, META_PATH, payload)
+        assert status == 400
+        assert meta.calls == []
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_reports_partial_failure() -> None:
+    meta = FakeIssueMeta(fail_on={2})
+    server = _meta_server(meta)
+    try:
+        status, body = _patch(server, META_PATH, {"issues": [1, 2, 3], "add_labels": ["bug"]})
+        assert status == 200
+        assert body["succeeded"] == [1, 3]
+        assert [f["number"] for f in body["failed"]] == [2]
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_unknown_repo_is_404() -> None:
+    server = _meta_server(FakeIssueMeta())
+    try:
+        status, _ = _patch(
+            server,
+            "/api/projects/nosetech/other/issues/meta",
+            {"issues": [1], "add_labels": ["bug"]},
+        )
+        assert status == 404
+    finally:
+        server.shutdown()
+
+
+def test_issues_meta_is_rejected_in_read_only_mode() -> None:
+    meta = FakeIssueMeta()
+    server = _meta_server(meta, read_only=True)
+    try:
+        status, _ = _patch(server, META_PATH, {"issues": [1], "add_labels": ["bug"]})
+        assert status == 403
+        assert meta.calls == []
+    finally:
+        server.shutdown()
+
+
+def test_list_issues_includes_repo_labels_or_null_on_failure() -> None:
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        list_repo_labels=lambda repo: ["bug"],
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["labels"] == ["bug"]
+    finally:
+        server.shutdown()
+
+    def boom(repo: str) -> list[str]:
+        raise subprocess.CalledProcessError(1, ["gh"])
+
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=_recording_dispatch_queue()[0],
+        list_repo_labels=boom,
+    )
+    try:
+        _, body = _get(server, "/api/projects/nosetech/project-a/issues")
+        assert body["labels"] is None
     finally:
         server.shutdown()

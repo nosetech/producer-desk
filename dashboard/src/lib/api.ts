@@ -6,6 +6,8 @@ import {
   type Dispatch,
   type ExecutionMode,
   type InboxKind,
+  type IssuesMetaInput,
+  type IssuesMetaResult,
   type InstructAction,
   type InstructResult,
   type IssueDetail,
@@ -17,7 +19,6 @@ import {
   type UpdateProjectSettingsResult,
   type UsageResponse,
 } from "./types";
-import type { PlanErrorKind } from "./planFlow";
 import {
   DEFAULT_DASHBOARD_SETTINGS,
   parseDashboardSettings,
@@ -162,50 +163,110 @@ export function postMarkInReview(
   }).then((res) => parseJsonOrThrow<{ label: string }>(res));
 }
 
-/** 計画生成APIのエラー。`kind`でダッシュボードのエラー表示を切り替える。 */
-export class PlanApiError extends Error {
-  readonly kind: PlanErrorKind;
+export type PlanJobStatus = "queued" | "running" | "succeeded" | "failed";
+/** 失敗種別。`interrupted`はオーケストレータ再起動で中断されたジョブ。 */
+export type PlanJobErrorCode =
+  "parse" | "timeout" | "limit" | "failed" | "interrupted";
 
-  constructor(message: string, kind: PlanErrorKind) {
-    super(message);
-    this.name = "PlanApiError";
-    this.kind = kind;
-  }
+/** AI計画ジョブ（issue #299）。オーケストレータが保持し、承認・破棄まで残る。 */
+export interface PlanJob {
+  id: string;
+  repo: string;
+  request: string;
+  model: string | null;
+  inboxIssueNumber: number | null;
+  status: PlanJobStatus;
+  /** 修正中は直前の結果を残す。 */
+  result: { title: string; body: string } | null;
+  error: { code: PlanJobErrorCode; message: string } | null;
+  history: { instruction: string; at: string }[];
+  /** 実行中の修正指示（初回生成ならnull）。 */
+  pendingInstruction: string | null;
+  version: number;
+  /** キュー待ちの順位（1始まり）。待機中でなければnull。 */
+  queuePosition: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 計画ジョブの一覧を取得する（inboxIssueNumberでinbox項目と突き合わせる）。 */
+export function fetchPlanJobs(repo: string): Promise<{ jobs: PlanJob[] }> {
+  return fetch(`${repoPath(repo)}/issue-plans`, { cache: "no-store" }).then(
+    (res) => parseJsonOrThrow<{ jobs: PlanJob[] }>(res),
+  );
 }
 
 /**
- * やりたいことからissueの計画（タイトル・本文）をAIに作成させる（issue #287）。
+ * やりたいことからissueの計画（タイトル・本文）の作成を依頼する（issue #299）。
+ * ジョブを投入して即時返る（完了は待たない）。結果はジョブ一覧のポーリングで受け取る。
  * issueは作成しない。承認後の登録は`postCreateIssue`を使う。
  */
-export async function postIssuePlan(
+export function postIssuePlan(
   repo: string,
   input: {
     request: string;
-    previousPlan?: { title: string; body: string };
-    instruction?: string;
     /** モデル選択値（`claude_code` / `litellm:<alias>`）。省略時はプロジェクトの既定。 */
     model?: string;
+    /** inbox項目由来の計画のとき、その項目のissue番号。 */
+    inboxIssueNumber?: number;
   },
-  progressId?: string,
-): Promise<{ title: string; body: string }> {
-  const res = await fetch(`${repoPath(repo)}/issue-plans`, {
+): Promise<{ id: string; status: PlanJobStatus }> {
+  return fetch(`${repoPath(repo)}/issue-plans`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...input, progressId }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const code = data?.code;
-    const kind: PlanErrorKind =
-      code === "parse" || code === "timeout" || code === "limit"
-        ? code
-        : "failed";
-    throw new PlanApiError(
-      typeof data?.error === "string" ? data.error : `HTTP ${res.status}`,
-      kind,
-    );
-  }
-  return data as { title: string; body: string };
+    body: JSON.stringify(input),
+  }).then((res) =>
+    parseJsonOrThrow<{ id: string; status: PlanJobStatus }>(res),
+  );
+}
+
+const planPath = (repo: string, id: string) =>
+  `${repoPath(repo)}/issue-plans/${encodeURIComponent(id)}`;
+
+/** 修正指示を投入する（バックグラウンドで再生成。直前の計画は残る）。 */
+export function postReviseIssuePlan(
+  repo: string,
+  id: string,
+  instruction: string,
+  model?: string,
+): Promise<{ id: string; status: PlanJobStatus }> {
+  return fetch(`${planPath(repo, id)}/revise`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instruction, ...(model ? { model } : {}) }),
+  }).then((res) =>
+    parseJsonOrThrow<{ id: string; status: PlanJobStatus }>(res),
+  );
+}
+
+/** 失敗した計画を再試行する。 */
+export function postRetryIssuePlan(
+  repo: string,
+  id: string,
+): Promise<{ id: string; status: PlanJobStatus }> {
+  return fetch(`${planPath(repo, id)}/retry`, { method: "POST" }).then((res) =>
+    parseJsonOrThrow<{ id: string; status: PlanJobStatus }>(res),
+  );
+}
+
+/** 確認画面での直接編集（タイトル・本文）を保存する。 */
+export function patchIssuePlan(
+  repo: string,
+  id: string,
+  input: { title: string; body: string },
+): Promise<PlanJob> {
+  return fetch(planPath(repo, id), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<PlanJob>(res));
+}
+
+/** 計画を破棄する。承認（issue登録）成功後の後始末にも使う。 */
+export function deleteIssuePlan(repo: string, id: string): Promise<unknown> {
+  return fetch(planPath(repo, id), { method: "DELETE" }).then((res) =>
+    parseJsonOrThrow<unknown>(res),
+  );
 }
 
 /**
@@ -308,6 +369,18 @@ export function fetchIssueDetail(
   return fetch(`${repoPath(repo)}/issues/${issueNumber}`, {
     cache: "no-store",
   }).then((res) => parseJsonOrThrow<IssueDetail>(res));
+}
+
+/** issueのマイルストーン・ラベルを一括変更する（issue #305）。 */
+export function patchIssuesMeta(
+  repo: string,
+  input: IssuesMetaInput,
+): Promise<IssuesMetaResult> {
+  return fetch(`${repoPath(repo)}/issues/meta`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<IssuesMetaResult>(res));
 }
 
 export function fetchProjectIssues(

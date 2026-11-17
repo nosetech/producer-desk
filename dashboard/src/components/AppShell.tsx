@@ -67,21 +67,34 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     show: boolean;
     text: string;
     error: boolean;
+    warn: boolean;
+    quiet: boolean;
   }>({
     show: false,
     text: "",
     error: false,
+    warn: false,
+    quiet: false,
   });
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = useCallback((text: string, isError = false) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast({ show: true, text, error: isError });
-    toastTimer.current = setTimeout(
-      () => setToast((t) => ({ ...t, show: false })),
-      TOAST_DURATION_MS,
-    );
-  }, []);
+  const showToast = useCallback(
+    (text: string, isError = false, isWarn = false, isQuiet = false) => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      setToast({
+        show: true,
+        text,
+        error: isError,
+        warn: isWarn,
+        quiet: isQuiet,
+      });
+      toastTimer.current = setTimeout(
+        () => setToast((t) => ({ ...t, show: false })),
+        TOAST_DURATION_MS,
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -112,9 +125,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       ),
     [settings.issueCacheTtlMs],
   );
-  const storeIssues = useCallback((repo: string, issues: ProjectIssue[]) => {
-    storeIssueCache(issueCache.current, repo, issues, Date.now());
-  }, []);
+  const storeIssues = useCallback(
+    (
+      repo: string,
+      issues: ProjectIssue[],
+      inbox: InboxItem[],
+      openMilestones: string[] | null,
+      repoLabels: string[] | null,
+    ) => {
+      storeIssueCache(
+        issueCache.current,
+        repo,
+        issues,
+        inbox,
+        Date.now(),
+        openMilestones,
+        repoLabels,
+      );
+    },
+    [],
+  );
   // 操作元が対象リポジトリを特定できないため、全リポジトリ分を破棄する。
   const refreshAfterAction = useCallback((): Promise<void> => {
     invalidateIssueCache(issueCache.current);
@@ -176,6 +206,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const [planEpoch, setPlanEpoch] = useState(0);
+  const [planRequests, setPlanRequests] = useState<readonly string[]>([]);
+  const markPlanRequested = useCallback((r: string, n: number) => {
+    const key = `${r}#${n}`;
+    setPlanRequests((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    setPlanEpoch((e) => e + 1);
+  }, []);
+  const clearPlanRequested = useCallback((r: string, n: number) => {
+    const key = `${r}#${n}`;
+    setPlanRequests((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : prev,
+    );
+  }, []);
+
   const openNewTask = useCallback((repo: string, inbox?: InboxItem) => {
     setComposerMode("new");
     setNewTaskRepo(repo);
@@ -206,6 +250,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         showToast,
         openReply,
         openNewTask,
+        planEpoch,
+        planRequests,
+        markPlanRequested,
+        clearPlanRequested,
       }}
     >
       <div className={styles.shell}>
@@ -214,7 +262,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Sidebar attentionCount={attentionCount} anyOrphan={anyOrphan} />
           <div className={styles.contentPane}>
             <div className={styles.screen}>{children}</div>
-            <Toast show={toast.show} text={toast.text} error={toast.error} />
+            <Toast
+              show={toast.show}
+              text={toast.text}
+              error={toast.error}
+              warn={toast.warn}
+              quiet={toast.quiet}
+            />
             <ComposerBar
               open={composerOpen}
               mode={composerMode}

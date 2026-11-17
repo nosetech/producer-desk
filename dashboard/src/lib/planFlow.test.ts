@@ -1,12 +1,35 @@
 import { describe, expect, it } from "vitest";
+import type { PlanJob } from "./api";
 import {
   canApprove,
+  derivePlanView,
+  hasActivePlan,
   initialPlanState,
-  parsePlanStage,
+  planBadge,
   planReducer,
   showReview,
   type PlanState,
 } from "./planFlow";
+
+function job(over: Partial<PlanJob> = {}): PlanJob {
+  return {
+    id: "a1",
+    repo: "o/r",
+    request: "やりたい",
+    model: null,
+    inboxIssueNumber: null,
+    status: "queued",
+    result: null,
+    error: null,
+    history: [],
+    pendingInstruction: null,
+    version: 0,
+    queuePosition: null,
+    createdAt: "t",
+    updatedAt: "t",
+    ...over,
+  };
+}
 
 function run(
   state: PlanState,
@@ -15,105 +38,183 @@ function run(
   return actions.reduce(planReducer, state);
 }
 
-describe("parsePlanStage", () => {
-  it("キュー順位と作成中を解釈する", () => {
-    expect(parsePlanStage("plan_queued:2")).toEqual({ kind: "queued", pos: 2 });
-    expect(parsePlanStage("plan_running")).toEqual({ kind: "running" });
-    expect(parsePlanStage("plan_queued:x")).toBeNull();
-    expect(parsePlanStage(null)).toBeNull();
-    expect(parsePlanStage("issue")).toBeNull();
+describe("derivePlanView", () => {
+  it("ジョブが無ければ入力ステップ", () => {
+    expect(derivePlanView(null)).toMatchObject({ phase: "input", ver: 0 });
+  });
+
+  it("キュー待ち（順位つき）・作成中・確認待ちをジョブ状態から導出する", () => {
+    expect(
+      derivePlanView(job({ status: "queued", queuePosition: 2 })),
+    ).toMatchObject({ phase: "queued", queuePos: 2, op: "create" });
+    expect(derivePlanView(job({ status: "running" }))).toMatchObject({
+      phase: "generating",
+      queuePos: 0,
+    });
+    expect(
+      derivePlanView(
+        job({
+          status: "succeeded",
+          version: 1,
+          result: { title: "題", body: "本文" },
+        }),
+      ),
+    ).toMatchObject({ phase: "review", ver: 1 });
+  });
+
+  it("修正中は直前の計画を残し、反映中の指示を履歴から分ける", () => {
+    const view = derivePlanView(
+      job({
+        status: "running",
+        version: 1,
+        result: { title: "題", body: "本文" },
+        history: [
+          { instruction: "一回目", at: "t" },
+          { instruction: "二回目", at: "t" },
+        ],
+        pendingInstruction: "二回目",
+      }),
+    );
+    expect(view).toMatchObject({
+      phase: "generating",
+      op: "revise",
+      pendingFix: "二回目",
+      history: ["一回目"],
+      ver: 1,
+    });
+    expect(showReview(view)).toBe(true);
+  });
+
+  it("失敗は種別つきで、初回の失敗には確認欄を出さない", () => {
+    const failed = derivePlanView(
+      job({ status: "failed", error: { code: "timeout", message: "m" } }),
+    );
+    expect(failed).toMatchObject({
+      phase: "error",
+      err: "timeout",
+      op: "create",
+    });
+    expect(showReview(failed)).toBe(false);
+  });
+
+  it("修正の失敗は直前の計画を残して確認欄を出す", () => {
+    const view = derivePlanView(
+      job({
+        status: "failed",
+        version: 1,
+        result: { title: "題", body: "本文" },
+        history: [{ instruction: "壊す", at: "t" }],
+        error: { code: "parse", message: "m" },
+      }),
+    );
+    expect(view).toMatchObject({
+      phase: "error",
+      op: "revise",
+      pendingFix: "壊す",
+      history: [],
+    });
+    expect(showReview(view)).toBe(true);
+  });
+
+  it("再起動で中断されたジョブはinterruptedの失敗", () => {
+    expect(
+      derivePlanView(
+        job({ status: "failed", error: { code: "interrupted", message: "m" } }),
+      ).err,
+    ).toBe("interrupted");
   });
 });
 
 describe("planReducer", () => {
-  const created = run(
-    initialPlanState(),
-    { type: "edit", patch: { want: "やりたい" } },
-    { type: "start", op: "create" },
-    { type: "stage", stage: "plan_queued:2" },
-    { type: "stage", stage: "plan_running" },
-    { type: "succeeded", title: "題", body: "本文" },
-  );
-
-  it("入力→待機→作成中→確認へ遷移する", () => {
-    expect(created.phase).toBe("review");
-    expect(created.ver).toBe(1);
-    expect(created.wasQueued).toBe(true);
-    expect(canApprove(created)).toBe(true);
-    expect(showReview(created)).toBe(true);
+  const succeeded = job({
+    status: "succeeded",
+    version: 1,
+    result: { title: "題", body: "本文" },
   });
 
-  it("待機中・作成中の表示は進捗ポーリングに従う", () => {
-    const s = run(initialPlanState("x"), { type: "start", op: "create" });
-    expect(s.phase).toBe("generating");
-    const q = planReducer(s, { type: "stage", stage: "plan_queued:3" });
-    expect(q).toMatchObject({ phase: "queued", queuePos: 3, wasQueued: true });
-    expect(canApprove(q)).toBe(false);
+  it("確認待ちの結果をタイトル・本文へ反映し、承認可能になる", () => {
+    const s = run(initialPlanState("x"), { type: "sync", job: succeeded });
+    expect(s).toMatchObject({ title: "題", body: "本文" });
+    expect(canApprove(s)).toBe(true);
   });
 
-  it("AI修正を繰り返すと版と履歴が増え、反映中は直前の計画を残す", () => {
-    const editing = run(created, {
-      type: "edit",
-      patch: { fix: "短くして", title: "手直し題" },
-    });
-    const revising = planReducer(editing, { type: "start", op: "revise" });
-    expect(revising.pendingFix).toBe("短くして");
-    expect(revising.fix).toBe("");
-    expect(revising.title).toBe("手直し題");
-    expect(showReview(revising)).toBe(true);
-    expect(canApprove(revising)).toBe(false);
-
-    const done = planReducer(revising, {
-      type: "succeeded",
-      title: "新題",
-      body: "新本文",
-    });
-    expect(done).toMatchObject({
-      ver: 2,
-      history: ["短くして"],
-      pendingFix: "",
-    });
-  });
-
-  it("修正の失敗は直前の計画へ戻れ、修正指示が入力欄に戻る", () => {
-    const revising = run(
-      created,
-      { type: "edit", patch: { fix: "直して" } },
-      { type: "start", op: "revise" },
-      { type: "failed", kind: "timeout", message: "t" },
+  it("同じ版の再取得（ポーリング）では編集中の内容を上書きしない", () => {
+    const s = run(
+      initialPlanState(),
+      { type: "sync", job: succeeded },
+      { type: "edit", patch: { title: "編集中" } },
+      { type: "sync", job: { ...succeeded, updatedAt: "t2" } },
     );
-    expect(showReview(revising)).toBe(true);
-    const back = planReducer(revising, { type: "back" });
-    expect(back).toMatchObject({
-      phase: "review",
-      fix: "直して",
-      pendingFix: "",
-    });
+    expect(s.title).toBe("編集中");
   });
 
-  it("作成の失敗は入力へ戻り、計画確認は出ない", () => {
-    const failed = run(
-      initialPlanState("x"),
-      { type: "start", op: "create" },
-      { type: "failed", kind: "parse", message: "p" },
+  it("修正で新しい版が届いたら編集欄を置き換える", () => {
+    const s = run(
+      initialPlanState(),
+      { type: "sync", job: succeeded },
+      { type: "edit", patch: { title: "編集中" } },
+      {
+        type: "sync",
+        job: {
+          ...succeeded,
+          version: 2,
+          result: { title: "題2", body: "本文2" },
+        },
+      },
     );
-    expect(failed.err).toBe("parse");
-    expect(showReview(failed)).toBe(false);
-    expect(planReducer(failed, { type: "back" }).phase).toBe("input");
+    expect(s).toMatchObject({ title: "題2", body: "本文2" });
   });
 
-  it("やり直すと計画を破棄して、やりたいことだけ残す", () => {
-    expect(planReducer(created, { type: "redo" })).toEqual(
+  it("修正中・失敗中は承認できない", () => {
+    const s = run(initialPlanState(), {
+      type: "sync",
+      job: { ...succeeded, status: "running" },
+    });
+    expect(canApprove(s)).toBe(false);
+  });
+
+  it("タイトル・本文が空なら承認できない", () => {
+    const s = run(
+      initialPlanState(),
+      { type: "sync", job: succeeded },
+      { type: "edit", patch: { body: "  " } },
+    );
+    expect(canApprove(s)).toBe(false);
+  });
+
+  it("破棄されたジョブ（null）で入力に戻り、やりたいことは保持する", () => {
+    const s = run(
       initialPlanState("やりたい"),
+      { type: "sync", job: succeeded },
+      { type: "sync", job: null },
     );
+    expect(derivePlanView(s.job).phase).toBe("input");
+    expect(s.want).toBe("やりたい");
+    expect(run(s, { type: "reset" }).title).toBe("");
   });
 
-  it("タイトルまたは本文が空だと承認できない", () => {
+  it("修正指示の送信で入力欄を空にする", () => {
+    const s = run(
+      initialPlanState(),
+      { type: "edit", patch: { fix: "短く" } },
+      { type: "revised" },
+    );
+    expect(s.fix).toBe("");
+  });
+});
+
+describe("一覧表示", () => {
+  it("ジョブ状態を表示用バッジへ対応づける", () => {
+    expect(planBadge(job({ status: "queued" }))).toBe("queued");
+    expect(planBadge(job({ status: "running" }))).toBe("running");
+    expect(planBadge(job({ status: "succeeded" }))).toBe("review");
+    expect(planBadge(job({ status: "failed" }))).toBe("failed");
+  });
+
+  it("実行中のジョブがあるときだけポーリング継続と判断する", () => {
+    expect(hasActivePlan([job({ status: "succeeded" })])).toBe(false);
     expect(
-      canApprove(run(created, { type: "edit", patch: { title: " " } })),
-    ).toBe(false);
-    expect(
-      canApprove(run(created, { type: "edit", patch: { body: "" } })),
-    ).toBe(false);
+      hasActivePlan([job({ status: "failed" }), job({ status: "running" })]),
+    ).toBe(true);
   });
 });

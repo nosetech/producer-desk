@@ -40,6 +40,7 @@ from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
 from orchestrator.logging_config import configure_logging
+from orchestrator.plan_jobs import PlanJobStore
 from orchestrator.polling import run_polling_loop
 from orchestrator.polling_health import (
     PollingHealth,
@@ -47,7 +48,7 @@ from orchestrator.polling_health import (
     run_health_watchdog,
 )
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
-from orchestrator.slack_notifier import DecisionNotifier, ReviewNotifier
+from orchestrator.slack_notifier import DecisionNotifier, PlanNotifier, ReviewNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,14 @@ def main() -> None:
             projects, log_retention_days, litellm_health_timeout_seconds, plan_runner_ref
         )
     )
-    plan_runner = PlanRunner(dispatch_queue)
+    plan_store = PlanJobStore()
+    plan_notifier = PlanNotifier()
+    plan_runner = PlanRunner(
+        dispatch_queue,
+        plan_store,
+        # 読み取り専用モードではSlack通知しない（issue #299）。
+        on_finished=None if read_only else plan_notifier.notify,
+    )
     plan_runner_ref.append(plan_runner)
     comment_tracker = CommentTracker()
     ci_wait_tracker = CiWaitTracker()
@@ -223,6 +231,13 @@ def main() -> None:
 
     def on_update(state: AggregatedState) -> None:
         store.set(state)
+        # issue #299: inboxでなくなった項目（クローズ・昇格）に紐づく計画ジョブを破棄する。
+        # 読み取り専用モードでも、ローカルの一時データの整理なので行う必要はない（書き込み系）。
+        if not read_only:
+            for project_status in state.project_status:
+                plan_store.prune_inbox(
+                    project_status.repo, {item.number for item in project_status.inbox}
+                )
         if read_only:
             return
         decision_notifier.notify_new_decisions(state)
@@ -262,6 +277,7 @@ def main() -> None:
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         plan_runner=plan_runner,
+        plan_store=plan_store,
         generate_plan_fn=_make_generate_plan_fn(litellm_health_timeout_seconds),
     )
     logger.info(

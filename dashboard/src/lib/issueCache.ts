@@ -1,10 +1,15 @@
-import type { ProjectIssue } from "./types";
+import type { InboxItem, ProjectIssue } from "./types";
 
 /** この時間内のキャッシュは新鮮とみなし、取得せずにそのまま表示する。 */
 export const ISSUE_CACHE_TTL_MS = 60_000;
 
 export interface IssueCacheEntry {
   issues: ProjectIssue[];
+  inbox: InboxItem[];
+  /** オープン中マイルストーン。`null`は未取得・取得失敗（絞り込まない）。 */
+  openMilestones: string[] | null;
+  /** 変更UIの選択肢となるラベル（状態ラベル除く、issue #305）。`null`は未取得・取得失敗。 */
+  repoLabels: string[] | null;
   fetchedAt: number;
 }
 
@@ -31,9 +36,18 @@ export function storeIssueCache(
   cache: Map<string, IssueCacheEntry>,
   repo: string,
   issues: ProjectIssue[],
+  inbox: InboxItem[],
   now: number,
+  openMilestones: string[] | null = null,
+  repoLabels: string[] | null = null,
 ): void {
-  cache.set(repo, { issues, fetchedAt: now });
+  cache.set(repo, {
+    issues,
+    inbox,
+    openMilestones,
+    repoLabels,
+    fetchedAt: now,
+  });
 }
 
 /** repo省略時は全リポジトリ分を破棄する。 */

@@ -273,26 +273,6 @@ export default function ReviewCard({
           <span className={styles.aiTag}>AI</span>
           <div className={styles.summaryBody}>
             <span className={styles.summaryText}>{summary}</span>
-            <button
-              type="button"
-              className={styles.fullTextBtn}
-              onClick={() => setViewerOpen(true)}
-              aria-haspopup="dialog"
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-              </svg>
-              全文を表示
-            </button>
           </div>
         </div>
       )}
@@ -305,27 +285,51 @@ export default function ReviewCard({
         />
       )}
 
-      <div className={`${styles.actions} ${busy ? styles.actionsBusy : ""}`}>
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.btnApprove}`}
-          onClick={openConfirm}
-          disabled={busy}
-        >
-          <CheckIcon />
-          承認
-        </button>
-        <button
-          type="button"
-          className={`${styles.btn} ${styles.btnReply}`}
-          onClick={() =>
-            onReply(review.repo, review.number, review.title, review.comments)
-          }
-          disabled={busy}
-        >
-          <ReplyIcon />
-          返信
-        </button>
+      <div className={styles.actions}>
+        <div className={`${styles.mainActs} ${busy ? styles.actionsBusy : ""}`}>
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.btnApprove}`}
+            onClick={openConfirm}
+            disabled={busy}
+          >
+            <CheckIcon />
+            承認
+          </button>
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.btnReply}`}
+            onClick={() =>
+              onReply(review.repo, review.number, review.title, review.comments)
+            }
+            disabled={busy}
+          >
+            <ReplyIcon />
+            返信
+          </button>
+        </div>
+        {last && (
+          <button
+            type="button"
+            className={styles.fullTextBtn}
+            onClick={() => setViewerOpen(true)}
+            aria-haspopup="dialog"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+            </svg>
+            全文を表示
+          </button>
+        )}
       </div>
 
       <DispatchDiagnosis
