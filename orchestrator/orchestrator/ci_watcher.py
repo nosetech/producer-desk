@@ -27,11 +27,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from orchestrator.agent_runner import extract_ci_wait_marker
-from orchestrator.aggregation import IssueSummary
+from orchestrator.aggregation import IssueSummary, latest_ci_wait_pr_number
 from orchestrator.config import DEFAULT_CI_WAIT_TIMEOUT_HOURS
 from orchestrator.dispatch_queue import DispatchQueue
-from orchestrator.github_client import BOT_COMMENT_MARKER, GetPrStatusCheckRollupFn, PostCommentFn
+from orchestrator.github_client import GetPrStatusCheckRollupFn, PostCommentFn
 from orchestrator.labels import (
     STATUS_IN_PROGRESS,
     STATUS_NEEDS_HUMAN_DECISION,
@@ -113,22 +112,6 @@ class CiWaitTracker:
         self._waiting.pop((repo, issue_number), None)
 
 
-def _latest_ci_wait_pr_number(issue: IssueSummary) -> int | None:
-    """issueの最新コメントがCI待機マーカー付きのAgent Runner投稿であれば対象PR番号を返す。
-
-    最新コメントのみを見る。CI待機後に別の（マーカーの無い）コメントが追加されて
-    いれば、そのCI待機は既に解消済み（後続処理が進んだ、または人間が介入した）と
-    みなせるため。
-    """
-    if not issue.comments:
-        return None
-    latest = issue.comments[-1]
-    body = latest.get("body", "")
-    if BOT_COMMENT_MARKER not in body:
-        return None
-    return extract_ci_wait_marker(body)
-
-
 def build_in_progress_breakdown(
     issues: list[IssueSummary], is_dispatch_active: Callable[[str, int], bool]
 ) -> dict[str, int]:
@@ -147,7 +130,7 @@ def build_in_progress_breakdown(
             continue
         if is_dispatch_active(issue.repo, issue.number):
             continue
-        if _latest_ci_wait_pr_number(issue) is not None:
+        if latest_ci_wait_pr_number(issue) is not None:
             breakdown["ci_waiting"] += 1
         else:
             breakdown["orphaned"] += 1
@@ -173,7 +156,7 @@ def process_ci_waiting_issues(
                 tracker.clear(repo, issue.number)
                 continue
 
-            pr_number = _latest_ci_wait_pr_number(issue)
+            pr_number = latest_ci_wait_pr_number(issue)
             if pr_number is None:
                 tracker.clear(repo, issue.number)
                 continue
