@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- producer-desk本体のオーケストレータ（orchestrator/.venv/bin/orchestrator、
+<!-- 【通常は bin/service.sh install を使うこと（issue #318）。このファイルは手動登録する
+     場合の参考例で、service.sh が生成するplistとは内容が異なる。】
+
+      producer-desk本体のオーケストレータ（orchestrator/.venv/bin/orchestrator、
      bin/start.sh参照）を launchd の per-user LaunchAgent として常駐化するための
      設定サンプル。macOS再起動・ログアウト・プロセスクラッシュ時にも
      RunAtLoad + KeepAlive で自動的に起動・再起動される

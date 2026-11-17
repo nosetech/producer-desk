@@ -69,6 +69,9 @@ err() {
     echo "[start] $*" >&2
 }
 
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+
 check_not_running() {
     local name="$1" pid_file="$2"
     if [ -f "${pid_file}" ]; then
@@ -83,48 +86,21 @@ check_not_running() {
     fi
 }
 
+# launchd（bin/service.sh）で常時起動を登録済みの場合は二重起動になるため拒否する
+for _svc in orchestrator dashboard; do
+    if launchd_registered "${_svc}"; then
+        err "${_svc} は launchd（bin/service.sh）に登録済みです。./bin/service.sh status / restart で操作してください（手動起動したい場合は ./bin/service.sh stop または uninstall を先に実行してください）。"
+        exit 1
+    fi
+done
+
 check_not_running "orchestrator" "${ORCHESTRATOR_PID_FILE}"
 check_not_running "dashboard" "${DASHBOARD_PID_FILE}"
 
 mkdir -p "${LOG_DIR}"
 
-if [ -f "${ROOT_DIR}/.env" ]; then
-    log "${ROOT_DIR}/.env を読み込みます"
-    set -a
-    # shellcheck disable=SC1091
-    source "${ROOT_DIR}/.env"
-    set +a
-fi
-
-if [ ! -f "${ROOT_DIR}/config/projects.yaml" ]; then
-    err "config/projects.yaml が見つかりません。SETUP.md の手順に従って config/projects.yaml.example から作成してください。"
-    exit 1
-fi
-
-: "${ORCHESTRATOR_PORT:=8787}"
-: "${DASHBOARD_PORT:=3000}"
-: "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
-export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
-
-# dashboardのbind先は1つのアドレスしか取れないため、LAN_IPとTAILSCALE_IPの同時
-# 指定は曖昧になる。黙ってどちらかを選ばず明示的に失敗させる（両方から到達させ
-# たい場合は、どちらも未設定にして全インターフェースで待ち受ける既定動作を使う）。
-if [ -n "${LAN_IP:-}" ] && [ -n "${TAILSCALE_IP:-}" ]; then
-    err "LAN_IP と TAILSCALE_IP は同時に指定できません。どちらか一方のみ設定してください（両方から到達させたい場合は両方とも未設定にしてください）。"
-    exit 1
-fi
-DASHBOARD_BIND_HOST="${TAILSCALE_IP:-${LAN_IP:-}}"
-
-if [ ! -x "${ORCHESTRATOR_DIR}/.venv/bin/orchestrator" ]; then
-    log "orchestrator/.venv が見つからないため作成します..."
-    python3 -m venv "${ORCHESTRATOR_DIR}/.venv"
-    WHEEL_FILE="$(ls "${ORCHESTRATOR_DIR}"/dist/*.whl 2>/dev/null | head -n1 || true)"
-    if [ -z "${WHEEL_FILE}" ]; then
-        err "orchestrator/dist/*.whl が見つかりません。配布パッケージが破損している可能性があります。"
-        exit 1
-    fi
-    "${ORCHESTRATOR_DIR}/.venv/bin/pip" install "${WHEEL_FILE}"
-fi
+load_config || exit 1
+ensure_orchestrator_venv || exit 1
 
 if [ ! -f "${DASHBOARD_DIR}/server.js" ]; then
     err "dashboard/server.js が見つかりません。配布パッケージが破損している可能性があります。"
