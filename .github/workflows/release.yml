@@ -124,7 +124,7 @@ jobs:
           echo "${VERSION}" > "${ROOT}/VERSION"
           # SETUP.mdが案内するファイルの欠落を検知する（欠落したままリリースしない）
           for f in config/projects.yaml.example config/litellm_config.yaml.example \
-                   bin/start.sh bin/stop.sh bin/litellm_proxy_start.sh bin/litellm_proxy_stop.sh \
+                   bin/start.sh bin/stop.sh bin/lib.sh bin/service.sh bin/litellm_proxy_start.sh bin/litellm_proxy_stop.sh \
                    SETUP.md .env.example VERSION; do
             if [ ! -f "${ROOT}/${f}" ]; then
               echo "::error::配布tarballに必須ファイル ${f} が含まれていません"

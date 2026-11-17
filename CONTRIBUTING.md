@@ -160,16 +160,12 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 
 ### 常時起動（macOS launchd）
 
-`bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、LiteLLM Proxy（上記「LiteLLM Proxyのセットアップ」）と同様にlaunchdのLaunchAgentとして常駐化できる。orchestrator・dashboardの2プロセス構成のため、以下2つのplistサンプルの両方を登録する。**`bin/start.sh`/`bin/stop.sh`とは併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。
+`bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。常時起動の管理スクリプト`service.sh`（issue #318）は**配布パッケージ専用**（[`dist/bin/service.sh`](./dist/bin/service.sh)、使い方は[README.mdの「本体の常時起動」](./README.md#本体の常時起動macos-launchd任意)）で、git clone環境（`next start`で起動する開発構成）向けには提供しない。
 
-- [`dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example`](./dist/scripts/com.nosetech.producer-desk.orchestrator.plist.example)
-- [`dist/scripts/com.nosetech.producer-desk.dashboard.plist.example`](./dist/scripts/com.nosetech.producer-desk.dashboard.plist.example)
-
-基本手順（`~/Library/LaunchAgents/`へのコピー、`/path/to/producer-desk`・`/path/to/node`・`PATH`・`.env`由来の環境変数の書き換え、`launchctl load -w`/`unload`）は配布パッケージ向けの[README.mdの「本体の常時起動」](./README.md#本体の常時起動macos-launchd任意)と共通で、各plist冒頭のコメントにも詳細がある（コピー元のみ`scripts/`ではなく`dist/scripts/`に読み替える）。git clone環境では以下の差分に注意すること。
-
-- 事前に`./bin/start.sh`を一度手動実行してから`./bin/stop.sh`で停止し、`orchestrator/.venv`とdashboardのビルド成果物（`.next`）を作成しておく（`bin/start.sh`が`npm ci && npm run build`とvenv作成の両方を行うため、別途ビルドは不要）。`config/projects.yaml`も作成済みであること
-- `com.nosetech.producer-desk.dashboard.plist`の既定値は配布パッケージ同梱のビルド済み`dashboard/server.js`（Next.js standalone出力）を前提にしているが、git clone環境にはこのファイルが無い（standalone出力の組み立てはリリースCIのみが行う）。`ProgramArguments`を`["/path/to/producer-desk/dashboard/node_modules/.bin/next", "start", "-p", "3000"]`に変更し、`EnvironmentVariables`から`PORT`キーを削除する。LAN公開したい場合は`"-H", "192.168.1.xx"`を引数に追加する（`next start`は`HOSTNAME`環境変数を読まない）
-- `com.nosetech.producer-desk.orchestrator.plist`の`ProgramArguments`（`orchestrator/.venv/bin/orchestrator`）は`pip install -e .`によるeditable installでも同じパスで動作するため読み替え不要。ただし`bin/start.sh`と異なり`orchestrator/venv`（旧命名）へのフォールバックは無い
+- git clone環境で常時起動したい場合は、配布パッケージを展開して運用する（運用インスタンスは配布パッケージ、開発はgit clone、という分担を想定している）
+- `dist/scripts/com.nosetech.producer-desk.{orchestrator,dashboard}.plist.example`は手動登録の参考例として残している。git clone環境で手動登録する場合は、dashboardの`ProgramArguments`を`next start -p <port>`（LAN公開は`-H <IP>`）に読み替え、`EnvironmentVariables`の`PORT`を削除する（`next start`は`PORT`・`HOSTNAME`環境変数を読まない）
+- `dist/bin/start.sh`・`dist/bin/service.sh`の設定読み込みは`dist/bin/lib.sh`で共有している。変更時は両方の挙動が揃うことを`orchestrator/tests/test_service_script.py`で確認する
+- `dev_instance.sh`（確認用インスタンス）は常時起動と独立しており、`pkill`等で名前・ポート検索して止めない方針も変わらない（launchd登録の操作は`service.sh`のみで行う）
 
 ### 運用インスタンスと開発インスタンスの同時起動
 

@@ -192,29 +192,26 @@ TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
 
 ### 本体の常時起動（macOS launchd、任意）
 
-`./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、orchestrator・dashboardの2プロセスをそれぞれlaunchdのper-user LaunchAgentとして常駐化する（両方の登録が必要）。**`./bin/start.sh` / `./bin/stop.sh`とは併用できない**（ポートの二重bind・PIDファイルの不整合が起きるため、どちらか一方のみを使うこと）。手動起動中の場合は先に`./bin/stop.sh`で停止する。
+`./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、同梱の`./bin/service.sh`でorchestrator・dashboardをlaunchdのper-user LaunchAgentとして登録する。**ログイン中のみ動作する**（ログイン前の起動が必要なLaunchDaemonは対象外）。
 
 ```bash
-cp scripts/com.nosetech.producer-desk.orchestrator.plist.example \
-  ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
-cp scripts/com.nosetech.producer-desk.dashboard.plist.example \
-  ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
+./bin/service.sh install     # plist生成・登録・起動（再実行で設定変更を反映）
+./bin/service.sh status      # 登録・稼働状況
+./bin/service.sh restart     # 再起動（.env / config/projects.yaml の変更反映に使う）
+./bin/service.sh stop        # 停止（次回ログインまたは start まで停止）
+./bin/service.sh start       # 停止中のサービスを起動
+./bin/service.sh uninstall   # 停止・登録解除・plist削除
 ```
 
-コピー後、各ファイル冒頭のコメントに従って以下を書き換える。launchdは対話シェルのPATH・`.env`を引き継がないため、絶対パスや環境変数の明示が必要。
+- `install`は、`config/projects.yaml`が無い場合（クラッシュループになるため）、`gh`・`claude`・`node`が見つからない場合、`LAN_IP`と`TAILSCALE_IP`を同時指定した場合に失敗する。`orchestrator/.venv`が無ければ`start.sh`と同様に作成する
+- launchd下の`PATH`には、`install`実行時に`gh`・`claude`・`node`のあるディレクトリが自動で設定される（別のPATHを使いたい場合は環境変数`SERVICE_PATH`で明示する）。`.env`は`start.sh`と同じ処理で起動時に読み込まれるため、`SLACK_WEBHOOK_URL`等の転記は不要。`ORCHESTRATOR_PORT`・`DASHBOARD_PORT`・`LAN_IP`・`TAILSCALE_IP`の扱いも`start.sh`と同じ（dashboardの`ORCHESTRATOR_URL`は実行時の環境変数のため、ポートを変えても再ビルドは不要）
+- クラッシュ時は自動再起動される（再起動間隔は30秒以上に制限される）
+- ログは`start.sh`と同様に`logs/orchestrator.log`・`logs/dashboard.log`が日次ローテーションされる。起動前のエラー（`.env`や`projects.yaml`の不備等）は`logs/<orchestrator|dashboard>.launchd.stderr.log`に出る
+- **`./bin/start.sh` / `./bin/stop.sh`とは併用できない**。launchd登録中に`start.sh`を実行した場合、`start.sh`手動起動中に`service.sh install`/`start`/`restart`を実行した場合は、案内メッセージを出して失敗する。手動運用に戻す場合は`./bin/service.sh uninstall`を実行する
+- Macがスリープしている間は、LAN・Tailscale経由でdashboardに到達できない。常時利用する場合は、システム設定の省エネ設定でスリープを抑止する（または`caffeinate`を使う）こと（本スクリプトの対象外）
+- `bin/dev_instance.sh`による確認用インスタンス（git clone環境専用、18000番台ポート）とは独立しており、干渉しない
 
-- 両ファイル: `/path/to/producer-desk`を展開先の絶対パスに
-- dashboard: `/path/to/node`を`which node`の結果に
-- orchestrator: `EnvironmentVariables`の`PATH`を、`which gh`・`which claude`のあるディレクトリを含む値に。`.env`で設定していた`SLACK_WEBHOOK_URL`等も同じ箇所へ転記（未転記でもエラーにならず、Slack通知だけが無言で無効になる）
-
-`config/projects.yaml`を作成済みであることを確認してから読み込む。
-
-```bash
-launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.orchestrator.plist
-launchctl load -w ~/Library/LaunchAgents/com.nosetech.producer-desk.dashboard.plist
-```
-
-停止・解除は`launchctl unload ~/Library/LaunchAgents/com.nosetech.producer-desk.<orchestrator|dashboard>.plist`で行う。
+手動でlaunchdに登録する場合の参考として、`install`が生成するplistの元になる例を`scripts/com.nosetech.producer-desk.orchestrator.plist.example`・`scripts/com.nosetech.producer-desk.dashboard.plist.example`に残している（通常は`service.sh`を使うこと）。
 
 ## 6. 使い方
 
