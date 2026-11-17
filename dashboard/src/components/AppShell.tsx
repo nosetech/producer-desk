@@ -206,6 +206,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const [planEpoch, setPlanEpoch] = useState(0);
+  const [planRequests, setPlanRequests] = useState<readonly string[]>([]);
+  const markPlanRequested = useCallback((r: string, n: number) => {
+    const key = `${r}#${n}`;
+    setPlanRequests((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    setPlanEpoch((e) => e + 1);
+  }, []);
+  const clearPlanRequested = useCallback((r: string, n: number) => {
+    const key = `${r}#${n}`;
+    setPlanRequests((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : prev,
+    );
+  }, []);
+
   const openNewTask = useCallback((repo: string, inbox?: InboxItem) => {
     setComposerMode("new");
     setNewTaskRepo(repo);
@@ -236,6 +250,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         showToast,
         openReply,
         openNewTask,
+        planEpoch,
+        planRequests,
+        markPlanRequested,
+        clearPlanRequested,
       }}
     >
       <div className={styles.shell}>

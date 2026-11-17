@@ -488,7 +488,7 @@ export default function ComposerBar({
   const [plan, dispatchPlan] = useReducer(planReducer, undefined, () =>
     initialPlanState(),
   );
-  const { jobs, startJob, showToast } = useApp();
+  const { jobs, startJob, showToast, markPlanRequested } = useApp();
   const restorePanelRef = usePersistedSize(
     "composerPanel",
     ["width", "height"],
@@ -949,6 +949,8 @@ export default function ComposerBar({
                     refresh={planJobs.refresh}
                     inboxIssueNumber={inboxTarget?.number}
                     onRequested={() => {
+                      if (inboxTarget)
+                        markPlanRequested(newRepo, inboxTarget.number);
                       onClose();
                       showToast(
                         "依頼しました。完了するとSlackに通知します",
