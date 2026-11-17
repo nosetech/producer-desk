@@ -227,17 +227,42 @@ def build_inbox(issues: list[IssueSummary]) -> list[InboxItem]:
     return items
 
 
+def latest_ci_wait_pr_number(issue: IssueSummary) -> int | None:
+    """issueの最新コメントがCI待機マーカー付きのAgent Runner投稿であれば対象PR番号を返す。
+
+    最新コメントのみを見る。CI待機後に別の（マーカーの無い）コメントが追加されて
+    いれば、そのCI待機は既に解消済み（後続処理が進んだ、または人間が介入した）と
+    みなせるため。
+    """
+    # agent_runner / github_client は本モジュールをimportするため、循環回避で遅延import
+    from orchestrator.agent_runner import extract_ci_wait_marker
+    from orchestrator.github_client import BOT_COMMENT_MARKER
+
+    if not issue.comments:
+        return None
+    body = issue.comments[-1].get("body", "")
+    if BOT_COMMENT_MARKER not in body:
+        return None
+    return extract_ci_wait_marker(body)
+
+
 def _is_orphaned_in_progress(
     issue: IssueSummary, label: str, is_dispatch_active: IsDispatchActiveFn | None
 ) -> bool:
     """`status:in-progress`のissueなのにディスパッチキュー上で動いていないかを判定する。
+
+    最新コメントがCI待機マーカー付きの場合は、Agent Runnerが意図的にターンを終えて
+    オーケストレータのポーリングによる再開を待つ正常状態のため孤立とみなさない
+    （issue #314。`ci_watcher.build_in_progress_breakdown`のCI待ちと同じ判定）。
 
     `is_dispatch_active`が渡されない場合（テスト・呼び出し元がディスパッチ状態を
     持たない場合）は判定不能として常にFalseを返す（誤検知を避ける）。
     """
     if is_dispatch_active is None or label != STATUS_IN_PROGRESS:
         return False
-    return not is_dispatch_active(issue.repo, issue.number)
+    if is_dispatch_active(issue.repo, issue.number):
+        return False
+    return latest_ci_wait_pr_number(issue) is None
 
 
 @dataclass
@@ -348,8 +373,12 @@ def aggregate(
                 label=latest_label,
                 number=latest_issue.number,
                 title=latest_issue.title,
-                is_orphaned=_is_orphaned_in_progress(
-                    latest_issue, latest_label, is_dispatch_active
+                # 理由不明の孤立issueが1件でもあればTrue（`in_progress_breakdown.orphaned > 0`
+                # と一致させる。直近更新の1件だけでは判定しない、issue #314）
+                is_orphaned=any(
+                    _is_orphaned_in_progress(issue, label, is_dispatch_active)
+                    for issue, label in labeled
+                    if issue.state == "OPEN"
                 ),
                 counts=repo_counts,
                 fetched_at=fetched_at,
