@@ -281,7 +281,7 @@ export default function PlanComposer({
     title: string,
     body: string,
     jobId: string,
-  ) => void;
+  ) => void | Promise<void>;
   /** 計画を残したままパネルを閉じる。 */
   onClose: () => void;
   onError: (message: string) => void;
@@ -405,7 +405,15 @@ export default function PlanComposer({
 
   function approve(dispatchKind: Dispatch) {
     if (!job) return;
-    onApprove(dispatchKind, state.title.trim(), state.body.trim(), job.id);
+    // 完了まで待ち、その間はpendingで再クリックを防ぐ。失敗はonErrorへ流し、編集内容は保持する。
+    void act(async () => {
+      await onApprove(
+        dispatchKind,
+        state.title.trim(),
+        state.body.trim(),
+        job.id,
+      );
+    });
   }
 
   const ph = view.phase;
@@ -764,47 +772,59 @@ export default function PlanComposer({
                   type="button"
                   className={styles.primaryBtn}
                   disabled={!approvable}
+                  aria-busy={pending}
                   onClick={() => approve("immediate")}
                 >
-                  <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    style={{ flex: "none" }}
-                  >
-                    <path d="M20 6 9 17l-5-5" />
-                  </svg>
-                  承認して登録 · 今すぐ着手
+                  {pending ? (
+                    <Spinner />
+                  ) : (
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      style={{ flex: "none" }}
+                    >
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  )}
+                  {pending ? "登録中…" : "承認して登録 · 今すぐ着手"}
                 </button>
               )}
               <button
                 type="button"
                 className={inline ? styles.primaryBtn : styles.laterBtn}
                 disabled={!approvable}
+                aria-busy={pending}
                 onClick={() => approve("queued")}
               >
-                <svg
-                  width="15"
-                  height="15"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ flex: "none" }}
-                >
-                  <rect x="3" y="5" width="18" height="16" rx="2" />
-                  <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
-                </svg>
-                {inline
-                  ? "承認して登録（status:todo）"
-                  : "承認して登録 · あとで着手（todo）"}
+                {pending ? (
+                  <Spinner />
+                ) : (
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ flex: "none" }}
+                  >
+                    <rect x="3" y="5" width="18" height="16" rx="2" />
+                    <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
+                  </svg>
+                )}
+                {pending
+                  ? "登録中…"
+                  : inline
+                    ? "承認して登録（status:todo）"
+                    : "承認して登録 · あとで着手（todo）"}
               </button>
             </div>
             <div className={styles.actionRow} style={{ gap: 8 }}>

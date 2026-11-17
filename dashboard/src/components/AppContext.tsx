@@ -56,6 +56,15 @@ export interface AppContextValue {
   ) => void;
   /** 新規タスク作成を開く。inbox項目を渡すと「AIに計画してもらう」をその項目を入力元に起動する（issue #288）。 */
   openNewTask: (repo: string, inbox?: InboxItem) => void;
+  /**
+   * inbox項目の計画を依頼した直後の通知（issue #315）。ComposerBarとInboxSectionは計画ジョブを
+   * 別々にポーリングしているため、依頼直後にinbox側へ即時反映させる。
+   * `planRequests`は依頼済みだがinbox側のジョブ一覧にまだ現れていない項目（`repo#番号`）。
+   */
+  planEpoch: number;
+  planRequests: readonly string[];
+  markPlanRequested: (repo: string, inboxNumber: number) => void;
+  clearPlanRequested: (repo: string, inboxNumber: number) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);

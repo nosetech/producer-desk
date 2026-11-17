@@ -457,7 +457,8 @@ function InboxPlanPanel({
         );
         onApproved();
       } catch (e) {
-        showToast(e instanceof Error ? e.message : String(e), true);
+        // PlanComposerのact()がpendingを解除しエラートーストを出す（編集内容は保持）。
+        throw e instanceof Error ? e : new Error(String(e));
       }
     },
     [repo, item.number, showToast, onApproved],
@@ -480,7 +481,7 @@ function InboxPlanPanel({
         inboxIssueNumber={item.number}
         refresh={refresh}
         onApprove={(_dispatch, title, body, jobId) =>
-          void approve(title, body, jobId)
+          approve(title, body, jobId)
         }
         onClose={onClose}
         onError={(message) => showToast(message, true)}
@@ -499,7 +500,13 @@ export default function InboxSection({
   /** 登録・編集・削除の成功後に、一覧を再取得させる。 */
   onChanged: () => void;
 }) {
-  const { openNewTask, showToast } = useApp();
+  const {
+    openNewTask,
+    showToast,
+    planEpoch,
+    planRequests,
+    clearPlanRequested,
+  } = useApp();
   const [planOpen, setPlanOpen] = useState<number | null>(null);
   const closePlan = useCallback(() => setPlanOpen(null), []);
   // 計画の完了・失敗は、控えめなトーストで知らせる（Slackにも通知済み）。
@@ -524,6 +531,15 @@ export default function InboxSection({
       .filter((j) => j.inboxIssueNumber !== null)
       .map((j) => [j.inboxIssueNumber as number, j]),
   );
+  // 他の画面（新規タスクパネル）で計画を依頼した直後に、ポーリングを待たず再取得する（issue #315）。
+  const { refresh: refreshPlanJobs } = planJobs;
+  useEffect(() => {
+    if (planEpoch > 0) void refreshPlanJobs();
+  }, [planEpoch, refreshPlanJobs]);
+  // ジョブが一覧に現れた項目は「依頼中」を解除する。
+  useEffect(() => {
+    for (const n of planByInbox.keys()) clearPlanRequested(repo, n);
+  });
   const [open, setOpen] = useState(true);
   const [kind, setKind] = useState<InboxKind>(DEFAULT_INBOX_KIND);
   const [title, setTitle] = useState("");
@@ -753,18 +769,32 @@ export default function InboxSection({
                           {formatAbsoluteTime(it.created_at)}
                         </time>
                         <div className={styles.actions}>
-                          {!planByInbox.has(it.number) && (
-                            <button
-                              type="button"
-                              className={styles.plan}
-                              aria-label={`${repo} #${it.number} を計画する`}
-                              title="AIに計画してもらう（承認するとissueに昇格）"
-                              onClick={() => openNewTask(repo, it)}
-                            >
-                              <Icon d={PATHS.sparkle} />
-                              計画する
-                            </button>
-                          )}
+                          {!planByInbox.has(it.number) &&
+                            planRequests.includes(`${repo}#${it.number}`) && (
+                              <button
+                                type="button"
+                                className={styles.plan}
+                                disabled
+                                aria-busy="true"
+                                aria-label={`${repo} #${it.number} の計画を依頼中`}
+                              >
+                                <Spinner size={12} />
+                                依頼中…
+                              </button>
+                            )}
+                          {!planByInbox.has(it.number) &&
+                            !planRequests.includes(`${repo}#${it.number}`) && (
+                              <button
+                                type="button"
+                                className={styles.plan}
+                                aria-label={`${repo} #${it.number} を計画する`}
+                                title="AIに計画してもらう（承認するとissueに昇格）"
+                                onClick={() => openNewTask(repo, it)}
+                              >
+                                <Icon d={PATHS.sparkle} />
+                                計画する
+                              </button>
+                            )}
                           {planByInbox.has(it.number) &&
                             planByInbox.get(it.number)!.status !== "queued" &&
                             (planByInbox.get(it.number)!.status !== "running" ||
