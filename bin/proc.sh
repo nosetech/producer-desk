@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # backend_start.sh / backend_stop.sh / frontend_start.sh / frontend_stop.sh
 # （issue #326、thoth等から個別に起動・停止するためのスクリプト）が共有する処理。
-# 直接実行せず`source`して使う。一括起動の bin/start.sh / bin/stop.sh は挙動を
-# 変えないよう、このファイルは参照せず独自に同等の処理を持つ（PIDファイル・ログ
-# パス・環境変数はすべて一括スクリプトと同一）。
+# 直接実行せず`source`して使う。一括起動の bin/start.sh / bin/stop.sh は
+# これらの個別スクリプトを順に呼び出すだけで、このファイルは直接参照しない
+# （PIDファイル・ログパス・環境変数は一括・個別で共通）。
 #
 # 呼び出し側が事前に定義するもの:
 #   SCRIPT_TAG   メッセージ先頭の[...]に出すスクリプト名（例: backend_start）

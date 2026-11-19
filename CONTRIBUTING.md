@@ -164,7 +164,7 @@ thothなどプロセスごとに起動・停止するツールへ登録する場
 
 - `./bin/backend_start.sh` / `./bin/backend_stop.sh`: orchestratorのみ
 - `./bin/frontend_start.sh` / `./bin/frontend_stop.sh`: dashboardのみ。`SKIP_BUILD=1`を付けると`npm ci`とビルドを省略して`next start`だけ行う（`dashboard/.next`・`node_modules`が無ければエラー。コード更新後は付けないこと）
-- PIDファイル・ログ・環境変数は`bin/start.sh` / `bin/stop.sh`と同一（共通処理は`bin/proc.sh`。一括スクリプトは変更していない）。一括と個別を混在させて停止できる
+- PIDファイル・ログ・環境変数は`bin/start.sh` / `bin/stop.sh`と同一（共通処理は`bin/proc.sh`。一括の`start.sh`は backend→frontend、`stop.sh`は frontend→backend の順に個別スクリプトを呼ぶ）。一括と個別を混在させて停止できる
 - 配布版にも同名のスクリプトが`dist/bin/`にある（launchd登録中は併用不可）
 
 ### 常時起動（macOS launchd）
