@@ -216,6 +216,18 @@ TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
 ./bin/stop.sh
 ```
 
+orchestrator（バックエンド）とdashboard（フロントエンド）を片方だけ起動・停止したい場合（thothのように、プロセスごとに起動・停止するアプリ管理ツールへ登録する場合など。issue #326）は、個別スクリプトを使います。
+
+```bash
+./bin/backend_start.sh   # orchestratorのみ起動（バックグラウンドで起動して即終了）
+./bin/backend_stop.sh    # orchestratorのみ停止
+./bin/frontend_start.sh  # dashboardのみ起動（npm ci + ビルド + next start）
+./bin/frontend_stop.sh   # dashboardのみ停止
+SKIP_BUILD=1 ./bin/frontend_start.sh  # npm ci・ビルドを省略して再起動のみ（ビルド済みの場合のみ）
+```
+
+PIDファイル（`logs/orchestrator.pid`・`logs/dashboard.pid`）・ログ・環境変数は`./bin/start.sh` / `./bin/stop.sh`と同一のため、一括と個別を混在させても停止できます（例: 個別に起動したものを`./bin/stop.sh`で止める）。
+
 ### 本体の常時起動（macOS launchd、任意）
 
 `./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しません。自動復旧させたい場合は、同梱の`./bin/service.sh`でorchestrator・dashboardをlaunchdのper-user LaunchAgentとして登録します。**ログイン中のみ動作する**（ログイン前の起動が必要なLaunchDaemonは対象外です）。

@@ -18,7 +18,7 @@ dashboard/      ダッシュボード Web UI（Next.js）
 orchestrator/   オーケストレータ（Python、GitHub Issuesポーリング・ディスパッチ）
 config/         設定ファイル（projects.yaml 等。実データはコミットしない）
 logs/           Agent Runner実行ログ・bin/start.shのログ/PIDファイル（コミットしない）
-bin/            開発環境向け起動・停止スクリプト（bin/start.sh / bin/stop.sh）
+bin/            開発環境向け起動・停止スクリプト（bin/start.sh / bin/stop.sh）（個別: backend_*.sh / frontend_*.sh）
 dist/           配布パッケージ（tarball）向けレイアウト。開発環境向けのbin/とは別物（docs/basic-design.md 7章参照）。
                 運用スクリプト（dist/scripts/、config/usage.dbの日次バックアップ・add_project.sh等）は
                 配布パッケージ同梱用と共通の実体で、git clone環境でもこちらを直接使う（二重管理を避けるため）
@@ -157,6 +157,15 @@ LAN_IP=192.168.1.xx ./bin/start.sh
 
 - PIDファイルを元にそれぞれのプロセスへ`SIGTERM`を送る。10秒待っても終了しない場合は`SIGKILL`で強制終了する
 - PIDファイルが無い、または記録されたプロセスが既に終了している場合はその旨を表示してエラー終了する（片方だけ起動していた場合、起動している側だけを正しく停止する）
+
+#### バックエンド・フロントエンドの個別起動・停止（issue #326）
+
+thothなどプロセスごとに起動・停止するツールへ登録する場合や、片方だけ再起動したい場合は、個別スクリプトを使う。いずれもバックグラウンドで起動して即終了する（フォアグラウンド常駐ではない）。
+
+- `./bin/backend_start.sh` / `./bin/backend_stop.sh`: orchestratorのみ
+- `./bin/frontend_start.sh` / `./bin/frontend_stop.sh`: dashboardのみ。`SKIP_BUILD=1`を付けると`npm ci`とビルドを省略して`next start`だけ行う（`dashboard/.next`・`node_modules`が無ければエラー。コード更新後は付けないこと）
+- PIDファイル・ログ・環境変数は`bin/start.sh` / `bin/stop.sh`と同一（共通処理は`bin/proc.sh`。一括の`start.sh`は backend→frontend、`stop.sh`は frontend→backend の順に個別スクリプトを呼ぶ）。一括と個別を混在させて停止できる
+- 配布版にも同名のスクリプトが`dist/bin/`にある（launchd登録中は併用不可）
 
 ### 常時起動（macOS launchd）
 

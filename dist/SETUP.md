@@ -190,6 +190,8 @@ TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
 ./bin/stop.sh
 ```
 
+orchestratorとdashboardを個別に起動・停止したい場合（issue #326）は`./bin/backend_start.sh` / `./bin/backend_stop.sh`（orchestrator）、`./bin/frontend_start.sh` / `./bin/frontend_stop.sh`（dashboard）を使う。PIDファイル・ログ・`.env`の扱いは`start.sh` / `stop.sh`と同一で、一括と個別を混在させても停止できる。launchd登録中は`start.sh`と同様に併用できず、案内を出して失敗する。
+
 ### 本体の常時起動（macOS launchd、任意）
 
 `./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しない。自動復旧させたい場合は、同梱の`./bin/service.sh`でorchestrator・dashboardをlaunchdのper-user LaunchAgentとして登録する。**ログイン中のみ動作する**（ログイン前の起動が必要なLaunchDaemonは対象外）。
