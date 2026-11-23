@@ -23,6 +23,7 @@ export default function ImageLightbox({
   onClose: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -34,6 +35,26 @@ export default function ImageLightbox({
     document.body.style.overflow = "hidden";
     closeRef.current?.focus();
     function onKey(e: KeyboardEvent) {
+      if (e.key === "Tab") {
+        // フォーカスをライトボックス内（閉じるボタン・リンク）に留める
+        const items =
+          overlayRef.current?.querySelectorAll<HTMLElement>("button, a[href]");
+        if (!items || items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        const active = document.activeElement;
+        if (!overlayRef.current?.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        } else if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
       if (e.key !== "Escape") return;
       e.stopImmediatePropagation();
       e.preventDefault();
@@ -50,6 +71,7 @@ export default function ImageLightbox({
   const label = alt || "添付画像";
   return createPortal(
     <div
+      ref={overlayRef}
       className={styles.overlay}
       role="dialog"
       aria-modal="true"

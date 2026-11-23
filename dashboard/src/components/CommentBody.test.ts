@@ -66,7 +66,7 @@ describe("CommentBody", () => {
 
   it("添付画像は拡大表示用のボタン（aria-label付き）で包まれる", () => {
     const html = render(`![shot](${ASSET})`);
-    expect(html).toContain('aria-label="画像を拡大表示"');
+    expect(html).toContain('aria-label="画像を拡大表示');
     expect(html).toContain("<button");
   });
 

@@ -36,9 +36,14 @@ export default function AttachmentImage({
       <button
         type="button"
         className={styles.zoomTrigger}
-        aria-label="画像を拡大表示"
+        aria-label={alt ? `画像を拡大表示: ${alt}` : "画像を拡大表示"}
         title="クリックで拡大"
-        onClick={() => setOpen(true)}
+        onClick={(e) => {
+          // リンクで包まれた画像でも、リンク遷移を起こさず拡大だけを行う
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen(true);
+        }}
       >
         {/* 添付画像は動的なプロキシURLのため next/image の最適化対象にしない */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
