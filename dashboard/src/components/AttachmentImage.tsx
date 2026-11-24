@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { attachmentProxyUrl } from "@/lib/comment";
 import styles from "./CommentBody.module.css";
+import ImageLightbox from "./ImageLightbox";
 
 /**
  * 添付画像。取得に失敗した場合（Privateリポジトリでトークン未設定・権限なし等、issue #268）は
@@ -16,6 +17,7 @@ export default function AttachmentImage({
   alt: string;
 }) {
   const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
   if (failed) {
     return (
       <span className={styles.imageError} role="img" aria-label={alt}>
@@ -28,15 +30,39 @@ export default function AttachmentImage({
       </span>
     );
   }
+  const proxied = attachmentProxyUrl(url);
   return (
-    // 添付画像は動的なプロキシURLのため next/image の最適化対象にしない
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      className={styles.media}
-      src={attachmentProxyUrl(url)}
-      alt={alt}
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
+    <>
+      <button
+        type="button"
+        className={styles.zoomTrigger}
+        aria-label={alt ? `画像を拡大表示: ${alt}` : "画像を拡大表示"}
+        title="クリックで拡大"
+        onClick={(e) => {
+          // リンクで包まれた画像でも、リンク遷移を起こさず拡大だけを行う
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen(true);
+        }}
+      >
+        {/* 添付画像は動的なプロキシURLのため next/image の最適化対象にしない */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          className={styles.media}
+          src={proxied}
+          alt={alt}
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      </button>
+      {open && (
+        <ImageLightbox
+          src={proxied}
+          alt={alt}
+          href={proxied}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }

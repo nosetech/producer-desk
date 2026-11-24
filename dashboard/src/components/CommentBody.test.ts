@@ -64,6 +64,12 @@ describe("CommentBody", () => {
     expect(html).not.toContain("example.com/a.png");
   });
 
+  it("添付画像は拡大表示用のボタン（aria-label付き）で包まれる", () => {
+    const html = render(`![shot](${ASSET})`);
+    expect(html).toContain('aria-label="画像を拡大表示');
+    expect(html).toContain("<button");
+  });
+
   it("従来の**見出し**と箇条書きを崩さず描画する", () => {
     const html = render("**見出し**\n\n- a\n- b", "quote");
     expect(html).toContain("<strong>見出し</strong>");
