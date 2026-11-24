@@ -3,6 +3,7 @@ export const NAV_SHORTCUTS = [
   { key: "d", href: "/", label: "ダッシュボード" },
   { key: "i", href: "/projects", label: "issue一覧" },
   { key: "p", href: "/prompts", label: "プロンプト設定" },
+  { key: "s", href: "/snippets", label: "定型文" },
 ] as const;
 
 export interface ShortcutEventLike {

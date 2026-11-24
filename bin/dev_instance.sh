@@ -269,6 +269,7 @@ cmd_start() {
     export PLAN_JOBS_PATH="${PLAN_JOBS_PATH:-${DEV_DIR}/plan_jobs.json}"
     export EXECUTION_OVERRIDES_PATH="${EXECUTION_OVERRIDES_PATH:-${DEV_DIR}/execution_overrides.json}"
     export ORCHESTRATOR_PROMPTS_PATH="${ORCHESTRATOR_PROMPTS_PATH:-${DEV_DIR}/prompts.yaml}"
+    export ORCHESTRATOR_SNIPPETS_PATH="${ORCHESTRATOR_SNIPPETS_PATH:-${DEV_DIR}/snippets.yaml}"
     # 実リポジトリを書き込み不可で参照する（下記のORCHESTRATOR_READ_ONLY）。ファイルは
     # 毎回生成し直す（古いプレースホルダ設定の持ち越しを防ぐ）。
     if [ "${PROJECTS_CONFIG_PATH}" = "${DEV_DIR}/projects.yaml" ]; then

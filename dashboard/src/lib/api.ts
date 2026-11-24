@@ -11,6 +11,7 @@ import {
   type InstructAction,
   type InstructResult,
   type IssueDetail,
+  type Snippet,
   type PrCandidate,
   type ProgressResponse,
   type ProjectIssuesResponse,
@@ -54,6 +55,41 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
     throw new Error(message);
   }
   return data as T;
+}
+
+/** 定型文一覧（issue #323）。 */
+export function fetchSnippets(): Promise<{ snippets: Snippet[] }> {
+  return fetch("/api/snippets", { cache: "no-store" }).then((res) =>
+    parseJsonOrThrow<{ snippets: Snippet[] }>(res),
+  );
+}
+
+/** 定型文の追加（`id`なし）・更新。 */
+export function saveSnippet(
+  input: { title: string; body: string },
+  id?: string,
+): Promise<Snippet> {
+  return fetch(id ? `/api/snippets/${encodeURIComponent(id)}` : "/api/snippets", {
+    method: id ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  }).then((res) => parseJsonOrThrow<Snippet>(res));
+}
+
+export function deleteSnippet(id: string): Promise<{ snippets: Snippet[] }> {
+  return fetch(`/api/snippets/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }).then((res) => parseJsonOrThrow<{ snippets: Snippet[] }>(res));
+}
+
+export function reorderSnippets(
+  ids: string[],
+): Promise<{ snippets: Snippet[] }> {
+  return fetch("/api/snippets/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  }).then((res) => parseJsonOrThrow<{ snippets: Snippet[] }>(res));
 }
 
 export function fetchState(): Promise<AggregatedState> {

@@ -2792,3 +2792,80 @@ def test_list_issues_includes_repo_labels_or_null_on_failure() -> None:
         assert body["labels"] is None
     finally:
         server.shutdown()
+
+
+# --- 定型文（issue #323） ---
+
+
+def test_snippets_crud_and_reorder() -> None:
+    server = _prompt_server()
+    try:
+        empty_status, empty = _get(server, "/api/snippets")
+        s1, a = _request(server, "POST", "/api/snippets", {"title": "A", "body": "本文A"})
+        _, b = _request(server, "POST", "/api/snippets", {"title": "B", "body": "本文B"})
+        s2, updated = _request(
+            server, "PUT", f"/api/snippets/{a['id']}", {"title": "A2", "body": "x"}
+        )
+        s3, ordered = _request(server, "PUT", "/api/snippets/order", {"ids": [b["id"], a["id"]]})
+        s4, after_delete = _request(server, "DELETE", f"/api/snippets/{b['id']}")
+        _, listed = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert (empty_status, empty) == (200, {"snippets": []})
+    assert s1 == 201 and a["title"] == "A"
+    assert s2 == 200 and updated == {"id": a["id"], "title": "A2", "body": "x"}
+    assert s3 == 200 and [s["id"] for s in ordered["snippets"]] == [b["id"], a["id"]]
+    assert s4 == 200 and after_delete["snippets"] == [updated]
+    assert listed["snippets"] == [updated]
+
+
+def test_snippet_validation_and_not_found_errors() -> None:
+    server = _prompt_server()
+    try:
+        invalid = _request(server, "POST", "/api/snippets", {"title": "", "body": ""})
+        missing_put = _request(server, "PUT", "/api/snippets/abc123", {"title": "t", "body": "b"})
+        missing_delete = _request(server, "DELETE", "/api/snippets/abc123")
+        stale_order = _request(server, "PUT", "/api/snippets/order", {"ids": ["abc123"]})
+        not_object = _request(server, "POST", "/api/snippets", [])  # type: ignore[arg-type]
+    finally:
+        server.shutdown()
+
+    assert invalid[0] == 400
+    assert "タイトルが空です" in invalid[1]["errors"]
+    assert missing_put[0] == 404
+    assert missing_delete[0] == 404
+    assert stale_order[0] == 409
+    assert not_object[0] == 400
+
+
+def test_get_snippets_returns_empty_for_broken_yaml(_isolated_snippets_path) -> None:
+    _isolated_snippets_path.write_text("snippets: [unclosed", encoding="utf-8")
+    server = _prompt_server()
+    try:
+        status, body = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert (status, body) == (200, {"snippets": []})
+
+
+def test_snippet_writes_rejected_in_read_only_mode(_isolated_snippets_path) -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue, read_only=True
+    )
+    try:
+        results = [
+            _request(server, "POST", "/api/snippets", {"title": "t", "body": "b"}),
+            _request(server, "PUT", "/api/snippets/abc123", {"title": "t", "body": "b"}),
+            _request(server, "PUT", "/api/snippets/order", {"ids": []}),
+            _request(server, "DELETE", "/api/snippets/abc123"),
+        ]
+        list_status, _ = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert [status for status, _ in results] == [403, 403, 403, 403]
+    assert list_status == 200
+    assert not _isolated_snippets_path.exists()
