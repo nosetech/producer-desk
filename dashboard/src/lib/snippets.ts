@@ -23,24 +23,46 @@ export function insertAtCursor(
   };
 }
 
-/** 編集フォームの検証。エラーメッセージの配列を返す（空なら保存可能）。 */
-export function validateSnippetDraft(title: string, body: string): string[] {
-  const errors: string[] = [];
-  if (!title.trim()) errors.push("タイトルが空です");
-  else if (/[\r\n]/.test(title)) errors.push("タイトルに改行は使用できません");
-  else if (title.trim().length > MAX_SNIPPET_TITLE_LENGTH)
-    errors.push(
-      `タイトルは${MAX_SNIPPET_TITLE_LENGTH}文字以内にしてください`,
-    );
-  if (!body.trim()) errors.push("本文が空です");
-  else if (body.length > MAX_SNIPPET_BODY_LENGTH)
-    errors.push(`本文は${MAX_SNIPPET_BODY_LENGTH}文字以内にしてください`);
-  return errors;
+/** 文字数（サロゲートペアを1文字と数える。オーケストレータの`len()`と揃える）。 */
+export function charCount(text: string): number {
+  return [...text].length;
+}
+
+export interface SnippetDraftCheck {
+  ok: boolean;
+  titleError: string | null;
+  bodyError: string | null;
+  titleLength: number;
+  bodyLength: number;
+}
+
+/** 編集フォームの検証（デザイン feature/issue-323-snippets の`_snCheck`に対応）。 */
+export function checkSnippetDraft(
+  title: string,
+  body: string,
+): SnippetDraftCheck {
+  const titleLength = charCount(title);
+  const bodyLength = charCount(body);
+  let titleError: string | null = null;
+  let bodyError: string | null = null;
+  if (!title.trim()) titleError = "タイトルを入力してください";
+  else if (titleLength > MAX_SNIPPET_TITLE_LENGTH)
+    titleError = `タイトルは${MAX_SNIPPET_TITLE_LENGTH}文字以内にしてください（現在 ${titleLength}文字）`;
+  if (!body.trim()) bodyError = "本文を入力してください";
+  else if (bodyLength > MAX_SNIPPET_BODY_LENGTH)
+    bodyError = `本文は${MAX_SNIPPET_BODY_LENGTH.toLocaleString()}文字以内にしてください（現在 ${bodyLength.toLocaleString()}文字）`;
+  return {
+    ok: !titleError && !bodyError,
+    titleError,
+    bodyError,
+    titleLength,
+    bodyLength,
+  };
 }
 
 /** 一覧表示用の本文の先頭1行。 */
 export function firstLine(body: string): string {
-  return body.trimStart().split("\n", 1)[0] ?? "";
+  return body.split("\n").find((line) => line.trim()) ?? "";
 }
 
 /** `ids`の`index`番目を`delta`（±1）だけ移動した新しい配列。範囲外なら同じ配列を返す。 */

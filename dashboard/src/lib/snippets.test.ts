@@ -5,7 +5,8 @@ import {
   firstLine,
   insertAtCursor,
   moveItem,
-  validateSnippetDraft,
+  charCount,
+  checkSnippetDraft,
 } from "./snippets";
 
 describe("insertAtCursor", () => {
@@ -53,37 +54,42 @@ describe("insertAtCursor", () => {
   });
 });
 
-describe("validateSnippetDraft", () => {
+describe("checkSnippetDraft", () => {
   it("有効な入力ではエラーなし", () => {
-    expect(validateSnippetDraft("方針OK", "この方針で進めて")).toEqual([]);
-    expect(
-      validateSnippetDraft(
-        "x".repeat(MAX_SNIPPET_TITLE_LENGTH),
-        "y".repeat(MAX_SNIPPET_BODY_LENGTH),
-      ),
-    ).toEqual([]);
+    expect(checkSnippetDraft("方針OK", "この方針で進めて").ok).toBe(true);
+    const atLimit = checkSnippetDraft(
+      "x".repeat(MAX_SNIPPET_TITLE_LENGTH),
+      "y".repeat(MAX_SNIPPET_BODY_LENGTH),
+    );
+    expect(atLimit.ok).toBe(true);
+    expect(atLimit.titleLength).toBe(MAX_SNIPPET_TITLE_LENGTH);
   });
 
-  it("空・改行・上限超過を検出する", () => {
-    expect(validateSnippetDraft(" ", " ")).toEqual([
-      "タイトルが空です",
-      "本文が空です",
-    ]);
-    expect(validateSnippetDraft("a\nb", "b")).toEqual([
-      "タイトルに改行は使用できません",
-    ]);
-    expect(
-      validateSnippetDraft(
-        "x".repeat(MAX_SNIPPET_TITLE_LENGTH + 1),
-        "y".repeat(MAX_SNIPPET_BODY_LENGTH + 1),
-      ),
-    ).toHaveLength(2);
+  it("空・上限超過を検出する", () => {
+    const empty = checkSnippetDraft(" ", " ");
+    expect(empty.titleError).toBe("タイトルを入力してください");
+    expect(empty.bodyError).toBe("本文を入力してください");
+    const over = checkSnippetDraft(
+      "x".repeat(MAX_SNIPPET_TITLE_LENGTH + 1),
+      "y".repeat(MAX_SNIPPET_BODY_LENGTH + 1),
+    );
+    expect(over.ok).toBe(false);
+    expect(over.titleError).toBe(
+      "タイトルは50文字以内にしてください（現在 51文字）",
+    );
+    expect(over.bodyError).toBe(
+      "本文は2,000文字以内にしてください（現在 2,001文字）",
+    );
+  });
+
+  it("サロゲートペアは1文字として数える", () => {
+    expect(charCount("😀a")).toBe(2);
   });
 });
 
 describe("firstLine / moveItem", () => {
   it("本文の先頭1行を返す", () => {
-    expect(firstLine("\n 一行目\n二行目")).toBe("一行目");
+    expect(firstLine("\n \n一行目\n二行目")).toBe("一行目");
   });
 
   it("要素を前後に移動し、範囲外は変更しない", () => {

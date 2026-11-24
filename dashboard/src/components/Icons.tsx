@@ -121,13 +121,19 @@ export function ShieldIcon({ size }: { size: number }) {
   );
 }
 
-export function CheckIcon({ size }: { size: number }) {
+export function CheckIcon({
+  size,
+  strokeWidth = 2.8,
+}: {
+  size: number;
+  strokeWidth?: number;
+}) {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      strokeWidth="2.8"
+      strokeWidth={strokeWidth}
       style={{ flex: "none" }}
       aria-hidden="true"
       {...BASE}
@@ -237,6 +243,89 @@ export function ChevronLeftIcon({ size }: { size: number }) {
       {...BASE}
     >
       <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+// 定型文（issue #323、デザイン feature/issue-323-snippets のナビゲーション・空状態のアイコン）。
+export function SnippetIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" />
+      <path d="M8 8h8M8 12h5" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.1"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+export function AlertCircleIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.3"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v4M12 16h.01" />
+    </svg>
+  );
+}
+
+export function ChevronUpIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.4"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="m18 15-6-6-6 6" />
+    </svg>
+  );
+}
+
+export function ChevronDownIcon({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      strokeWidth="2.4"
+      style={{ flex: "none" }}
+      aria-hidden="true"
+      {...BASE}
+    >
+      <path d="m6 9 6 6 6-6" />
     </svg>
   );
 }

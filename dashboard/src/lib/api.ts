@@ -69,11 +69,14 @@ export function saveSnippet(
   input: { title: string; body: string },
   id?: string,
 ): Promise<Snippet> {
-  return fetch(id ? `/api/snippets/${encodeURIComponent(id)}` : "/api/snippets", {
-    method: id ? "PUT" : "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  }).then((res) => parseJsonOrThrow<Snippet>(res));
+  return fetch(
+    id ? `/api/snippets/${encodeURIComponent(id)}` : "/api/snippets",
+    {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  ).then((res) => parseJsonOrThrow<Snippet>(res));
 }
 
 export function deleteSnippet(id: string): Promise<{ snippets: Snippet[] }> {
