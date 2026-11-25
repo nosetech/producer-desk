@@ -286,6 +286,13 @@ export interface IssuesMetaResult {
   failed: { number: number; error: string }[];
 }
 
+/** GET /api/snippets の snippets 配列要素（返信欄の定型文、issue #323）。 */
+export interface Snippet {
+  id: string;
+  title: string;
+  body: string;
+}
+
 /** GET /api/prompts の prompts 配列要素（issue #149）。 */
 export interface PromptInfo {
   key: string;

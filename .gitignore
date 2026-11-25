@@ -5,6 +5,7 @@ config/plan_jobs.json
 config/usage.db
 config/execution_overrides.json
 config/prompts.yaml
+config/snippets.yaml
 config/litellm_config.yaml
 .env
 .env.*

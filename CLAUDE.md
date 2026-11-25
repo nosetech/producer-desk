@@ -27,6 +27,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `project/ProducerDesk.logic.js`: スタイル・状態ロジック（**`.dc.html`と両方**を読むこと）
   - `project/ProducerDeskIcons.dc.html` / `project/SendingSpinner.dc.html` / `project/IconColorCheck.dc.html`: アイコン・送信中スピナー・アイコン配色確認
   - `project/feature/issue-<n>-*.dc.html` と対の `.logic.js`: issue単位の差分デザイン（マスターへ未マージのもの）
+    - `project/feature/issue-323-snippets.dc.html` / `.logic.js`: 返信欄の定型文セレクトと定型文管理画面（issue #323）。`.logic.js`はマスターの`ProducerDesk.logic.js`を読み込んで継承し、差分のスタイル（`sn`・`snp`）だけを定義している（マスターが256KiBに近いため）
+  - `project/ProducerDesk.meta.logic.js` / `project/ProducerDeskDashboard.dc.html` / `project/ProducerDeskInbox.dc.html` / `project/ProducerDeskLightbox.dc.html`: マスターから分割された子コンポーネント・ロジック
   - `project/support.js`: 共通スクリプト
   - `artifact-type/` と `SKILL.md` は Artifact の仕組み側のファイルでデザインではない。読まない。
 

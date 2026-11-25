@@ -137,6 +137,17 @@ from orchestrator.prompts import (
     reset_prompt_override,
     save_prompt_override,
 )
+from orchestrator.snippets import (
+    SnippetNotFoundError,
+    SnippetOrderConflictError,
+    SnippetStorageError,
+    SnippetValidationError,
+    create_snippet,
+    delete_snippet,
+    load_snippets_safe,
+    reorder_snippets,
+    update_snippet,
+)
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 from orchestrator.usage_store import current_limit_status as store_current_limit_status
 from orchestrator.usage_store import daily_model_usage as store_daily_model_usage
@@ -193,6 +204,12 @@ PROMPTS_PATH = "/api/prompts"
 # issueコメント添付ファイルのプロキシ取得（issue #218）。クエリ`url`に添付ファイルのURLを渡す。
 ATTACHMENT_PATH = "/api/attachment"
 PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
+# 返信欄の定型文（issue #323）。並び替えは個別更新と同じPUTのため、先に判定する。
+SNIPPETS_PATH = "/api/snippets"
+SNIPPETS_ORDER_PATH = "/api/snippets/order"
+SNIPPET_ITEM_PATH = re.compile(r"^/api/snippets/(?P<snippet_id>[0-9a-f]+)$")
+# 定型文API（POST/PUT）のリクエスト上限。本文は最大2000文字・最大50件程度。
+MAX_SNIPPET_BODY_BYTES = 64 * 1024
 
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
 PROMPT_SPECS: tuple[PromptSpec, ...] = (
@@ -431,6 +448,9 @@ def _make_handler(
                 return
             if self.path == PROMPTS_PATH:
                 self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
+                return
+            if self.path == SNIPPETS_PATH:
+                self._send_json(200, {"snippets": load_snippets_safe()})
                 return
             if urllib.parse.urlsplit(self.path).path == ATTACHMENT_PATH:
                 self._handle_attachment()
@@ -717,6 +737,10 @@ def _make_handler(
                 self._handle_create_inbox(inbox_match.group("repo"))
                 return
 
+            if self.path == SNIPPETS_PATH:
+                self._handle_snippet_write(None)
+                return
+
             self._send_json(404, {"error": "not found"})
 
         def do_PATCH(self) -> None:  # noqa: N802
@@ -758,6 +782,15 @@ def _make_handler(
                 self._handle_update_prompt(prompt_match.group("key"))
                 return
 
+            if self.path == SNIPPETS_ORDER_PATH:
+                self._handle_reorder_snippets()
+                return
+
+            snippet_match = SNIPPET_ITEM_PATH.match(self.path)
+            if snippet_match:
+                self._handle_snippet_write(snippet_match.group("snippet_id"))
+                return
+
             self._send_json(404, {"error": "not found"})
 
         def do_DELETE(self) -> None:  # noqa: N802
@@ -774,6 +807,11 @@ def _make_handler(
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_reset_prompt(prompt_match.group("key"))
+                return
+
+            snippet_match = SNIPPET_ITEM_PATH.match(self.path)
+            if snippet_match:
+                self._handle_delete_snippet(snippet_match.group("snippet_id"))
                 return
 
             inbox_item_match = INBOX_ITEM_PATH.match(self.path)
@@ -836,6 +874,77 @@ def _make_handler(
                 self._send_json(500, {"error": str(e)})
                 return
             self._send_json(200, describe_prompt(spec, load_overrides_safe()))
+
+        def _read_snippet_payload(self) -> dict | None:
+            """定型文APIのJSONボディを読む。不正なら400/413を返してNone。"""
+            if int(self.headers.get("Content-Length", 0)) > MAX_SNIPPET_BODY_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます"})
+                return None
+            try:
+                body = self._read_json_body()
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return None
+            if not isinstance(body, dict):
+                self._send_json(
+                    400, {"error": "リクエストボディはJSONオブジェクトである必要があります"}
+                )
+                return None
+            return body
+
+        def _handle_snippet_write(self, snippet_id: str | None) -> None:
+            """issue #323: 定型文の追加（`snippet_id`がNone）・更新。"""
+            body = self._read_snippet_payload()
+            if body is None:
+                return
+            try:
+                if snippet_id is None:
+                    snippet = create_snippet(body.get("title"), body.get("body"))
+                else:
+                    snippet = update_snippet(snippet_id, body.get("title"), body.get("body"))
+            except SnippetValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetNotFoundError:
+                self._send_json(404, {"error": "定型文が見つかりません"})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の保存に失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(201 if snippet_id is None else 200, snippet)
+
+        def _handle_delete_snippet(self, snippet_id: str) -> None:
+            """issue #323: 定型文を削除する。"""
+            try:
+                remaining = delete_snippet(snippet_id)
+            except SnippetNotFoundError:
+                self._send_json(404, {"error": "定型文が見つかりません"})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の削除に失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, {"snippets": remaining})
+
+        def _handle_reorder_snippets(self) -> None:
+            """issue #323: 定型文を`ids`の順に並べ替える。"""
+            body = self._read_snippet_payload()
+            if body is None:
+                return
+            try:
+                snippets = reorder_snippets(body.get("ids"))
+            except SnippetOrderConflictError as e:
+                self._send_json(409, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の並び替えに失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, {"snippets": snippets})
 
         def _handle_update_project_settings(self, repo: str) -> None:
             """issue #176: プロジェクトごとの実行手段デフォルト設定を更新する。

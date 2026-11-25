@@ -46,10 +46,11 @@ describe("shouldIgnoreShortcut", () => {
 });
 
 describe("resolveShortcutHref", () => {
-  it("d/i/pを遷移先に解決する（大文字小文字不問）", () => {
+  it("d/i/p/sを遷移先に解決する（大文字小文字不問）", () => {
     expect(resolveShortcutHref("d")).toBe("/");
     expect(resolveShortcutHref("I")).toBe("/projects");
     expect(resolveShortcutHref("p")).toBe("/prompts");
+    expect(resolveShortcutHref("S")).toBe("/snippets");
   });
   it("未割り当てのキーはnull", () => {
     expect(resolveShortcutHref("x")).toBeNull();

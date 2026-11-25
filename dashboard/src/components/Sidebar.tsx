@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { DashboardIcon, IssuesIcon, PromptIcon, WarningIcon } from "./Icons";
+import {
+  DashboardIcon,
+  IssuesIcon,
+  PromptIcon,
+  SnippetIcon,
+  WarningIcon,
+} from "./Icons";
 import styles from "./Sidebar.module.css";
 
 const DEFAULT_WIDTH = 222;
@@ -16,6 +22,7 @@ const STORAGE_KEY = "sidebar";
 
 export const ISSUES_NAV_HREF = "/projects";
 export const PROMPTS_NAV_HREF = "/prompts";
+export const SNIPPETS_NAV_HREF = "/snippets";
 
 interface Props {
   attentionCount: number;
@@ -31,7 +38,8 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
   const pathname = usePathname();
   const onIssues = pathname.startsWith("/projects");
   const onPrompts = pathname.startsWith(PROMPTS_NAV_HREF);
-  const onDashboard = !onIssues && !onPrompts;
+  const onSnippets = pathname.startsWith(SNIPPETS_NAV_HREF);
+  const onDashboard = !onIssues && !onPrompts && !onSnippets;
 
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [hover, setHover] = useState(false);
@@ -223,6 +231,23 @@ export default function Sidebar({ attentionCount, anyOrphan }: Props) {
                 <span className={styles.navLabel}>プロンプト設定</span>
                 <kbd aria-hidden="true" className={styles.navKbd}>
                   P
+                </kbd>
+              </>
+            )}
+          </Link>
+          <Link
+            href={SNIPPETS_NAV_HREF}
+            className={itemClass(onSnippets)}
+            title="定型文 (s)"
+            aria-keyshortcuts="s"
+            aria-current={onSnippets ? "page" : undefined}
+          >
+            <SnippetIcon size={18} />
+            {!collapsed && (
+              <>
+                <span className={styles.navLabel}>定型文</span>
+                <kbd aria-hidden="true" className={styles.navKbd}>
+                  S
                 </kbd>
               </>
             )}

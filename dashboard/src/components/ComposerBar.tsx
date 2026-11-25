@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   deleteIssuePlan,
   fetchProjectSettings,
+  fetchSnippets,
   postCreateIssue,
   postInstruct,
 } from "@/lib/api";
@@ -14,6 +16,7 @@ import {
   modelOptions,
 } from "@/lib/modelDirective";
 import { shortRepoName } from "@/lib/projectStatus";
+import { insertAtCursor } from "@/lib/snippets";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
 import { useEdgeResize } from "@/lib/useEdgeResize";
@@ -29,12 +32,15 @@ import type {
   InboxItem,
   IssueComment,
   ProjectSettingsResponse,
+  Snippet,
 } from "@/lib/types";
 import { initialPlanState, planReducer } from "@/lib/planFlow";
 import CommentBody from "./CommentBody";
 import { useApp } from "./AppContext";
 import EdgeHandles from "./EdgeHandles";
+import { AlertCircleIcon, PlusIcon, SnippetIcon } from "./Icons";
 import PlanComposer, { PlanModeToggle } from "./PlanComposer";
+import { SNIPPETS_NAV_HREF } from "./Sidebar";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -121,6 +127,98 @@ function ModelSelectRow({
       </select>
       {value === MODEL_DEFAULT && (
         <span className={styles.modelHint}>{defaultModelHint(settings)}</span>
+      )}
+    </div>
+  );
+}
+
+// 返信欄の「定型文」セレクト（issue #323、デザイン feature/issue-323-snippets の`sn`）。
+// 選ぶとカーソル位置に挿入し、セレクトは常に「定型文を選択…」へ戻す（同じ定型文を続けて挿入できる）。
+function SnippetSelectRow({
+  snippets,
+  error,
+  disabled,
+  noTarget,
+  onSelect,
+  onManage,
+}: {
+  snippets: Snippet[] | null;
+  error: boolean;
+  /** 送信中（replyBusy）。 */
+  disabled: boolean;
+  noTarget: boolean;
+  onSelect: (id: string) => void;
+  onManage: () => void;
+}) {
+  // 取得完了前（null）は0件と区別し、登録リンクを出さない。
+  const loading = !error && snippets === null;
+  const empty = !error && snippets !== null && snippets.length === 0;
+  const off = error || loading || empty || disabled || noTarget;
+  const placeholder = error
+    ? "定型文を取得できません"
+    : loading
+      ? "定型文を読み込み中…"
+      : empty
+        ? "定型文はありません"
+        : "定型文を選択…";
+  const title = error
+    ? "定型文を取得できませんでした"
+    : loading
+      ? "定型文を読み込み中です"
+      : empty
+        ? "定型文が登録されていません"
+        : disabled
+          ? "送信中は選択できません"
+          : noTarget
+            ? "返信先を選ぶと選択できます"
+            : "選ぶとカーソル位置に挿入します";
+  return (
+    <div className={styles.modelRow}>
+      <span className={styles.modelLabel}>
+        <SnippetIcon size={13} />
+        定型文
+      </span>
+      <select
+        className={`${styles.modelSelect} ${off ? styles.snippetSelectOff : ""}`}
+        value=""
+        onChange={(e) => {
+          if (e.target.value) onSelect(e.target.value);
+        }}
+        disabled={off}
+        aria-label="定型文を挿入"
+        title={title}
+      >
+        <option value="">{placeholder}</option>
+        {(snippets ?? []).map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.title}
+          </option>
+        ))}
+      </select>
+      {empty && (
+        <Link
+          href={SNIPPETS_NAV_HREF}
+          className={styles.snippetLink}
+          onClick={onManage}
+        >
+          <PlusIcon size={13} strokeWidth={2.4} />
+          定型文を登録
+        </Link>
+      )}
+      {error && (
+        <>
+          <span role="status" className={styles.snippetError}>
+            <AlertCircleIcon size={13} />
+            定型文を取得できませんでした
+          </span>
+          <Link
+            href={SNIPPETS_NAV_HREF}
+            className={styles.snippetLink}
+            onClick={onManage}
+          >
+            管理画面へ
+          </Link>
+        </>
       )}
     </div>
   );
@@ -533,6 +631,49 @@ export default function ComposerBar({
     };
   }, [open, isReply, replyRepo, newRepo]);
 
+  // 返信欄の定型文（issue #323）。返信欄を開くたびに最新の一覧を取得する。
+  // 取得に失敗しても返信の送信は妨げない（セレクトを無効化して管理画面へ案内する）。
+  const [snippets, setSnippets] = useState<Snippet[] | null>(null);
+  const [snippetsError, setSnippetsError] = useState(false);
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!open || !isReply) return;
+    let cancelled = false;
+    fetchSnippets()
+      .then((data) => {
+        if (cancelled) return;
+        setSnippets(data.snippets);
+        setSnippetsError(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSnippets(null);
+        setSnippetsError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isReply]);
+
+  // 選択した定型文をカーソル位置に挿入（範囲選択中は置換）し、カーソルを挿入文の末尾へ移す。
+  function handleInsertSnippet(id: string) {
+    const snippet = snippets?.find((s) => s.id === id);
+    if (!snippet) return;
+    const ta = replyTextareaRef.current;
+    const { text, cursor } = insertAtCursor(
+      message,
+      ta?.selectionStart ?? message.length,
+      ta?.selectionEnd ?? message.length,
+      snippet.body,
+    );
+    setMessage(text);
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(cursor, cursor);
+    });
+  }
+
   // ESCキーでパネルを閉じる。
   useEffect(() => {
     if (!open) return;
@@ -806,7 +947,16 @@ export default function ComposerBar({
                   disabled={replyBusy || !replyTarget}
                   onChange={handleReplyModelChange}
                 />
+                <SnippetSelectRow
+                  snippets={snippets}
+                  error={snippetsError}
+                  disabled={replyBusy}
+                  noTarget={!replyTarget}
+                  onSelect={handleInsertSnippet}
+                  onManage={onClose}
+                />
                 <textarea
+                  ref={replyTextareaRef}
                   className={styles.textarea}
                   placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
                   value={message}
