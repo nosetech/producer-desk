@@ -23,7 +23,15 @@ def root(tmp_path: Path) -> Path:
     (r / "bin").mkdir(parents=True)
     (r / "config").mkdir()
     (r / "config" / "projects.yaml").write_text("projects: []\n", encoding="utf-8")
-    for f in ("service.sh", "start.sh", "lib.sh"):
+    # start.shはbackend_start.sh・frontend_start.sh（proc.sh・lib.shを読み込む）へ委譲する（#326）。
+    for f in (
+        "service.sh",
+        "start.sh",
+        "backend_start.sh",
+        "frontend_start.sh",
+        "proc.sh",
+        "lib.sh",
+    ):
         shutil.copy2(DIST_BIN / f, r / "bin" / f)
         (r / "bin" / f).chmod(0o755)
     return r
