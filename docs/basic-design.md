@@ -264,14 +264,14 @@ UI変更のレビュー用に、Agent Runnerは`gh issue comment <n> --attach <f
 既存issueへの返信（`ComposerBar`の返信モード）で、よく使う指示文を定型文として登録し、選んでカーソル位置に挿入できるようにする。定型文は全プロジェクト共通の固定文で、プレースホルダ（`{repo}`等）は扱わない（必要になれば別issue）。新規タスク作成の指示欄は対象外。
 
 - **保存形式**: `config/snippets.yaml`（`.gitignore`対象）。`snippets:`配下に`{id, title, body}`の配列を保持し、配列順を表示順とする。`id`はオーケストレータが採番する（12桁の16進数）。パスは環境変数`ORCHESTRATOR_SNIPPETS_PATH`で上書きでき、`bin/dev_instance.sh`は`.dev-run/snippets.yaml`を使う。独自DBは新設しない（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)と同様、アプリケーション設定にあたる）。
-- **検証**: タイトルは空不可・改行不可・50文字以内（前後の空白は除去して保存）、本文は空不可・2000文字以内、登録は50件まで。違反は400（`error`・`errors`）。ダッシュボードも同じ上限で入力中に検証し、保存ボタンを無効化する（`dashboard/src/lib/snippets.ts`）。
+- **検証**: タイトルは空不可・改行不可・50文字以内（文字数は入力どおりに数え、保存時に前後の空白を除去する）、本文は空不可・2000文字以内、登録は50件まで（文字数はサロゲートペアを1文字と数える）。違反は400（`error`・`errors`）。ダッシュボードも同じ上限で入力中に検証し、保存ボタンを無効化する（`dashboard/src/lib/snippets.ts`）。
 - **書き込みの安全性**: `orchestrator/orchestrator/snippets.py`が`threading.Lock`で読み書きを直列化し、一時ファイル＋`os.replace`で原子的に差し替える。YAMLが壊れている場合、一覧取得は空配列で応答し（オーケストレータは落ちない）、追加・更新・削除・並び替えの際は`snippets.yaml.broken-<時刻>`へ退避して空から書き直す。書き込み失敗は500。
 - **内部API**（`server.py`。ダッシュボードの`/api/snippets`以下はオーケストレータへそのままプロキシする）:
   - `GET /api/snippets` — `{"snippets": [{id, title, body}, ...]}`
   - `POST /api/snippets` — `{"title", "body"}`で末尾に追加（201、追加した定型文を返す）
   - `PUT /api/snippets/{id}` — タイトル・本文を更新（並び順は変えない）。存在しない`id`は404
   - `DELETE /api/snippets/{id}` — 削除し、削除後の一覧を返す。存在しない`id`は404
-  - `PUT /api/snippets/order` — `{"ids": [...]}`の順に並べ替える。`ids`が現在の全idと過不足・重複なく一致しない場合（別画面での追加・削除後の古い一覧等）は409
+  - `PUT /api/snippets/order` — `{"ids": [...]}`の順に並べ替える。`ids`が現在の全idと過不足・重複なく一致しない場合（別画面での追加・削除後の古い一覧等）は409、`ids`が文字列の配列でない場合は400。ダッシュボードは409・404を受けたら一覧を取得し直す
   - リクエストボディは64KiBまで（超過は413）。書き込み系は読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では403を返し、ダッシュボードはエラーを表示する。
 - **返信欄での挿入**: 返信モードの「使用するモデル」セレクトの下に「定型文」セレクトを置く。返信欄を開くたびに一覧を取得し直す。選ぶと、textareaの`selectionStart`〜`selectionEnd`を本文で置き換え（範囲選択が無ければカーソル位置に挿入）、カーソルを挿入文の末尾へ移してtextareaにフォーカスを戻す（純関数`insertAtCursor`）。挿入後はセレクトを「定型文を選択…」へ戻し、同じ定型文を続けて挿入できる。`/model`ディレクティブ（`applyModelDirective`）は本文先頭の行だけを扱うため、挿入と独立して動作する。0件・取得失敗時はセレクトを無効にして管理画面へのリンクを表示し、返信の送信は妨げない。返信先未選択・送信中（`replyBusy`）は無効。
 - **ダッシュボード**: サイドバー・モバイルのボトムナビの「定型文」、またはショートカット`s`で`/snippets`を開く。一覧（並び替えは上へ／下へ）と編集フォームの2ペインで、新規追加・編集・削除（確認ダイアログ付き）を行う。画面デザインは[design-prompt-dashboard-diff-snippets.md](./design-prompt-dashboard-diff-snippets.md)の依頼に基づく。

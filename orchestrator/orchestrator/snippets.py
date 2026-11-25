@@ -71,7 +71,7 @@ def validate_snippet(title: object, body: object) -> list[str]:
         errors.append("タイトルが空です")
     elif "\n" in title or "\r" in title:
         errors.append("タイトルに改行は使用できません")
-    elif len(title.strip()) > MAX_TITLE_LENGTH:
+    elif len(title) > MAX_TITLE_LENGTH:
         errors.append(f"タイトルは{MAX_TITLE_LENGTH}文字以内にしてください")
     if not isinstance(body, str):
         errors.append("本文は文字列である必要があります")
@@ -195,8 +195,8 @@ def update_snippet(snippet_id: str, title: object, body: object, path: Path | No
     raise SnippetNotFoundError(snippet_id)
 
 
-def delete_snippet(snippet_id: str, path: Path | None = None) -> None:
-    """定型文を削除する。"""
+def delete_snippet(snippet_id: str, path: Path | None = None) -> list[dict]:
+    """定型文を削除し、削除後の一覧を返す（ロック内で書いた内容をそのまま返す）。"""
     resolved = _resolve_path(path)
     with _SNIPPETS_YAML_WRITE_LOCK:
         snippets = _load_for_update(resolved)
@@ -204,6 +204,11 @@ def delete_snippet(snippet_id: str, path: Path | None = None) -> None:
         if len(remaining) == len(snippets):
             raise SnippetNotFoundError(snippet_id)
         _write(remaining, resolved)
+    return remaining
+
+
+class SnippetOrderConflictError(SnippetValidationError):
+    """並び替えの`ids`が現在の一覧と一致しない（画面の一覧が古い）。"""
 
 
 def reorder_snippets(ids: object, path: Path | None = None) -> list[dict]:
@@ -219,7 +224,7 @@ def reorder_snippets(ids: object, path: Path | None = None) -> list[dict]:
         snippets = _load_for_update(resolved)
         by_id = {s["id"]: s for s in snippets}
         if len(ids) != len(set(ids)) or set(ids) != set(by_id):
-            raise SnippetValidationError(
+            raise SnippetOrderConflictError(
                 ["定型文の一覧が最新ではありません。再読み込みしてから並べ替えてください"]
             )
         ordered = [by_id[i] for i in ids]

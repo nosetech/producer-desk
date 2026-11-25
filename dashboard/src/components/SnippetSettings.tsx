@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  HttpError,
   deleteSnippet,
   fetchSnippets,
   reorderSnippets,
@@ -62,7 +63,8 @@ export default function SnippetSettings() {
   const load = useCallback(async () => {
     try {
       const { snippets } = await fetchSnippets();
-      setItems(snippets);
+      // 未保存の新規下書き行は、取得し直しても末尾に残す。
+      setItems((prev) => [...snippets, ...(prev ?? []).filter((s) => s.isNew)]);
       setLoadError(null);
       setSelectedId((id) => id ?? snippets[0]?.id ?? null);
     } catch (e) {
@@ -159,6 +161,8 @@ export default function SnippetSettings() {
       const message = errorMessage(e, "保存に失敗しました");
       setWriteErr(`${message}。変更内容はこの画面に残っています。`);
       showToast("定型文を保存できませんでした", true);
+      // 別の画面で削除済み（404）なら、一覧を取得し直して実際の状態に合わせる。
+      if (e instanceof HttpError && e.status === 404) void load();
     } finally {
       setBusy(false);
     }
@@ -172,12 +176,14 @@ export default function SnippetSettings() {
       const { snippets } = await reorderSnippets(
         next.filter((s) => !s.isNew).map((s) => s.id),
       );
-      setItems([...snippets, ...list.filter((s) => s.isNew)]);
+      setItems((prev) => [...snippets, ...(prev ?? []).filter((s) => s.isNew)]);
     } catch (e) {
       showToast(
         `並び順を保存できませんでした（${errorMessage(e, "通信エラー")}）`,
         true,
       );
+      // 一覧が古い（409）・別の画面で削除済み等に備え、実際の状態を取得し直す。
+      void load();
     } finally {
       setBusy(false);
     }
@@ -188,8 +194,9 @@ export default function SnippetSettings() {
     setBusy(true);
     try {
       const { snippets } = await deleteSnippet(s.id);
-      const rest: Item[] = [...snippets, ...list.filter((x) => x.isNew)];
-      setItems(rest);
+      const newRows = list.filter((x) => x.isNew);
+      const rest: Item[] = [...snippets, ...newRows];
+      setItems((prev) => [...snippets, ...(prev ?? []).filter((x) => x.isNew)]);
       dropDraft(s.id);
       setSelectedId(rest[Math.min(index, rest.length - 1)]?.id ?? null);
       setMobileEdit(false);
@@ -199,6 +206,7 @@ export default function SnippetSettings() {
         `定型文を削除できませんでした（${errorMessage(e, "通信エラー")}）`,
         true,
       );
+      void load();
     } finally {
       setBusy(false);
       setConfirmDelete(false);
@@ -232,7 +240,7 @@ export default function SnippetSettings() {
                 定型文 · {saved.length} / {MAX_SNIPPETS}件
               </span>
               <AddButton
-                disabled={atMax}
+                disabled={atMax || busy}
                 title={
                   atMax
                     ? `上限の${MAX_SNIPPETS}件に達しています`
@@ -254,7 +262,7 @@ export default function SnippetSettings() {
                     「この方針で進めて」のような、返信でよく使う指示を登録しておけます。
                   </div>
                 </div>
-                <AddButton disabled={false} onClick={addNew} />
+                <AddButton disabled={busy} onClick={addNew} />
               </div>
             ) : (
               <div
@@ -430,6 +438,7 @@ function Editor({
   const showErr = dirty && !check.ok;
   const titleErr = showErr ? check.titleError : null;
   const bodyErr = showErr ? check.bodyError : null;
+  // 保存中は入力欄を読み取り専用にする（送信後の追記が保存成功時の下書き破棄で消えないように）。
   const canSave = dirty && check.ok && !busy;
   const errors = [titleErr, bodyErr].filter((m): m is string => !!m);
 
@@ -474,6 +483,7 @@ function Editor({
           id="sn-title"
           value={draft.title}
           onChange={(e) => onChange({ title: e.target.value })}
+          readOnly={busy}
           placeholder="例: この方針で進めて"
           aria-invalid={!!titleErr}
           aria-describedby="sn-title-err"
@@ -503,6 +513,7 @@ function Editor({
           id="sn-body"
           value={draft.body}
           onChange={(e) => onChange({ body: e.target.value })}
+          readOnly={busy}
           placeholder="返信欄に挿入される文章です（固定文。プレースホルダは使えません）"
           aria-invalid={!!bodyErr}
           aria-describedby="sn-body-err"

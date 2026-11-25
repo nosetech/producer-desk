@@ -13,6 +13,7 @@ from orchestrator.snippets import (
     MAX_SNIPPETS,
     MAX_TITLE_LENGTH,
     SnippetNotFoundError,
+    SnippetOrderConflictError,
     SnippetStorageError,
     SnippetValidationError,
     create_snippet,
@@ -66,8 +67,9 @@ def test_delete_removes_only_target(tmp_path: Path) -> None:
     a = create_snippet("A", "a", path)
     b = create_snippet("B", "b", path)
 
-    delete_snippet(a["id"], path)
+    remaining = delete_snippet(a["id"], path)
 
+    assert remaining == [b]
     assert load_snippets(path) == [b]
 
 
@@ -81,9 +83,11 @@ def test_reorder_requires_exact_id_set(tmp_path: Path) -> None:
     assert [s["title"] for s in ordered] == ["C", "A", "B"]
     assert [s["title"] for s in load_snippets(path)] == ["C", "A", "B"]
 
-    for bad in ([a["id"], b["id"]], [a["id"], a["id"], b["id"]], [a["id"], b["id"], "zzz"], "x"):
-        with pytest.raises(SnippetValidationError):
+    for bad in ([a["id"], b["id"]], [a["id"], a["id"], b["id"]], [a["id"], b["id"], "zzz"]):
+        with pytest.raises(SnippetOrderConflictError):
             reorder_snippets(bad, path)
+    with pytest.raises(SnippetValidationError):
+        reorder_snippets("x", path)
     assert [s["title"] for s in load_snippets(path)] == ["C", "A", "B"]
 
 
@@ -94,6 +98,7 @@ def test_reorder_requires_exact_id_set(tmp_path: Path) -> None:
         ("   ", "b", "タイトルが空です"),
         ("a\nb", "b", "タイトルに改行は使用できません"),
         ("x" * (MAX_TITLE_LENGTH + 1), "b", f"タイトルは{MAX_TITLE_LENGTH}文字以内"),
+        ("x" * MAX_TITLE_LENGTH + " ", "b", f"タイトルは{MAX_TITLE_LENGTH}文字以内"),
         ("t", " \n ", "本文が空です"),
         ("t", "x" * (MAX_BODY_LENGTH + 1), f"本文は{MAX_BODY_LENGTH}文字以内"),
         (None, "b", "タイトルは文字列"),

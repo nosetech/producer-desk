@@ -2828,6 +2828,7 @@ def test_snippet_validation_and_not_found_errors() -> None:
         missing_delete = _request(server, "DELETE", "/api/snippets/abc123")
         stale_order = _request(server, "PUT", "/api/snippets/order", {"ids": ["abc123"]})
         not_object = _request(server, "POST", "/api/snippets", [])  # type: ignore[arg-type]
+        bad_ids = _request(server, "PUT", "/api/snippets/order", {"ids": "x"})
     finally:
         server.shutdown()
 
@@ -2837,6 +2838,7 @@ def test_snippet_validation_and_not_found_errors() -> None:
     assert missing_delete[0] == 404
     assert stale_order[0] == 409
     assert not_object[0] == 400
+    assert bad_ids[0] == 400
 
 
 def test_get_snippets_returns_empty_for_broken_yaml(_isolated_snippets_path) -> None:

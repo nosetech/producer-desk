@@ -139,6 +139,7 @@ from orchestrator.prompts import (
 )
 from orchestrator.snippets import (
     SnippetNotFoundError,
+    SnippetOrderConflictError,
     SnippetStorageError,
     SnippetValidationError,
     create_snippet,
@@ -916,7 +917,7 @@ def _make_handler(
         def _handle_delete_snippet(self, snippet_id: str) -> None:
             """issue #323: 定型文を削除する。"""
             try:
-                delete_snippet(snippet_id)
+                remaining = delete_snippet(snippet_id)
             except SnippetNotFoundError:
                 self._send_json(404, {"error": "定型文が見つかりません"})
                 return
@@ -924,7 +925,7 @@ def _make_handler(
                 logger.warning("定型文の削除に失敗しました: %s", e)
                 self._send_json(500, {"error": str(e)})
                 return
-            self._send_json(200, {"snippets": load_snippets_safe()})
+            self._send_json(200, {"snippets": remaining})
 
         def _handle_reorder_snippets(self) -> None:
             """issue #323: 定型文を`ids`の順に並べ替える。"""
@@ -933,8 +934,11 @@ def _make_handler(
                 return
             try:
                 snippets = reorder_snippets(body.get("ids"))
-            except SnippetValidationError as e:
+            except SnippetOrderConflictError as e:
                 self._send_json(409, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
                 return
             except SnippetStorageError as e:
                 logger.warning("定型文の並び替えに失敗しました: %s", e)

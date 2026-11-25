@@ -41,6 +41,17 @@ export class PrSelectionRequiredError extends Error {
   }
 }
 
+/** APIがエラー応答を返したときの例外。`status`でHTTPステータスを判別できる。 */
+export class HttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const data = await res.json();
   if (!res.ok) {
@@ -52,7 +63,7 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
         Array.isArray(data.pr_candidates) ? data.pr_candidates : [],
       );
     }
-    throw new Error(message);
+    throw new HttpError(message, res.status);
   }
   return data as T;
 }

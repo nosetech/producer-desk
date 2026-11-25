@@ -150,22 +150,28 @@ function SnippetSelectRow({
   onSelect: (id: string) => void;
   onManage: () => void;
 }) {
-  const empty = !error && (snippets?.length ?? 0) === 0;
-  const off = error || empty || disabled || noTarget;
+  // 取得完了前（null）は0件と区別し、登録リンクを出さない。
+  const loading = !error && snippets === null;
+  const empty = !error && snippets !== null && snippets.length === 0;
+  const off = error || loading || empty || disabled || noTarget;
   const placeholder = error
     ? "定型文を取得できません"
-    : empty
-      ? "定型文はありません"
-      : "定型文を選択…";
+    : loading
+      ? "定型文を読み込み中…"
+      : empty
+        ? "定型文はありません"
+        : "定型文を選択…";
   const title = error
     ? "定型文を取得できませんでした"
-    : empty
-      ? "定型文が登録されていません"
-      : disabled
-        ? "送信中は選択できません"
-        : noTarget
-          ? "返信先を選ぶと選択できます"
-          : "選ぶとカーソル位置に挿入します";
+    : loading
+      ? "定型文を読み込み中です"
+      : empty
+        ? "定型文が登録されていません"
+        : disabled
+          ? "送信中は選択できません"
+          : noTarget
+            ? "返信先を選ぶと選択できます"
+            : "選ぶとカーソル位置に挿入します";
   return (
     <div className={styles.modelRow}>
       <span className={styles.modelLabel}>
