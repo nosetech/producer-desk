@@ -24,6 +24,12 @@
 #                       （dashboardを`next start --hostname "$TAILSCALE_IP"`で
 #                       起動する。`tailscale ip -4`で確認できる自機のTailscale
 #                       IP。LAN_IPとは同時に指定できない）
+#   DASHBOARD_PROCESS_NAME     dashboardのps上のプロセス名（既定:
+#                       producer-desk-dashboard）。空文字を指定すると上書きせず
+#                       next-serverのままにする（issue #332）
+#   ORCHESTRATOR_PROCESS_NAME  orchestratorのps上のプロセス名（既定:
+#                       producer-desk-orchestrator）。空文字を指定すると上書きせず
+#                       pythonのままにする。setproctitle未インストール時は警告のみ
 #   ORCHESTRATOR_PYTHON   orchestratorの起動に使うpythonインタプリタ
 #            （既定: orchestrator/.venv/bin/python。.venvが無ければこのスクリプトが
 #            自動作成する。既にorchestrator/venv/bin/pythonがあればそちらを使う）
@@ -34,9 +40,6 @@
 # orchestrator.main`を直接、ORCHESTRATOR_ENV=developmentを指定して起動すること。
 # README「ログ出力先ディレクトリの運用方針」参照）。ローテーション保持日数は
 # config/projects.yamlのlog_retention_days（既定7日）に従う。
-#
-# 実処理は bin/backend_start.sh（orchestrator）→ bin/frontend_start.sh（dashboard）
-# に委譲する（issue #326）。個別に起動・停止したい場合はそれらを直接使う。
 #
 # 実処理は bin/backend_start.sh（orchestrator）→ bin/frontend_start.sh（dashboard）
 # の順に委譲する（issue #326）。個別に起動・停止したい場合はそれらを直接使う。

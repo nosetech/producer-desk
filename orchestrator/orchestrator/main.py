@@ -47,6 +47,7 @@ from orchestrator.polling_health import (
     PollingHealthNotifier,
     run_health_watchdog,
 )
+from orchestrator.process_title import apply_process_name
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, PlanNotifier, ReviewNotifier
 
@@ -113,6 +114,9 @@ def _make_generate_plan_fn(litellm_health_timeout_seconds: float):
 def main() -> None:
     log_retention_days = load_log_retention_days()
     configure_logging(retention_days=log_retention_days)
+    # issue #332: ps上で他のpythonプロセスと判別できるようにする（警告をログに残すため
+    # configure_logging()の直後に行う）。
+    apply_process_name()
 
     projects = load_projects()
 
