@@ -55,11 +55,21 @@ export interface StatusCounts {
   untagged: number;
 }
 
-/** ディスパッチキュー上の1エントリ（issue #233）。issueが一覧に無ければtitle・labelともnull。 */
+/**
+ * ディスパッチキュー上の1エントリ（issue #233）。issueが一覧に無ければtitle・labelともnull。
+ * AI計画ジョブ（issue #335）は`kind: "plan"`で、`number`は負の内部番号（表示に使わない）、
+ * `title`は依頼文の1行目（解決できなければnull）、`label`は常にnull。
+ * 旧オーケストレータは`kind`等を返さないため省略可能とし、省略時は自走タスクとして扱う。
+ */
 export interface QueueEntry {
   number: number;
   title: string | null;
   label: StatusLabel | null;
+  kind?: "issue" | "plan";
+  plan_job_id?: string | null;
+  inbox_issue_number?: number | null;
+  /** 計画ジョブが既に計画を持つ（修正指示の実行・待機中）か。 */
+  plan_revising?: boolean;
 }
 
 /** プロジェクトのディスパッチキュー状態（実行中1件＋待機中、待機はFIFO順）。 */

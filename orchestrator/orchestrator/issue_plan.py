@@ -315,6 +315,15 @@ class PlanRunner:
         with self._lock:
             return job_id in self._numbers
 
+    def job_id_for(self, job_number: int) -> str | None:
+        """キュー上のジョブ番号（負数）から計画ジョブIDを引く（issue #335）。
+
+        キューに積まれてから`run_job`が終わるまでの間だけ解決できる。
+        """
+        with self._lock:
+            entry = self._pending.get(job_number)
+        return entry[0] if entry is not None else None
+
     def position(self, repo: str, job_id: str) -> int | None:
         """キュー待ちの順位（1始まり）。待機中でなければNone。"""
         with self._lock:

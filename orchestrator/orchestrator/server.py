@@ -547,6 +547,13 @@ def _make_handler(
                 },
             )
 
+        def _resolve_plan_job(self, job_number: int) -> PlanJob | None:
+            """キュー上の計画ジョブ番号（負数）から計画ジョブを引く（issue #335）。"""
+            if plan_runner is None or plan_store is None:
+                return None
+            job_id = plan_runner.job_id_for(job_number)
+            return plan_store.get(job_id) if job_id is not None else None
+
         def _state_payload(self, state: AggregatedState | None) -> dict:
             if state is None:
                 return {
@@ -564,7 +571,9 @@ def _make_handler(
                 repo = project["repo"]
                 project["queue"] = dataclasses.asdict(
                     build_project_queue(
-                        dispatch_queue.snapshot(repo), state.issues_by_repo.get(repo, [])
+                        dispatch_queue.snapshot(repo, include_plans=True),
+                        state.issues_by_repo.get(repo, []),
+                        self._resolve_plan_job,
                     )
                 )
                 # 「作業中」件数のうちキューに載っていない分の理由（issue #272）。件数はGitHubの
