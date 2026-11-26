@@ -196,6 +196,8 @@
   pointer-events: none;
 }
 
+/* spanは既定でinlineのためwidth/height/transformが効かない。blockにしてqringのscaleを効かせ、
+   塗りのひし形の外側にひし形の輪郭が広がって消えるようにする（デザインのqueuePlanRunRing）。 */
 .planRunRing {
   display: block;
   width: 100%;
