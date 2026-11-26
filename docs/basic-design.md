@@ -351,10 +351,10 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の7定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下9種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下10種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -362,6 +362,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
   | `pr_instruction` | PR作成時の指示（現状はPR本文の`Closes #<issue番号>`記法） | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
+  | `language_instruction` | 最終応答（「Agent Runner実行結果:」コメント）・issueコメント・PR本文を日本語で書かせる指示。グローバルCLAUDE.mdが適用されず、対象プロジェクトのCLAUDE.mdに言語指定が無いと途中から英語になる事象（focara#203）への対策 | なし |
   | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
   | `dev_instance_instruction` | 動作確認用のorchestrator・dashboardを`bin/dev_instance.sh`経由で起動・停止させ、名前・ポート指定のkill（`pkill`等）の禁止、`NODE_ENV`の除去、読み取り専用モード、見た目を確認できなかった場合の原因明記の指示（issue #238・#241） | なし |
   | `plan_issue_instruction` | 新規タスク作成の「AIに計画してもらう」で、やりたいことからissueのタイトル・本文を作成させる指示（出力JSON形式、読み取り専用の制約。issue #287） | `"title"` / `"body"` |

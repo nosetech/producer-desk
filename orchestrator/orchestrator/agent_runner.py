@@ -341,6 +341,23 @@ AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
 )
 
 
+# issue #203前後（focara）: Agent Runnerの最終応答（「Agent Runner実行結果:」として
+# issueコメントに無編集で投稿される）が途中から英語になる事象があった。`claude -p`
+# では利用者のグローバルCLAUDE.md（回答言語ルール）が適用されず（docs/basic-design.md
+# 3-1・issue #139）、`--append-system-prompt`にも回答言語の指定が無かったため、
+# 言語がモデル任せになっていた。対象プロジェクトのCLAUDE.mdに言語指定が無くても
+# 確実に日本語で書かせるため、ここで明示する。
+AGENT_RUNNER_LANGUAGE_INSTRUCTION = (
+    "{user_name}向けに書く文章は、特に指定がない限りすべて日本語で書いてください。"
+    "対象は、最終応答（「Agent Runner実行結果:」としてissueコメントに投稿されます）、"
+    "issueコメント、PRのタイトル・本文・コメント、コミットメッセージの説明文です。"
+    "作業が長くなったり、ツール出力やコード・英語の資料を長く読んだ後でも、"
+    "途中から英語に切り替えず最後まで日本語で書いてください。"
+    "コード・コマンド・ファイル名・ラベル名・固有名詞・エラーメッセージの引用など、"
+    "そのまま書くべきものは原文のままで構いません。"
+)
+
+
 # issue #238: 動作確認用にorchestrator・dashboardを別インスタンスで起動したAgent Runnerが、
 # 停止時に名前・ポート指定のkillで運用中の他プロセスまで巻き込む事故を防ぐ指示。
 # プロジェクトのCLAUDE.mdは対象リポジトリがproducer-desk以外だと読み込まれないため、
@@ -367,7 +384,7 @@ AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION = (
 )
 
 
-# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #149: 上記7つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -426,6 +443,12 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         title="最終応答の書き方の指示",
         description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
         default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="language_instruction",
+        title="回答言語の指示",
+        description="最終応答・issueコメント・PR本文を日本語で書かせる指示（途中から英語になるのを防ぐ）",
+        default=AGENT_RUNNER_LANGUAGE_INSTRUCTION,
     ),
     PromptSpec(
         key="attachment_instruction",

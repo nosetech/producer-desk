@@ -2078,6 +2078,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "comment_marker_instruction",
         "pr_instruction",
         "final_message_instruction",
+        "language_instruction",
         "attachment_instruction",
         "dev_instance_instruction",
         "plan_issue_instruction",
