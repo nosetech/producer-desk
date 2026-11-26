@@ -8,7 +8,7 @@
 #
 # バックグラウンドで起動してすぐ終了する（PIDは logs/orchestrator.pid に記録）。
 # 既に起動中なら失敗する。環境変数は bin/start.sh のヘッダ参照
-# （ORCHESTRATOR_PORT・ORCHESTRATOR_PYTHON 等）。
+# （ORCHESTRATOR_PORT・ORCHESTRATOR_PYTHON・ORCHESTRATOR_PROCESS_NAME 等）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +36,14 @@ if [ -z "${ORCHESTRATOR_PYTHON:-}" ]; then
         "${ORCHESTRATOR_DIR}/.venv/bin/pip" install -e "${ORCHESTRATOR_DIR}"
         ORCHESTRATOR_PYTHON="${ORCHESTRATOR_DIR}/.venv/bin/python"
     fi
+fi
+
+# ps上のプロセス名（issue #332、ORCHESTRATOR_PROCESS_NAME）はorchestrator自身が
+# setproctitleで設定する。既存のvenvには入っていないことがあるため案内だけ出す
+# （未インストールでも起動は継続し、プロセス名がpythonのままになるだけ）。
+if [ -n "${ORCHESTRATOR_PROCESS_NAME-producer-desk-orchestrator}" ] \
+    && ! "${ORCHESTRATOR_PYTHON}" -c 'import setproctitle' 2>/dev/null; then
+    err "setproctitle が未インストールのため、orchestrator のプロセス名は python のままになります。設定する場合は ${ORCHESTRATOR_PYTHON} -m pip install -e ${ORCHESTRATOR_DIR} を実行してください。"
 fi
 
 log "orchestrator を起動します（${ORCHESTRATOR_PYTHON}、ポート${ORCHESTRATOR_PORT}）..."

@@ -9,7 +9,7 @@
 #
 # バックグラウンドで起動してすぐ終了する（PIDは logs/dashboard.pid に記録）。
 # 既に起動中なら失敗する。環境変数（DASHBOARD_PORT・ORCHESTRATOR_URL・LAN_IP・
-# TAILSCALE_IP）は bin/start.sh のヘッダ参照。
+# TAILSCALE_IP・DASHBOARD_PROCESS_NAME）は bin/start.sh のヘッダ参照。
 # SKIP_BUILD=1 は dashboard/.next と node_modules が既にある（直前に同じコードで
 # ビルド済みの）場合のみ使える。コードを更新した後は付けずに実行すること。
 set -euo pipefail
@@ -29,6 +29,9 @@ load_dev_env
 : "${DASHBOARD_PORT:=3000}"
 : "${ORCHESTRATOR_URL:=http://127.0.0.1:${ORCHESTRATOR_PORT}}"
 export ORCHESTRATOR_PORT DASHBOARD_PORT ORCHESTRATOR_URL
+# ps上のプロセス名（issue #332）。空文字を明示した場合は上書きしない（next-serverのまま）
+# ため、:= ではなく = で未設定時のみ既定値にする。
+: "${DASHBOARD_PROCESS_NAME=producer-desk-dashboard}"
 
 if [ -n "${LAN_IP:-}" ] && [ -n "${TAILSCALE_IP:-}" ]; then
     err "LAN_IP と TAILSCALE_IP は同時に指定できません。どちらか一方のみ設定してください（両方から到達させたい場合は両方とも未設定にしてください）。"
@@ -74,6 +77,12 @@ fi
 log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
 (
     cd "${DASHBOARD_DIR}"
+    if [ -n "${DASHBOARD_PROCESS_NAME}" ]; then
+        # Next.jsが起動後にprocess.titleを"next-server (v...)"へ固定で書き換えるため、
+        # 事前読み込みスクリプトで設定・上書き防止する。既存のNODE_OPTIONSには追記する。
+        export PROCESS_TITLE="${DASHBOARD_PROCESS_NAME}"
+        export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--require \"${SCRIPT_DIR}/set_process_title.cjs\""
+    fi
     if [ -n "${DASHBOARD_BIND_HOST}" ]; then
         nohup "${NEXT_BIN}" start -p "${DASHBOARD_PORT}" --hostname "${DASHBOARD_BIND_HOST}" \
             > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
