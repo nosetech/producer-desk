@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from orchestrator.dispatch_queue import QueueSnapshot
 from orchestrator.labels import (
@@ -57,6 +58,20 @@ IsDispatchActiveFn = Callable[[str, int], bool]
 
 # `DispatchQueue.snapshot(repo)` と同じシグネチャの関数型（issue #233）。
 GetQueueSnapshotFn = Callable[[str], QueueSnapshot]
+
+
+class PlanJobLike(Protocol):
+    """キュー表示に必要な計画ジョブの属性（`plan_jobs.PlanJob`、issue #335）。"""
+
+    id: str
+    request: str
+    inbox_issue_number: int | None
+    result: dict | None
+
+
+# キュー上の計画ジョブ番号（負数）から計画ジョブを引く関数型（issue #335）。
+# キュー待ち中に破棄された（`PlanJobStore`に無い）ジョブはNoneを返す。
+ResolvePlanJobFn = Callable[[int], PlanJobLike | None]
 
 
 @dataclass
@@ -141,6 +156,16 @@ class QueueEntry:
     title: str | None = None
     # 5つの状態ラベルのうち表示に採用する1つ。issueが無い・状態ラベル未付与の場合はNone。
     label: str | None = None
+    # エントリの種別（issue #335）。"issue"（自走タスク）または"plan"（AI計画ジョブ）。
+    # 計画ジョブの`number`は負の内部番号のため、表示には使わない。`title`には依頼文の1行目
+    # （ジョブが解決できない場合はNone）、`label`は常にNoneを入れる。
+    kind: str = "issue"
+    plan_job_id: str | None = None
+    # inbox由来の計画ジョブなら元のinbox項目のissue番号。新規タスク由来・自走タスクはNone。
+    inbox_issue_number: int | None = None
+    # 計画ジョブが既に計画（直前の結果）を持つ＝修正指示の実行・待機中か。ダッシュボードは
+    # inbox由来でこれが真のときだけ、ピン留めしたツールチップに「計画を開く」を出す。
+    plan_revising: bool = False
 
 
 @dataclass
@@ -396,17 +421,43 @@ def aggregate(
     )
 
 
-def build_project_queue(snapshot: QueueSnapshot, issues: list[IssueSummary]) -> ProjectQueue:
-    """キューのスナップショットに、issue番号で引いたタイトル・状態ラベルを付与する（#233）。"""
+def build_project_queue(
+    snapshot: QueueSnapshot,
+    issues: list[IssueSummary],
+    resolve_plan: ResolvePlanJobFn | None = None,
+) -> ProjectQueue:
+    """キューのスナップショットに、issue番号で引いたタイトル・状態ラベルを付与する（#233）。
+
+    計画ジョブ（負の番号、issue #335）は`resolve_plan`で引いた依頼文を持つ`kind="plan"`の
+    エントリにする。キュー待ち中に破棄された（解決できない）計画ジョブは実行されずに
+    捨てられるため待機列から除く。実行中のものは空き枠にならないよう種別だけのエントリにする。
+    """
     by_number = {issue.number: issue for issue in issues}
 
-    def entry(number: int) -> QueueEntry:
+    def plan_entry(number: int) -> QueueEntry | None:
+        job = resolve_plan(number) if resolve_plan is not None else None
+        if job is None:
+            return None
+        lines = job.request.strip().splitlines()
+        return QueueEntry(
+            number=number,
+            title=lines[0].strip() if lines else None,
+            kind="plan",
+            plan_job_id=job.id,
+            inbox_issue_number=job.inbox_issue_number,
+            plan_revising=job.result is not None,
+        )
+
+    def entry(number: int) -> QueueEntry | None:
+        if number < 0:
+            return plan_entry(number)
         issue = by_number.get(number)
         if issue is None:
             return QueueEntry(number=number)
         return QueueEntry(number=number, title=issue.title, label=_current_status_label(issue))
 
-    return ProjectQueue(
-        running=entry(snapshot.running) if snapshot.running is not None else None,
-        waiting=[entry(n) for n in snapshot.waiting],
-    )
+    running: QueueEntry | None = None
+    if snapshot.running is not None:
+        running = entry(snapshot.running) or QueueEntry(number=snapshot.running, kind="plan")
+    waiting = [e for e in (entry(n) for n in snapshot.waiting) if e is not None]
+    return ProjectQueue(running=running, waiting=waiting)

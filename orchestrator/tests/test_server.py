@@ -310,13 +310,79 @@ def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
     try:
         _, body = _get(server, "/api/state")
         queue = body["project_status"][0]["queue"]
-        assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
-        assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+        assert queue["running"] == {
+            "number": 1,
+            "title": "t1",
+            "label": "status:in-progress",
+            "kind": "issue",
+            "plan_job_id": None,
+            "inbox_issue_number": None,
+            "plan_revising": False,
+        }
+        assert queue["waiting"] == [
+            {
+                "number": 7,
+                "title": None,
+                "label": None,
+                "kind": "issue",
+                "plan_job_id": None,
+                "inbox_issue_number": None,
+                "plan_revising": False,
+            }
+        ]
         # キュー上の#1は理由の内訳に数えない（issue #272）。
         assert body["project_status"][0]["in_progress_breakdown"] == {
             "ci_waiting": 0,
             "orphaned": 0,
         }
+    finally:
+        release.set()
+        server.shutdown()
+
+
+def test_get_api_state_queue_includes_plan_jobs_in_fifo_order(tmp_path) -> None:
+    """計画ジョブも実際のFIFO順で`queue`に載り、破棄済みのジョブは待機列に出ない（#335）。"""
+    from orchestrator.issue_plan import IssuePlan, PlanRunner
+    from orchestrator.plan_jobs import PlanJobStore
+
+    store = StateStore()
+    store.set(AggregatedState(project_status=[ProjectStatus(repo="nosetech/project-a")]))
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    plan_store = PlanJobStore(tmp_path / "jobs.json")
+    plan_runner = PlanRunner(dispatch_queue, plan_store)
+    dispatch_queue.enqueue("nosetech/project-a", 1, "m")
+    assert started.wait(timeout=2)
+    kept = plan_store.create("nosetech/project-a", "ログイン画面を作る\n詳細", None, 42)
+    dropped = plan_store.create("nosetech/project-a", "破棄する計画", None, None)
+    plan_runner.enqueue(PROJECT_A, kept.id, lambda: IssuePlan("T", "B"))
+    plan_runner.enqueue(PROJECT_A, dropped.id, lambda: IssuePlan("T", "B"))
+    dispatch_queue.enqueue("nosetech/project-a", 7, "m")
+    plan_store.delete(dropped.id)
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        plan_runner=plan_runner,
+        plan_store=plan_store,
+    )
+    try:
+        _, body = _get(server, "/api/state")
+        queue = body["project_status"][0]["queue"]
+        assert queue["running"]["number"] == 1
+        assert [(e["kind"], e["title"]) for e in queue["waiting"]] == [
+            ("plan", "ログイン画面を作る"),
+            ("issue", None),
+        ]
+        assert queue["waiting"][0]["plan_job_id"] == kept.id
+        assert queue["waiting"][0]["inbox_issue_number"] == 42
+        assert queue["waiting"][1]["number"] == 7
     finally:
         release.set()
         server.shutdown()

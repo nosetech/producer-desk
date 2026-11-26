@@ -168,6 +168,37 @@ def test_plan_runner_serializes_with_issue_dispatch(tmp_path) -> None:
     assert runner.position("o/r", job.id) is None
 
 
+def test_plan_runner_job_id_for_resolves_queued_job_number(tmp_path) -> None:
+    """キュー上のジョブ番号（負数）から計画ジョブIDを引ける（issue #335）。"""
+    gate = threading.Event()
+    runner_ref: list[PlanRunner] = []
+
+    def dispatch_fn(repo: str, number: int, message: str) -> None:
+        if number < 0:
+            runner_ref[0].run_job(number)
+        else:
+            gate.wait(timeout=5)
+
+    queue = DispatchQueue(dispatch_fn)
+    store = PlanJobStore(tmp_path / "jobs.json")
+    runner = PlanRunner(queue, store)
+    runner_ref.append(runner)
+    queue.enqueue("o/r", 1, "")
+    job = store.create("o/r", "req", None, None)
+    runner.enqueue(_project(tmp_path), job.id, lambda: IssuePlan("T", "B"))
+    number = queue.snapshot("o/r", include_plans=True).waiting[0]
+
+    assert number < 0
+    assert runner.job_id_for(number) == job.id
+    assert runner.job_id_for(number - 1) is None
+    gate.set()
+    for _ in range(100):
+        if not runner.is_active(job.id):
+            break
+        time.sleep(0.05)
+    assert runner.job_id_for(number) is None
+
+
 def test_plan_runner_records_failure_with_code(tmp_path) -> None:
     runner_ref: list[PlanRunner] = []
     queue = DispatchQueue(lambda repo, n, m: runner_ref[0].run_job(n))

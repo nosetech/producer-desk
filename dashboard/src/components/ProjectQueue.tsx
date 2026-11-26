@@ -1,11 +1,16 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   buildQueueItems,
+  canOpenPlan,
+  isPlanEntry,
   isQueueEmpty,
+  planOpenHint,
   queueAriaLabel,
+  queueEntryAriaLabel,
   queuePositionText,
   truncateQueueTitle,
 } from "@/lib/queue";
@@ -105,7 +110,8 @@ export default function ProjectQueue({
                 key="more"
                 role="listitem"
                 className={styles.more}
-                title={`ほか ${item.count}件が待機中（${item.numbers.map((n) => `#${n}`).join(", ")}）`}
+                title={`ほか ${item.count}件が待機中（${item.labels.join(", ")}）`}
+                aria-label={`ほか ${item.count}件が待機中（${item.labels.join(", ")}）`}
               >
                 +{item.count}
               </span>
@@ -118,11 +124,12 @@ export default function ProjectQueue({
           const { entry } = item;
           const posText = queuePositionText(isRunning, position);
           const hasInfo = entry.title !== null;
+          const isPlan = isPlanEntry(entry);
           return (
             <span key={key} role="listitem" className={styles.item}>
               <button
                 type="button"
-                aria-label={`#${entry.number}${hasInfo ? ` ${entry.title}` : ""} — ${posText}`}
+                aria-label={queueEntryAriaLabel(entry, posText)}
                 aria-expanded={pinned}
                 className={`${styles.taskButton} ${active ? styles.taskButtonActive : ""} ${pinned ? styles.taskButtonPinned : ""}`}
                 onMouseEnter={(e) => {
@@ -170,7 +177,21 @@ export default function ProjectQueue({
                     );
                 }}
               >
-                {isRunning ? (
+                {isPlan ? (
+                  isRunning ? (
+                    <>
+                      <span aria-hidden className={styles.planRunRingWrap}>
+                        <span className={styles.planRunRing} />
+                      </span>
+                      <span aria-hidden className={styles.planRunDot} />
+                    </>
+                  ) : (
+                    <span
+                      aria-hidden
+                      className={`${styles.planWaitIcon} ${hasInfo ? "" : styles.planWaitIconUnknown}`}
+                    />
+                  )
+                ) : isRunning ? (
                   <>
                     <span aria-hidden className={styles.runRing} />
                     <span aria-hidden className={styles.runDot} />
@@ -214,6 +235,7 @@ function QueueTooltip({
   );
   const arrowX = rect.x - left;
   const meta = entry.label ? statusMeta(entry.label) : null;
+  const isPlan = isPlanEntry(entry);
   return (
     <>
       {pinned && (
@@ -245,11 +267,22 @@ function QueueTooltip({
           style={{ left: arrowX - 5 }}
         />
         <div className={styles.tipHead}>
-          <span className={styles.tipNumber}>#{entry.number}</span>
+          {isPlan ? (
+            <span className={styles.planChip}>
+              <SparkleIcon />
+              AI計画
+            </span>
+          ) : (
+            <span className={styles.tipNumber}>#{entry.number}</span>
+          )}
           <span
             className={`${styles.pos} ${tip.isRunning ? styles.posRunning : ""}`}
           >
-            {tip.isRunning && <span className={styles.posDot} />}
+            {tip.isRunning && (
+              <span
+                className={`${styles.posDot} ${isPlan ? styles.posDotPlan : ""}`}
+              />
+            )}
             {queuePositionText(tip.isRunning, tip.position)}
           </span>
           <span className={styles.spacer} />
@@ -268,7 +301,15 @@ function QueueTooltip({
             </button>
           )}
         </div>
-        {entry.title !== null && (
+        {isPlan && entry.title !== null && (
+          <PlanTipBody
+            entry={entry}
+            repo={repo}
+            pinned={pinned}
+            onClose={onClose}
+          />
+        )}
+        {!isPlan && entry.title !== null && (
           <>
             {pinned ? (
               <a
@@ -308,6 +349,76 @@ function QueueTooltip({
           </>
         )}
       </div>
+    </>
+  );
+}
+
+function SparkleIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "none" }}
+    >
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z" />
+      <path d="M19 15l.7 1.8 1.8.7-1.8.7L19 20l-.7-1.8-1.8-.7 1.8-.7Z" />
+    </svg>
+  );
+}
+
+/**
+ * 計画ジョブのツールチップ本文（issue #335）。依頼文の冒頭・プロジェクト名・inbox番号を出し、
+ * GitHubへのリンクは作らない。ピン留め時は、inbox由来の修正中の計画だけ「計画を開く」で
+ * issue一覧のinboxの計画確認パネルを開き、それ以外は確認できる場所を案内する。
+ */
+function PlanTipBody({
+  entry,
+  repo,
+  pinned,
+  onClose,
+}: {
+  entry: QueueEntry;
+  repo: string;
+  pinned: boolean;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const inbox = entry.inbox_issue_number;
+  return (
+    <>
+      <div className={styles.tipTitle}>
+        {truncateQueueTitle(entry.title ?? "")}
+      </div>
+      <div className={styles.tipMeta}>
+        <span className={styles.tipRepo}>{repo}</span>
+        {inbox != null && (
+          <span className={styles.inboxChip}>inbox #{inbox}</span>
+        )}
+      </div>
+      {pinned &&
+        (canOpenPlan(entry) ? (
+          <button
+            type="button"
+            className={styles.openPlan}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+              router.push(`/projects/${repo}?plan=${inbox}`);
+            }}
+          >
+            <SparkleIcon />
+            計画を開く
+          </button>
+        ) : (
+          <span className={styles.openHint}>{planOpenHint(entry)}</span>
+        ))}
     </>
   );
 }

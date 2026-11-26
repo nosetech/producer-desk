@@ -172,10 +172,120 @@
   }
 }
 
+/* issue #335: AI計画ジョブ。feature/issue-335-queue-plan.logic.jsのqueuePlanRun*・planWaitStyle・
+   qtipPlanChip・qtipOpenBtn・qtipHintに対応する（--accent→--accent-blue、--dim→--text-secondary、
+   --faint→--text-tertiary、--border→--border-subtle）。形はひし形で自走タスクの丸・角丸四角と区別する。 */
+.planRunDot {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  border-radius: 1.5px;
+  transform: rotate(45deg);
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 2px var(--accent-blue-bg);
+}
+
+.planRunRingWrap {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.planRunRing {
+  display: block;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: 1.5px;
+  border: 1.5px solid var(--accent-blue);
+  animation: qring 1.8s ease-out infinite;
+}
+
+.planWaitIcon {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  box-sizing: border-box;
+  border-radius: 1.5px;
+  transform: rotate(45deg);
+  border: 1.5px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.planWaitIconUnknown {
+  border-style: dashed;
+}
+
+.taskButtonActive .planWaitIcon {
+  background: var(--accent-blue);
+}
+
+.planChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent-blue);
+}
+
+.posDotPlan {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.inboxChip {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px dashed var(--border-subtle);
+}
+
+.openPlan {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 0 10px;
+  min-height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.openPlan:hover {
+  filter: brightness(1.08);
+}
+
+.openHint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .runRing,
   .posDot {
     animation: none;
+  }
+  /* デザインどおり、動きを抑える設定では計画ジョブのリングを出さず形・色だけで区別する。 */
+  .planRunRing {
+    animation: none;
+    opacity: 0;
   }
 }
 
@@ -190,6 +300,9 @@
   .taskButton {
     width: 32px;
     height: 32px;
+  }
+  .openPlan {
+    min-height: 36px;
   }
 }
 
