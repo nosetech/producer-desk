@@ -512,7 +512,12 @@ export default function InboxSection({
   // ダッシュボードのキュー図の「計画を開く」（issue #335）から`?plan=<inbox番号>`付きで
   // 遷移してきた場合は、その項目の計画確認パネルを開いた状態で表示する。
   useEffect(() => {
-    const n = Number(new URLSearchParams(window.location.search).get("plan"));
+    const url = new URL(window.location.href);
+    const n = Number(url.searchParams.get("plan"));
+    if (!url.searchParams.has("plan")) return;
+    // リロード・ブックマークで開き直したときに再びパネルが開かないよう、読んだら消す。
+    url.searchParams.delete("plan");
+    window.history.replaceState(window.history.state, "", url);
     if (Number.isInteger(n) && n > 0) setPlanOpen(n);
   }, []);
   // 計画の完了・失敗は、控えめなトーストで知らせる（Slackにも通知済み）。
