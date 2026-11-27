@@ -29,8 +29,9 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from orchestrator.config import REPO_ROOT
 from orchestrator.timezone import JST as _JST
@@ -159,6 +160,102 @@ RecordLocalLlmUsageReportFn = Callable[..., None]
 def parse_limit_reset_text(message: str) -> str | None:
     match = _LIMIT_RESET_PATTERN.search(message)
     return match.group(0).strip() if match else None
+
+
+# issue #331: `parse_limit_reset_text`が抜き出した記述を絶対時刻へ変換するための書式。
+# 実ログ（`logs/<repo>/*.log`の`result`・usage.dbの`limit_reset_text`）で確認できた文言は
+# `resets 1pm (Asia/Tokyo)` / `resets 6:30pm (Asia/Tokyo)` / `resets 1:20pm (Asia/Tokyo)` /
+# `resets 1am (Asia/Tokyo)`。週間リミット等で日付が付く場合の`resets Nov 28, 3pm (...)`・
+# `resets Nov 28 at 3pm`、24時間表記の`resets 13:00`も受け付ける。
+_LIMIT_RESET_AT_PATTERN = re.compile(
+    r"resets?\s+"
+    r"(?:(?P<month>[A-Za-z]{3,9})\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?"
+    r"(?:\s*\((?P<tz>[^)]+)\))?",
+    re.IGNORECASE,
+)
+
+_MONTHS = {
+    name: index
+    for index, names in enumerate(
+        (
+            ("jan", "january"),
+            ("feb", "february"),
+            ("mar", "march"),
+            ("apr", "april"),
+            ("may",),
+            ("jun", "june"),
+            ("jul", "july"),
+            ("aug", "august"),
+            ("sep", "sept", "september"),
+            ("oct", "october"),
+            ("nov", "november"),
+            ("dec", "december"),
+        ),
+        start=1,
+    )
+    for name in names
+}
+
+
+def parse_limit_reset_at(text: str | None, recorded_at: datetime) -> datetime | None:
+    """解除予定時刻の記述（例: `resets 1pm (Asia/Tokyo)`）をタイムゾーン付きの絶対時刻にする。
+
+    - 時刻のみの場合は、`recorded_at`（記録時刻、タイムゾーン付き）以降で最初にその
+      時刻になる日時とする
+    - 日付付きの場合は`recorded_at`の年とし、それが記録時刻より1日以上前になる場合
+      （年またぎ）は翌年とする
+    - 括弧内のタイムゾーン名は`zoneinfo`で解決し、無いときはJSTとみなす
+    - 変換できない（書式不明・解決できないタイムゾーン名・存在しない日時・am/pmも分も無く
+      12時間表記か24時間表記か判別できない）場合は`None`を返す。推測で時刻を補わない
+      （呼び出し側は自動再開せず従来どおり判断待ちに残す。issue #331）
+    """
+    if not text:
+        return None
+    match = _LIMIT_RESET_AT_PATTERN.search(text)
+    if match is None:
+        return None
+
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute") or 0)
+    ampm = (match.group("ampm") or "").lower()
+    if ampm:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if ampm == "pm" else 0)
+    elif match.group("minute") is None:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+
+    tz_name = match.group("tz")
+    zone: tzinfo
+    if tz_name:
+        try:
+            zone = ZoneInfo(tz_name.strip())
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+    else:
+        zone = _JST
+
+    base = recorded_at.astimezone(zone)
+    month_name = match.group("month")
+    try:
+        if month_name:
+            month = _MONTHS.get(month_name.lower())
+            if month is None:
+                return None
+            day = int(match.group("day"))
+            candidate = datetime(base.year, month, day, hour, minute, tzinfo=zone)
+            if candidate < base - timedelta(days=1):
+                candidate = candidate.replace(year=base.year + 1)
+            return candidate
+        candidate = datetime(base.year, base.month, base.day, hour, minute, tzinfo=zone)
+    except ValueError:
+        return None
+    if candidate <= base:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:

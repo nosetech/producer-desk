@@ -62,6 +62,7 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
+from orchestrator.limit_wait import build_limit_wait_marker, extract_limit_resume_attempt
 from orchestrator.litellm_model_config import SessionGuardSettings
 from orchestrator.litellm_model_config import (
     resolve_session_guard_settings as litellm_resolve_session_guard_settings,
@@ -92,6 +93,7 @@ from orchestrator.usage_store import (
     RecordLocalLlmUsageReportFn,
     RecordUsageFn,
     UsageRecord,
+    parse_limit_reset_at,
     parse_limit_reset_text,
 )
 from orchestrator.usage_store import (
@@ -943,16 +945,59 @@ _FAILURE_COMMENT_ERROR_MAX_CHARS = 2000
 # 既に検知している`is_error`/`api_error_status`をここでも参照し、429の場合は
 # ログパスの代わりにリミット到達である旨と解除予定時刻を伝える。429以外の
 # 異常終了（予期しない例外等）ではデバッグに必要なため従来通りログパスを含める。
-def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: Path) -> str:
+def _format_reset_at(reset_at: datetime) -> str:
+    local = reset_at.astimezone(JST)
+    return f"{local.month}/{local.day} {local.hour:02d}:{local.minute:02d}"
+
+
+@dataclass(frozen=True)
+class LimitAutoResume:
+    """利用リミット到達時の自動再開の設定（issue #331）。
+
+    `previous_attempt`は、今回の実行が自動再開だった場合の連続回数（自動再開でなければ0）。
+    """
+
+    max_attempts: int
+    previous_attempt: int = 0
+
+
+def _build_failure_comment(
+    payload: dict | None,
+    *,
+    returncode: int,
+    log_path: Path,
+    recorded_at: datetime | None = None,
+    auto_resume: LimitAutoResume | None = None,
+) -> str:
     error_info = _classify_run_error(payload)
 
     # `result`が空/非文字列で解除予定時刻等の情報が一切得られない場合、
     # ログパスを省いた文面では人間が調査する手がかりが無くなってしまうため、
     # 429以外の異常終了と同じ従来通りのログパス付きメッセージにフォールバックする。
     if error_info.is_error and error_info.api_error_status == 429 and error_info.limit_reset_text:
-        return (
+        base = (
             ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
             f"（{error_info.limit_reset_text}）"
+        )
+        # issue #331: 解除予定時刻を絶対時刻に変換できた場合だけ、自動再開のマーカーを付ける。
+        # 変換できない場合は推測で時刻を補わず、従来どおり判断待ちのまま残す。
+        if auto_resume is None or recorded_at is None:
+            return base
+        reset_at = parse_limit_reset_at(error_info.limit_reset_text, recorded_at)
+        if reset_at is None:
+            return base
+        attempt = auto_resume.previous_attempt + 1
+        if attempt > auto_resume.max_attempts:
+            return (
+                f"{base}\n\n連続の自動再開が上限（{auto_resume.max_attempts}回）に達したため、"
+                "自動再開は行いません。解除後に返信で再開を指示してください。"
+            )
+        return (
+            f"{base}\n\n:hourglass_flowing_sand: 解除予定の"
+            f"{_format_reset_at(reset_at)}（JST）を過ぎたら、同じセッションで自動的に再開します。"
+            "別のモデルで今すぐ再開する場合や、自動再開を取り消す場合はダッシュボードの"
+            "判断待ちカードから操作してください。\n\n"
+            f"{build_limit_wait_marker(reset_at, attempt)}"
         )
 
     base = f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。"
@@ -1229,7 +1274,24 @@ def run_agent_runner(
                 append_pr_issue_reference_fn=append_pr_issue_reference_fn,
             )
     else:
-        error_comment = _build_failure_comment(payload, returncode=returncode, log_path=log_path)
+        # issue #331: (A) Claude Code直利用で`limit_auto_resume`が有効なプロジェクトに限り、
+        # 解除予定時刻に自動再開するためのマーカーを付ける。
+        auto_resume = (
+            LimitAutoResume(
+                max_attempts=project.limit_auto_resume_max_attempts,
+                previous_attempt=extract_limit_resume_attempt(message),
+            )
+            if project.limit_auto_resume
+            and execution_settings.execution_mode == EXECUTION_MODE_CLAUDE_CODE
+            else None
+        )
+        error_comment = _build_failure_comment(
+            payload,
+            returncode=returncode,
+            log_path=log_path,
+            recorded_at=now(),
+            auto_resume=auto_resume,
+        )
         post_comment(project.repo, issue_number, error_comment)
         transition_label(
             project.repo,

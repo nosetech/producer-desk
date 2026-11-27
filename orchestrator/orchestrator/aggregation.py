@@ -34,6 +34,7 @@ from orchestrator.labels import (
     STATUS_NEEDS_HUMAN_DECISION,
     STATUS_TODO,
 )
+from orchestrator.limit_wait import LimitWait, extract_limit_wait_marker
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,19 @@ class IssueSummary:
     created_at: str = ""
     # マイルストーンのタイトル（issue #303）。未設定ならNone。
     milestone: str | None = None
+    # 利用リミット待ちで自動再開が予定されている判断待ちissueのみ（issue #331）。
+    # `aggregate()`が判断待ち一覧を作る際に最新コメントのマーカーから埋める。
+    limit_wait: LimitWaitInfo | None = None
+
+
+@dataclass
+class LimitWaitInfo:
+    """ダッシュボード表示用の利用リミット待ち情報（issue #331）。"""
+
+    # 解除予定時刻（ISO 8601、タイムゾーン付き）。この時刻を過ぎた後のポーリングで自動再開する。
+    reset_at: str
+    # 連続の自動再開のうち何回目の待機か（1始まり）。
+    attempt: int
 
 
 @dataclass
@@ -271,6 +285,22 @@ def latest_ci_wait_pr_number(issue: IssueSummary) -> int | None:
     return extract_ci_wait_marker(body)
 
 
+def latest_limit_wait(issue: IssueSummary) -> LimitWait | None:
+    """最新コメントが利用リミット待ちマーカー付きのBot投稿ならその内容を返す（issue #331）。
+
+    最新コメントのみを見る。マーカーの後に人間の返信・別モデル指定・取り消しコメントが
+    付いていれば、自動再開は予定されていないとみなす。
+    """
+    from orchestrator.github_client import BOT_COMMENT_MARKER
+
+    if not issue.comments:
+        return None
+    body = issue.comments[-1].get("body", "")
+    if BOT_COMMENT_MARKER not in body:
+        return None
+    return extract_limit_wait_marker(body)
+
+
 def _is_orphaned_in_progress(
     issue: IssueSummary, label: str, is_dispatch_active: IsDispatchActiveFn | None
 ) -> bool:
@@ -359,6 +389,13 @@ def aggregate(
 
     decisions = [issue for issue in all_issues if STATUS_NEEDS_HUMAN_DECISION in issue.labels]
     decisions.sort(key=lambda issue: issue.updated_at, reverse=True)
+    for issue in decisions:
+        wait = latest_limit_wait(issue)
+        issue.limit_wait = (
+            LimitWaitInfo(reset_at=wait.reset_at.isoformat(), attempt=wait.attempt)
+            if wait is not None
+            else None
+        )
 
     reviews = [issue for issue in all_issues if STATUS_IN_REVIEW in issue.labels]
     reviews.sort(key=lambda issue: issue.updated_at, reverse=True)

@@ -29,6 +29,19 @@ export interface IssueSummary {
   pr_number: number | null;
   /** `status:in-review` のissueの対応PR候補（issue #206）。 */
   pr_candidates: PrCandidate[];
+  /**
+   * 利用リミット待ちで自動再開が予定されている判断待ちissueのみ（issue #331）。
+   * 最新コメントの利用リミット待ちマーカーからオーケストレータが埋める。
+   */
+  limit_wait?: LimitWaitInfo | null;
+}
+
+/** 利用リミット待ちの情報（issue #331）。オーケストレータのLimitWaitInfoに対応する。 */
+export interface LimitWaitInfo {
+  /** 解除予定時刻（ISO 8601、タイムゾーン付き）。過ぎた後のポーリングで自動再開する。 */
+  reset_at: string;
+  /** 連続の自動再開のうち何回目の待機か（1始まり）。 */
+  attempt: number;
 }
 
 /** issueの対応PR候補。オーケストレータのPrCandidateに対応する（issue #206）。 */
