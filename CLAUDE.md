@@ -27,8 +27,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `project/ProducerDesk.logic.js`: スタイル・状態ロジック（**`.dc.html`と両方**を読むこと）
   - `project/ProducerDeskIcons.dc.html` / `project/SendingSpinner.dc.html` / `project/IconColorCheck.dc.html`: アイコン・送信中スピナー・アイコン配色確認
   - `project/feature/issue-<n>-*.dc.html` と対の `.logic.js`: issue単位の差分デザイン（マスターへ未マージのもの）
-    - `project/feature/issue-323-snippets.dc.html` / `.logic.js`: 返信欄の定型文セレクトと定型文管理画面（issue #323）。`.logic.js`はマスターの`ProducerDesk.logic.js`を読み込んで継承し、差分のスタイル（`sn`・`snp`）だけを定義している（マスターが256KiBに近いため）
-    - `project/feature/issue-335-queue-plan.dc.html` / `.logic.js` / `.dashboard.dc.html`: プロジェクトチップのキュー図へのAI計画ジョブの表示（issue #335）。`.logic.js`はマスターを継承し、差分のスタイル（`queuePlanRun*`・`planWaitStyle`・`qtipPlanChip`・`qtipOpenBtn`・`qtipHint`）を定義している。キュー図のマークアップはダッシュボード子コンポーネントの機能用コピー`.dashboard.dc.html`、ツールチップは`.dc.html`側にある
+    - `project/feature/issue-325-decision-card.dc.html` / `.logic.js` / `.dashboard.dc.html`: 判断待ちカードの「承認」ボタン削除とカード上の「判断が必要な事項」表示（issue #325）。`.logic.js`はルートのロジック一式を継承し、差分のスタイル（`decReplyBtn`・`decFullBtn`・`decBox`・`decHead`・`decCount`・`decRow`・`decNum`・`decText`・`decOpt`・`decMoreBtn`等）を定義している。カードのマークアップはダッシュボード子コンポーネントの機能用コピー`.dashboard.dc.html`にある
+  - `project/ProducerDesk.snippets.logic.js` / `project/ProducerDesk.queue.logic.js`: マージ済みの定型文（issue #323）・キューの計画ジョブ（issue #335）のロジック。マスターの`.logic.js`が256KiBに近いため、本体を継承する拡張ファイルとしてルートに置かれ、ページが本体の後に読み込む
   - `project/ProducerDesk.meta.logic.js` / `project/ProducerDeskDashboard.dc.html` / `project/ProducerDeskInbox.dc.html` / `project/ProducerDeskLightbox.dc.html`: マスターから分割された子コンポーネント・ロジック
   - `project/support.js`: 共通スクリプト
   - `artifact-type/` と `SKILL.md` は Artifact の仕組み側のファイルでデザインではない。読まない。

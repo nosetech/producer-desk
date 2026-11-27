@@ -25,6 +25,7 @@ import {
   DECISION_POINTS_HEADING,
   commentSummary,
   extractDecisionPoints,
+  splitOptionTag,
   formatCommentTime,
 } from "@/lib/comment";
 import type {
@@ -41,6 +42,7 @@ import EdgeHandles from "./EdgeHandles";
 import { AlertCircleIcon, PlusIcon, SnippetIcon } from "./Icons";
 import PlanComposer, { PlanModeToggle } from "./PlanComposer";
 import { SNIPPETS_NAV_HREF } from "./Sidebar";
+import InlineCode from "./InlineCode";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -224,32 +226,6 @@ function SnippetSelectRow({
   );
 }
 
-// 判断事項本文のインライン`code`をコード表示にする（Claude Designの_segsに合わせる）。
-function InlineCode({ text }: { text: string }) {
-  return (
-    <>
-      {text
-        .split(/(`[^`]+`)/)
-        .filter(Boolean)
-        .map((part, i) =>
-          part.length > 1 && part.startsWith("`") && part.endsWith("`") ? (
-            <code key={i} className={styles.decCode}>
-              {part.slice(1, -1)}
-            </code>
-          ) : (
-            <span key={i}>{part.replace(/\*\*/g, "")}</span>
-          ),
-        )}
-    </>
-  );
-}
-
-// 「Foo: 説明」形式の選択肢は、先頭（12文字以内）をタグとして分けて表示する。
-function splitOptionTag(option: string): { tag: string; text: string } | null {
-  const m = option.match(/^([^:：\s]{1,12})\s*[:：]\s*(.+)$/);
-  return m ? { tag: m[1], text: m[2] } : null;
-}
-
 function ReplyQuote({
   comments,
   index,
@@ -430,7 +406,10 @@ function ReplyQuote({
                   <div className={styles.decMain}>
                     <span className={styles.decNum}>{i + 1}</span>
                     <span className={styles.decText}>
-                      <InlineCode text={d.text} />
+                      <InlineCode
+                        text={d.text}
+                        codeClassName={styles.decCode}
+                      />
                     </span>
                   </div>
                   {d.options.length > 0 && (
@@ -447,7 +426,10 @@ function ReplyQuote({
                               <span className={styles.decBullet}>•</span>
                             )}
                             <span className={styles.decOptionText}>
-                              <InlineCode text={tagged ? tagged.text : o} />
+                              <InlineCode
+                                text={tagged ? tagged.text : o}
+                                codeClassName={styles.decCode}
+                              />
                             </span>
                           </li>
                         );

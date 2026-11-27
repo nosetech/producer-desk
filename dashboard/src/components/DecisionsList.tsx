@@ -22,7 +22,7 @@ export default function DecisionsList({
           <span className={styles.countBadge}>{decisions.length} 件</span>
         </div>
       </div>
-      <span className={styles.subtitle}>AIからの承認リクエスト</span>
+      <span className={styles.subtitle}>AIからの判断依頼</span>
       {decisions.length === 0 ? (
         <div className={styles.empty}>判断待ちはありません</div>
       ) : (
