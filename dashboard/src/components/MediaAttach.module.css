@@ -1,0 +1,469 @@
+/* 返信欄・新規タスク作成の画像・動画の添付（issue #301）。
+ * 値はデザイン feature/issue-301-media-attach.logic.js の `_atView` のスタイルオブジェクトに合わせる。
+ * デザインの変数との対応: --accent → --accent-blue / --accent-bg → --accent-blue-bg /
+ * --surface → --bg-panel / --bg → --bg-page / --border → --border-subtle /
+ * --text → --text-primary / --dim → --text-secondary / --faint → --text-tertiary /
+ * --done → --accent-green */
+
+@keyframes atPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes atFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes atSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes atDash {
+  0% {
+    stroke-dasharray: 2 200;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 90 200;
+    stroke-dashoffset: -30;
+  }
+  100% {
+    stroke-dasharray: 2 200;
+    stroke-dashoffset: -125;
+  }
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 11px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+  overflow: hidden;
+}
+
+.btn:hover:not(.btnOff) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.btnOff {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.fileInput {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0;
+}
+
+.btnOff .fileInput {
+  cursor: not-allowed;
+}
+
+.hint {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.sum {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tray {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 6px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 5px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+
+.chipOff {
+  opacity: 0.75;
+}
+
+.thumbBtn {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  padding: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-page);
+  cursor: zoom-in;
+  display: block;
+}
+
+.thumbBtn:disabled {
+  cursor: default;
+}
+
+.thumbImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.vidBox {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-page);
+  color: var(--accent-blue);
+  box-sizing: border-box;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.rmBtn {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.rmBtn:hover:not(:disabled) {
+  background: var(--bg-page);
+  color: var(--text-primary);
+}
+
+.rmBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.upDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  flex: none;
+  animation: atPulse 1.2s ease-in-out infinite;
+}
+
+.errBox {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px 9px 12px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+}
+
+.errHeadRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.errList {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 21px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.errName {
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.errClose {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--warn);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+}
+
+/* 既存のジョブ進捗表示（JobStatus）と同じ見た目 */
+.upBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  animation: atFade 0.2s ease;
+}
+
+.upTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.upHead {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.upCount {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  flex: none;
+}
+
+.upRows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.spin {
+  flex: none;
+  animation: atSpin 1.5s linear infinite;
+}
+
+.spinDash {
+  animation: atDash 1.5s linear infinite;
+}
+
+.pendingDot {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.pendingDot::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-tertiary);
+}
+
+.upLabel {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.upLabelActive {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.upLine {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+  min-width: 8px;
+}
+
+.upNote {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* テキストエリアのドロップ受付 */
+.dropWrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 10px;
+  border: 2px dashed var(--accent-blue);
+  background: var(--accent-blue-bg);
+  backdrop-filter: blur(1px);
+  color: var(--accent-blue);
+  pointer-events: none;
+  text-align: center;
+  padding: 8px;
+}
+
+.dropTitle {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.dropSub {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .btn {
+    min-height: 36px;
+  }
+
+  .hint {
+    flex: 1 1 100%;
+  }
+
+  .tray {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .thumbBtn,
+  .vidBox {
+    width: 44px;
+    height: 44px;
+  }
+
+  .rmBtn,
+  .errClose {
+    width: 36px;
+    height: 36px;
+  }
+}
