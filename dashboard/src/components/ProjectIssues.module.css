@@ -964,6 +964,24 @@
   z-index: 32;
 }
 
+/* キーボード操作のカーソル行（issue #322）。選択行・停止の可能性の「塗り」と重ねても
+   両方読めるよう、枠線のみで表す。値は差分デザイン issue-322-keyboard-shortcuts の rowCur / cardCur。 */
+.rowCursor {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+.rowCursor.rowEditing {
+  z-index: 32;
+}
+
+.cardCursor {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
 .cardSelected {
   border-color: var(--accent-blue);
   background: var(--accent-blue-bg);

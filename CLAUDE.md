@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `project/ProducerDeskIcons.dc.html` / `project/SendingSpinner.dc.html` / `project/IconColorCheck.dc.html`: アイコン・送信中スピナー・アイコン配色確認
   - `project/feature/issue-<n>-*.dc.html` と対の `.logic.js`: issue単位の差分デザイン（マスターへ未マージのもの）
     - `project/feature/issue-325-decision-card.dc.html` / `.logic.js` / `.dashboard.dc.html`: 判断待ちカードの「承認」ボタン削除とカード上の「判断が必要な事項」表示（issue #325）。`.logic.js`はルートのロジック一式を継承し、差分のスタイル（`decReplyBtn`・`decFullBtn`・`decBox`・`decHead`・`decCount`・`decRow`・`decNum`・`decText`・`decOpt`・`decMoreBtn`等）を定義している。カードのマークアップはダッシュボード子コンポーネントの機能用コピー`.dashboard.dc.html`にある
+    - `project/feature/issue-322-keyboard-shortcuts.dc.html` / `.logic.js`: issue一覧のキーボードショートカット（カーソル行の強調表示と画面下部のショートカットガイド、issue #322）。`.logic.js`はルートのロジック一式を継承し、`renderVals`内でカーソル行のスタイル（`rowCur`・`cardCur`）とガイドのスタイル（`kbGuide`の`wrap`・`head`・`item`・`sep`、キーは`navKbdStyle`を流用）を定義している。issue一覧はページ本体にあるため子コンポーネントのコピーは無い
   - `project/ProducerDesk.snippets.logic.js` / `project/ProducerDesk.queue.logic.js`: マージ済みの定型文（issue #323）・キューの計画ジョブ（issue #335）のロジック。マスターの`.logic.js`が256KiBに近いため、本体を継承する拡張ファイルとしてルートに置かれ、ページが本体の後に読み込む
   - `project/ProducerDesk.meta.logic.js` / `project/ProducerDeskDashboard.dc.html` / `project/ProducerDeskInbox.dc.html` / `project/ProducerDeskLightbox.dc.html`: マスターから分割された子コンポーネント・ロジック
   - `project/support.js`: 共通スクリプト

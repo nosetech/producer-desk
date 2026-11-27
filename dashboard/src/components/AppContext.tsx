@@ -56,6 +56,8 @@ export interface AppContextValue {
   ) => void;
   /** 新規タスク作成を開く。inbox項目を渡すと「AIに計画してもらう」をその項目を入力元に起動する（issue #288）。 */
   openNewTask: (repo: string, inbox?: InboxItem) => void;
+  /** 返信・新規作成のバー（ComposerBar）を開いているか。画面内ショートカットの`Esc`判定に使う（issue #322）。 */
+  composerOpen: boolean;
   /**
    * inbox項目の計画を依頼した直後の通知（issue #315）。ComposerBarとInboxSectionは計画ジョブを
    * 別々にポーリングしているため、依頼直後にinbox側へ即時反映させる。

@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUE_LIST_SHORTCUTS,
+  NAV_SHORTCUTS,
+  ariaKeyShortcuts,
   isSameScreen,
+  relocateCursor,
+  resolveIssueListAction,
   resolveShortcutHref,
   shouldIgnoreShortcut,
+  stepIndex,
 } from "./shortcuts";
 
 const base = { key: "d", target: { tagName: "DIV" } };
@@ -63,5 +69,116 @@ describe("isSameScreen", () => {
     expect(isSameScreen("/projects/foo", "/projects")).toBe(true);
     expect(isSameScreen("/prompts", "/projects")).toBe(false);
     expect(isSameScreen("/projects", "/")).toBe(false);
+  });
+});
+
+describe("shouldIgnoreShortcut（オプション）", () => {
+  it("allowShiftでShift付きを許可する", () => {
+    expect(
+      shouldIgnoreShortcut({ ...base, key: "H", shiftKey: true }, false, {
+        allowShift: true,
+      }),
+    ).toBe(false);
+  });
+  it("allowRepeatで押しっぱなしを許可する", () => {
+    expect(
+      shouldIgnoreShortcut({ ...base, key: "j", repeat: true }, false, {
+        allowRepeat: true,
+      }),
+    ).toBe(false);
+  });
+  it("許可しても入力中・IME・他の修飾キー・モーダルは無視する", () => {
+    const opts = { allowShift: true, allowRepeat: true };
+    const ev = { ...base, key: "H", shiftKey: true };
+    expect(
+      shouldIgnoreShortcut(
+        { ...ev, target: { tagName: "INPUT" } },
+        false,
+        opts,
+      ),
+    ).toBe(true);
+    expect(
+      shouldIgnoreShortcut({ ...ev, isComposing: true }, false, opts),
+    ).toBe(true);
+    expect(shouldIgnoreShortcut({ ...ev, ctrlKey: true }, false, opts)).toBe(
+      true,
+    );
+    expect(shouldIgnoreShortcut(ev, true, opts)).toBe(true);
+  });
+  it("Shift付きのH/Lは既定（画面遷移ショートカット）では無視される", () => {
+    for (const key of ["H", "L"]) {
+      expect(shouldIgnoreShortcut({ ...base, key, shiftKey: true })).toBe(true);
+    }
+  });
+});
+
+describe("resolveIssueListAction", () => {
+  it("各キーを動作に解決する（大文字小文字を区別）", () => {
+    expect(resolveIssueListAction("h")).toBe("prevProject");
+    expect(resolveIssueListAction("l")).toBe("nextProject");
+    expect(resolveIssueListAction("j")).toBe("cursorDown");
+    expect(resolveIssueListAction("k")).toBe("cursorUp");
+    expect(resolveIssueListAction("x")).toBe("toggleSelect");
+    expect(resolveIssueListAction("Escape")).toBe("clearSelection");
+    expect(resolveIssueListAction("H")).toBe("prevFilter");
+    expect(resolveIssueListAction("L")).toBe("nextFilter");
+  });
+  it("Shift付きの英小文字は大文字として扱う", () => {
+    expect(resolveIssueListAction("h", true)).toBe("prevFilter");
+    expect(resolveIssueListAction("l", true)).toBe("nextFilter");
+    expect(resolveIssueListAction("j", true)).toBeNull();
+  });
+  it("未割り当てのキーはnull", () => {
+    expect(resolveIssueListAction("d")).toBeNull();
+    expect(resolveIssueListAction("J")).toBeNull();
+  });
+  it("画面遷移ショートカット（d/i/p/s）と重ならない", () => {
+    const nav = NAV_SHORTCUTS.map((s) => s.key as string);
+    for (const s of ISSUE_LIST_SHORTCUTS) {
+      expect(nav).not.toContain(s.key.toLowerCase());
+    }
+  });
+});
+
+describe("ariaKeyShortcuts", () => {
+  it("Shift付きのキーはShift+で表す", () => {
+    expect(ariaKeyShortcuts("prevProject", "nextProject")).toBe("h l");
+    expect(ariaKeyShortcuts("prevFilter", "nextFilter")).toBe(
+      "Shift+H Shift+L",
+    );
+  });
+});
+
+describe("stepIndex", () => {
+  it("前後へ進め、端で止まる", () => {
+    expect(stepIndex(1, 1, 3)).toBe(2);
+    expect(stepIndex(2, 1, 3)).toBe(2);
+    expect(stepIndex(1, -1, 3)).toBe(0);
+    expect(stepIndex(0, -1, 3)).toBe(0);
+  });
+  it("未選択なら下向きは先頭、上向きは末尾から", () => {
+    expect(stepIndex(-1, 1, 3)).toBe(0);
+    expect(stepIndex(-1, -1, 3)).toBe(2);
+  });
+  it("範囲外のcurrentも未選択扱い", () => {
+    expect(stepIndex(5, 1, 3)).toBe(0);
+  });
+  it("空ならnull", () => {
+    expect(stepIndex(0, 1, 0)).toBeNull();
+  });
+});
+
+describe("relocateCursor", () => {
+  it("残っていればそのまま", () => {
+    expect(relocateCursor(2, [1, 2, 3], [3, 2])).toBe(2);
+  });
+  it("消えたら後ろの最も近い行、無ければ前の行へ寄せる", () => {
+    expect(relocateCursor(2, [1, 2, 3, 4], [1, 4])).toBe(4);
+    expect(relocateCursor(4, [1, 2, 3, 4], [1, 2])).toBe(2);
+  });
+  it("寄せる先が無ければnull", () => {
+    expect(relocateCursor(2, [1, 2], [])).toBeNull();
+    expect(relocateCursor(2, [], [1])).toBeNull();
+    expect(relocateCursor(null, [1], [1])).toBeNull();
   });
 });
