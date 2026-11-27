@@ -158,6 +158,112 @@
 @media (max-width: 640px) {
 }
 
+/* 作業結果（CI・レビュー）と判断事項の並び（Artifactデザイン issue-324-review-card の sumWrap・resBox 系。issue #324）。
+   デザインの--done→--accent-green、--dim→--text-secondary、--faint→--text-tertiary、--text→--text-primary、
+   --border→--border-subtle に対応する。 */
+.sumWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resBox {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+}
+
+/* 未対応の指摘がある場合だけ、判断事項ブロックと同じ「左端の線」を警告色で付ける。 */
+.resBoxWarn {
+  background: var(--warn-bg);
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+.resRow {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+}
+
+.resLabel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  line-height: 20px;
+}
+
+.resVal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+  min-width: 0;
+  min-height: 20px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.resIcon {
+  flex: none;
+  margin-right: 1px;
+}
+
+.resStrong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resDim {
+  color: var(--text-secondary);
+}
+
+.resFaint {
+  color: var(--text-tertiary);
+}
+
+.resDot {
+  color: var(--text-tertiary);
+  padding: 0 1px;
+}
+
+.resOpenChip {
+  color: var(--warn);
+  font-weight: 700;
+  background: var(--warn-bg);
+  padding: 0 7px;
+  border-radius: 6px;
+  line-height: 20px;
+}
+
+@media (max-width: 640px) {
+  .resBox {
+    gap: 7px;
+    padding: 10px 11px;
+  }
+
+  .resRow {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .resLabel {
+    line-height: 22px;
+  }
+
+  .resVal {
+    min-height: 22px;
+    font-size: 13px;
+  }
+}
+
 .summaryText {
   min-width: 0;
   font-size: 12.5px;

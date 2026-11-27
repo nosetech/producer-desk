@@ -375,6 +375,27 @@ def test_build_claude_command_instructs_decision_points_section() -> None:
     assert "判断が不要な場合はこのセクションを出さない" in instruction
 
 
+def test_build_claude_command_instructs_work_report_section() -> None:
+    """issue #324: レビュー待ちで出力させる作業結果セクションの固定書式が指示に含まれること。
+
+    ダッシュボード（dashboard/src/lib/comment.ts の extractWorkReport）が同じ
+    見出し文言・行書式でパースするため、変わるとレビュー待ちカードの表示が壊れる。
+    """
+    command = build_claude_command(
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "**作業結果**" in instruction
+    assert "- CI: 完了" in instruction
+    assert "`未設定`" in instruction
+    assert "- レビュー: 指摘3件（対応済2件・未対応1件）" in instruction
+    assert "`未実施`" in instruction
+    assert "未対応の指摘がある場合は、その理由" in instruction
+
+
 def test_build_claude_command_uses_stream_json_output_format() -> None:
     """issue #49の再発防止テスト。
 

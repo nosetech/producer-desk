@@ -4,6 +4,7 @@ import {
   cardDecisions,
   commentSummary,
   extractDecisionPoints,
+  extractWorkReport,
   parseAttachmentLine,
   replyQuoteSource,
   splitAttachments,
@@ -265,5 +266,99 @@ describe("cardDecisions", () => {
     expect(r?.items.map((i) => i.text)).toEqual(["一つ目", "二つ目"]);
     expect(r?.items[0].optionLine).toBeNull();
     expect(r?.more).toBe(2);
+  });
+});
+
+describe("extractWorkReport", () => {
+  const wrap = (section: string) =>
+    `PR #12 を作成しました。\n\n${section}\n\n詳細は以下のとおりです。\n\n<!-- producer-desk:bot-comment -->`;
+
+  it("CI完了・指摘すべて対応済を読み取る", () => {
+    expect(
+      extractWorkReport(
+        wrap(
+          "**作業結果**\n- CI: 完了\n- レビュー: 指摘3件（対応済3件・未対応0件）",
+        ),
+      ),
+    ).toEqual({
+      ci: "done",
+      review: { status: "done", total: 3, resolved: 3, unresolved: 0 },
+    });
+  });
+
+  it("未対応ありを読み取る", () => {
+    expect(
+      extractWorkReport(
+        "**作業結果**\n- CI: 完了\n- レビュー: 指摘3件（対応済2件・未対応1件）",
+      )?.review,
+    ).toEqual({ status: "done", total: 3, resolved: 2, unresolved: 1 });
+  });
+
+  it("CI未設定・レビュー未実施を読み取る", () => {
+    expect(
+      extractWorkReport("**作業結果**\n- CI: 未設定\n- レビュー: 未実施"),
+    ).toEqual({ ci: "none", review: { status: "none" } });
+  });
+
+  it("指摘0件は内訳の省略を許容する", () => {
+    expect(
+      extractWorkReport("**作業結果**\n- CI: 完了\n- レビュー: 指摘0件")
+        ?.review,
+    ).toEqual({ status: "done", total: 0, resolved: 0, unresolved: 0 });
+  });
+
+  it("全角コロン・見出し記法・半角括弧の表記ゆれを許容する", () => {
+    expect(
+      extractWorkReport(
+        "## 作業結果：\n- CI：`完了`\n- レビュー：指摘 2件 (対応済 1件、未対応 1件)",
+      ),
+    ).toEqual({
+      ci: "done",
+      review: { status: "done", total: 2, resolved: 1, unresolved: 1 },
+    });
+  });
+
+  it("CIもレビューも読めなければnull", () => {
+    expect(
+      extractWorkReport(
+        "**作業結果**\n- CI: 失敗\n- レビュー: 指摘3件（対応済1件・未対応1件）",
+      ),
+    ).toBeNull();
+  });
+
+  it("読めない項目だけnullにする", () => {
+    expect(
+      extractWorkReport("**作業結果**\n- CI: 失敗\n- レビュー: 未実施"),
+    ).toEqual({ ci: null, review: { status: "none" } });
+    expect(
+      extractWorkReport("**作業結果**\n- CI: 完了\n- レビュー: いくつか対応"),
+    ).toEqual({ ci: "done", review: null });
+  });
+
+  it("作業結果と判断事項が併記されていても区切りで止まる", () => {
+    const body =
+      "**作業結果**\n- CI: 完了\n- レビュー: 未実施\n\n**判断が必要な事項**\n1. 方針を決める";
+    expect(extractWorkReport(body)).toEqual({
+      ci: "done",
+      review: { status: "none" },
+    });
+    expect(extractDecisionPoints(body)).toEqual([
+      { text: "方針を決める", options: [] },
+    ]);
+  });
+
+  it("コードブロック内の同名見出しは対象外", () => {
+    expect(
+      extractWorkReport(
+        "書式の例:\n```\n**作業結果**\n- CI: 完了\n```\n本文のみ",
+      ),
+    ).toBeNull();
+  });
+
+  it("セクション無し・書式崩れはnull", () => {
+    expect(
+      extractWorkReport("PRを作成しました。CIも通っています。"),
+    ).toBeNull();
+    expect(extractWorkReport("**作業結果**\nCIは完了しました。")).toBeNull();
   });
 });

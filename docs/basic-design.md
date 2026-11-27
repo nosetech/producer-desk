@@ -402,7 +402,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
   - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
 - **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
-- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints`）が返信UIの引用領域と判断待ちカード（`DecisionCard`。セクションが無い・書式に従っていない場合は従来の1行要約へフォールバック、issue #325）でパースして番号付きで列挙する。
+- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`status:in-review`へ遷移する最終応答でも、承認前に判断してほしい事項があれば同じ書式で併記してよい（issue #324）。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints` / `cardDecisions`）が返信UIの引用領域、判断待ちカード（`DecisionCard`、issue #325）、レビュー待ちカード（`ReviewCard`、issue #324）でパースして番号付きで列挙する。カードでは、セクションが無い・書式に従っていない場合は従来の1行要約へフォールバックする（レビュー待ちカードでは後述の作業結果セクションも無い場合に限る）。
   ```
   **判断が必要な事項**
   1. 〇〇をA案／B案のどちらで進めるか
@@ -414,6 +414,19 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - 判断事項は行頭の`1.`形式の番号付きリスト、選択肢はその下にインデントした`-`箇条書き。セクションは、次の見出し行・番号付きでも箇条書きでもないインデント無しの行で終わる。コードブロック内の同名見出しは対象外。
   - セクションが無い・リストが空・書式に従っていないコメント（過去の最終応答を含む）、およびissue本文は抽出せず、従来どおりの引用表示にフォールバックする（判断事項を推測で補わない）。
   - 画面デザインは[design-prompt-dashboard-diff-decision-points.md](./design-prompt-dashboard-diff-decision-points.md)の依頼に基づく。
+- **作業結果セクションの書式仕様（issue #324、唯一の定義）**: `status:in-review`へ遷移して終える最終応答には、CI・コードレビューの結果を機械的に抽出できるよう、次の書式のセクションを必ず含める。`final_message_instruction`がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`WORK_REPORT_HEADING` / `extractWorkReport`）がレビュー待ちカード（`ReviewCard`）でパースして表示する。判断事項がある場合は、上記の判断事項セクションを併記してよい。
+  ```
+  **作業結果**
+  - CI: 完了
+  - レビュー: 指摘3件（対応済2件・未対応1件）
+  ```
+  - 見出しは行全体を`**`で囲んだ固定文言`作業結果`（末尾の`:`/`：`、`##`等のMarkdown見出し記法は許容）。文言を変える場合は`agent_runner.py`・`comment.ts`・本節を同時に更新する。
+  - 各項目は見出し直後の`-`箇条書きで`<ラベル>: <値>`（全角コロン可、値のインラインコード記法は無視）。セクションは、項目の後の空行または箇条書きでない行で終わる。コードブロック内の同名見出しは対象外。
+  - `CI`の値は`完了`（CIが正常終了した）または`未設定`（CIワークフローが無いリポジトリ）。正常終了してから報告する運用のため、失敗・実行中は想定しない。
+  - `レビュー`の値は`未実施`、または`指摘X件（対応済X件・未対応X件）`（括弧は半角可、区切りは`・`/`、`等を許容。指摘0件の場合のみ`指摘0件`だけの省略形も可）。対応済＋未対応が指摘件数と一致しない場合は読めないものとして扱う。未対応の指摘がある場合、その理由は最終応答の本文に書き、カードでは件数だけを示す。
+  - 1項目でも読めない行は、その項目だけ表示しない。セクションが無い・CIとレビューのどちらも読めない場合は抽出せず、判断事項セクションも無ければ従来どおりの「AI」タグ付き要約にフォールバックする（推測で補わない）。
+  - オーケストレータが依存するトークンではないため、`required_tokens`には含めない（判断事項セクションと同じ扱い）。`config/prompts.yaml`で`final_message_instruction`を上書き済みの環境には新しいデフォルトが反映されないため、プロンプト設定画面でデフォルトに戻すか、上書き済みの本文へ上記の書式指示を手動で追記する。
+  - 画面デザインは[design-prompt-dashboard-diff-review-card.md](./design-prompt-dashboard-diff-review-card.md)の依頼に基づく。
 - **将来拡張**: issue #148（モデルルーティング層）でモデルごとにプロンプトを出し分ける場合は、`prompts.yaml`のキー体系を拡張する（例: `models.<alias>.<key>`）。現状の`PromptSpec`・解決処理はキー単位のため拡張を妨げない。
 
 ## 4. モデルルーター設定設計
