@@ -4,12 +4,19 @@ import { useState } from "react";
 import { PrSelectionRequiredError, postInstruct } from "@/lib/api";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
-import { commentSummary, latestComment } from "@/lib/comment";
+import {
+  cardDecisions,
+  commentSummary,
+  extractWorkReport,
+  latestComment,
+  type WorkReport,
+} from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary, PrCandidate } from "@/lib/types";
 import { useApp } from "./AppContext";
 import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
+import DecisionPointsBox from "./DecisionPointsBox";
 import DispatchDiagnosis from "./DispatchDiagnosis";
 import PrBadge from "./PrBadge";
 import styles from "./ReviewCard.module.css";
@@ -119,6 +126,141 @@ function WarningIcon() {
   );
 }
 
+function ResOkIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--accent-green)"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={styles.resIcon}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.5 2.4 2.4 4.6-5" />
+    </svg>
+  );
+}
+
+function ResNoneIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--text-tertiary)"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeDasharray="3.2 3.2"
+      aria-hidden="true"
+      className={styles.resIcon}
+    >
+      <circle cx="12" cy="12" r="9" />
+    </svg>
+  );
+}
+
+function ResWarnIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="var(--warn)"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={styles.resIcon}
+    >
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4M12 17h.01" />
+    </svg>
+  );
+}
+
+/**
+ * 最新コメントの「作業結果」セクション（CI・レビュー）の表示（Artifactデザイン
+ * issue-324-review-card の resBox〜resVal。issue #324）。読めなかった項目の行は出さない。
+ */
+function WorkReportBox({ report }: { report: WorkReport }) {
+  const { ci, review } = report;
+  const unresolved = review?.status === "done" ? review.unresolved : 0;
+  return (
+    <section
+      className={`${styles.resBox} ${unresolved ? styles.resBoxWarn : ""}`}
+      aria-label={
+        unresolved ? `作業結果（未対応の指摘 ${unresolved}件）` : "作業結果"
+      }
+    >
+      {ci && (
+        <div
+          role="group"
+          aria-label={ci === "done" ? "CI 完了" : "CI 未設定"}
+          className={styles.resRow}
+        >
+          <span className={styles.resLabel}>CI</span>
+          <span className={styles.resVal}>
+            {ci === "done" ? (
+              <>
+                <ResOkIcon />
+                <span className={styles.resStrong}>完了</span>
+              </>
+            ) : (
+              <>
+                <ResNoneIcon />
+                <span className={styles.resDim}>未設定</span>
+              </>
+            )}
+          </span>
+        </div>
+      )}
+      {review && (
+        <div
+          role="group"
+          aria-label={
+            review.status === "none"
+              ? "レビュー 未実施"
+              : `レビュー 指摘${review.total}件 対応済${review.resolved}件 未対応${review.unresolved}件`
+          }
+          className={styles.resRow}
+        >
+          <span className={styles.resLabel}>レビュー</span>
+          <span className={styles.resVal}>
+            {review.status === "none" ? (
+              <>
+                <ResNoneIcon />
+                <span className={styles.resDim}>未実施</span>
+              </>
+            ) : (
+              <>
+                {unresolved ? <ResWarnIcon /> : <ResOkIcon />}
+                <span className={styles.resStrong}>指摘{review.total}件</span>
+                <span className={styles.resDot}>·</span>
+                <span className={styles.resDim}>対応済{review.resolved}件</span>
+                <span className={styles.resDot}>·</span>
+                {unresolved ? (
+                  <span className={styles.resOpenChip}>
+                    未対応{unresolved}件
+                  </span>
+                ) : (
+                  <span className={styles.resFaint}>未対応0件</span>
+                )}
+              </>
+            )}
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function ReviewCard({
   review,
   onReply,
@@ -145,7 +287,12 @@ export default function ReviewCard({
   const busy = job !== undefined;
 
   const last = latestComment(review);
-  const summary = last ? commentSummary(last) : null;
+  // 「作業結果」「判断が必要な事項」のどちらかがあればそれを、どちらも無ければ
+  // 従来の1行要約を表示する（issue #324）。
+  const workReport = last ? extractWorkReport(last.body) : null;
+  const decisions = last ? cardDecisions(last.body) : null;
+  const summary =
+    last && !workReport && !decisions ? commentSummary(last) : null;
   const titleUrl =
     last?.url ?? `https://github.com/${review.repo}/issues/${review.number}`;
   const repoName = review.repo.split("/")[1];
@@ -268,6 +415,17 @@ export default function ReviewCard({
           className={styles.prBadge}
         />
       </div>
+      {(workReport || decisions) && (
+        <div className={styles.sumWrap}>
+          {workReport && <WorkReportBox report={workReport} />}
+          {decisions && (
+            <DecisionPointsBox
+              decisions={decisions}
+              onViewFull={() => setViewerOpen(true)}
+            />
+          )}
+        </div>
+      )}
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
