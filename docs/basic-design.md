@@ -247,6 +247,22 @@ Content-Type: application/json
 
 - **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。
 
+#### issue一覧画面のキーボードショートカット（issue #322）
+
+画面遷移ショートカット`d` / `i` / `p` / `s`（issue #251、全画面共通）に加え、プロジェクト別issue一覧画面の中では次のキーで操作できる。キーの対応表は`ISSUE_LIST_SHORTCUTS`（`dashboard/src/lib/shortcuts.ts`）に1か所で定義し、画面下部のショートカットガイドもこの表から作る。
+
+| 対象 | キー | 動作 |
+|---|---|---|
+| プロジェクト（上部のタブ） | `h` / `l` | 左／右のプロジェクトへ切り替える（`/projects/<repo>`へ遷移。端で止まり、反対側へ回り込まない） |
+| issue一覧 | `j` / `k` | カーソル（フォーカス行）を1つ下／上へ移す。押しっぱなしで連続移動する。未選択のときは`j`で先頭、`k`で末尾から始まり、端で止まる |
+| issue一覧 | `x` | カーソル行の行頭チェックボックスの選択（一括変更用、issue #305）を切り替える |
+| issue一覧 | `Esc` | issueの選択をすべて解除する（一括変更バーの「解除」と同じ） |
+| 状態フィルタ | `Shift`+`h` / `Shift`+`l` | 表示中のフィルタボタンの並びで左／右のフィルタを選ぶ（端で止まる） |
+
+- **カーソルとチェックボックスの選択は別物**として扱う。カーソルはissue番号で持ち、再取得・絞り込みで行が表示から消えたときは、直前の表示順で後ろにあった最も近い行（無ければ前の行）へ寄せ、どちらも無ければ未選択に戻す。カーソル行が画面外なら`scrollIntoView({ block: "nearest" })`で見える位置までスクロールする。プロジェクト切替でページがマウントし直されるため、カーソル・選択・フィルタは初期化される。
+- **無効になる条件**: 文字入力中（INPUT/TEXTAREA/SELECT/contentEditable）、IME変換中、Ctrl/Meta/Alt付き、処理済みイベント、モーダル・ポップオーバー（`role="dialog"` / `aria-modal="true"`。個別編集・一括変更・MetaFilterのドロップダウンを含む）表示中、返信・新規作成のバー（ComposerBar）表示中。`Esc`はこれらが開いているとき、選択解除ではなくそちらの「閉じる」を優先する。`H` / `L`以外はShift付きでは反応しない（Shift付きのキーは画面遷移ショートカット側では無視されるため衝突しない）。
+- **表示**: カーソル行（PCの行・モバイルのカード）を強調表示し`aria-current`を付ける。タブ・フィルタボタンには`aria-keyshortcuts`を付ける。PC表示では画面下部にショートカットガイドを`kbd`で表示し、モバイル表示（ボトムナビ表示幅）では表示しない。デザインは[design-prompt-dashboard-diff-keyboard-shortcuts.md](./design-prompt-dashboard-diff-keyboard-shortcuts.md)参照。
+
 #### コメント添付ファイル（画像・動画）の表示（issue #218）
 
 UI変更のレビュー用に、Agent Runnerは`gh issue comment <n> --attach <file>`（`gh` v2.99.0以降）で実装結果のスクリーンショット・録画をissueコメントへ添付できる。指示はプロンプト設定の`attachment_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で与える。

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchIssueDetail,
@@ -43,6 +44,13 @@ import {
   type ResizableColumn,
 } from "@/lib/issueColumns";
 import { shortRepoName } from "@/lib/projectStatus";
+import {
+  ariaKeyShortcuts,
+  relocateCursor,
+  stepIndex,
+  type IssueListAction,
+} from "@/lib/shortcuts";
+import { useIssueListShortcuts } from "@/lib/useIssueListShortcuts";
 import { projectDotColorVar, statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { InboxItem, ProjectIssue } from "@/lib/types";
@@ -53,6 +61,7 @@ import JobStatus from "./JobStatus";
 import InboxSection from "./InboxSection";
 import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
+import ShortcutGuide from "./ShortcutGuide";
 import SyncAgo from "./SyncAgo";
 import diagStyles from "./DispatchDiagnosis.module.css";
 import styles from "./ProjectIssues.module.css";
@@ -140,7 +149,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     jobs,
     retryJob,
     dismissJob,
+    composerOpen,
   } = useApp();
+  const router = useRouter();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
   const [initialCache] = useState(() => lookupIssues(repo));
@@ -169,6 +180,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   );
   const [failMap, setFailMap] = useState<Record<number, string>>({});
   const [editingNum, setEditingNum] = useState<number | null>(null);
+  // キーボード操作用のカーソル行（issue番号、issue #322）。チェックボックスの選択とは別。
+  const [cursorNum, setCursorNum] = useState<number | null>(null);
+  const prevOrderRef = useRef<number[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -414,6 +428,83 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const visibleNums = rows.map((i) => i.number);
   const allState = selectAllState(visibleNums, selectedNums);
   const selectedIssues = issues.filter((i) => selectedNums.has(i.number));
+  const clearSelection = () => {
+    setSelected(new Set());
+    setFailMap({});
+  };
+
+  // 再取得・絞り込みでカーソル行が表示から消えたら、近い行へ寄せる（無ければ未選択に戻す）。
+  const visibleKey = visibleNums.join(",");
+  useEffect(() => {
+    const order = visibleKey ? visibleKey.split(",").map(Number) : [];
+    setCursorNum((c) => relocateCursor(c, prevOrderRef.current, order));
+    prevOrderRef.current = order;
+  }, [visibleKey]);
+
+  // カーソル行が画面外なら見える位置までスクロールする（PC用の行とカードのうち表示中の方）。
+  useEffect(() => {
+    if (cursorNum === null) return;
+    const els = listPanelRef.current?.querySelectorAll<HTMLElement>(
+      `[data-cursor-target="${cursorNum}"]`,
+    );
+    const visible = [...(els ?? [])].find((el) => el.offsetParent !== null);
+    visible?.scrollIntoView({ block: "nearest" });
+  }, [cursorNum]);
+
+  useIssueListShortcuts((action: IssueListAction) => {
+    switch (action) {
+      case "prevProject":
+      case "nextProject": {
+        const i = repos.indexOf(repo);
+        const next = stepIndex(
+          i,
+          action === "nextProject" ? 1 : -1,
+          repos.length,
+        );
+        if (next === null || next === i) return false;
+        router.push(`/projects/${repos[next]}`);
+        return true;
+      }
+      case "prevFilter":
+      case "nextFilter": {
+        const i = options.findIndex((o) => o.key === filter);
+        const next = stepIndex(
+          i,
+          action === "nextFilter" ? 1 : -1,
+          options.length,
+        );
+        if (next === null || next === i) return false;
+        setFilter(options[next].key);
+        setCursorNum(null);
+        return true;
+      }
+      case "cursorDown":
+      case "cursorUp": {
+        const i = cursorNum === null ? -1 : visibleNums.indexOf(cursorNum);
+        const next = stepIndex(
+          i,
+          action === "cursorDown" ? 1 : -1,
+          visibleNums.length,
+        );
+        if (next === null) return false;
+        setCursorNum(visibleNums[next]);
+        return true;
+      }
+      case "toggleSelect":
+        if (cursorNum === null || !visibleNums.includes(cursorNum))
+          return false;
+        setSelected(toggleSelected(selectedNums, cursorNum));
+        return true;
+      case "clearSelection":
+        // 個別編集ポップオーバー等が開いている間はフック側で無視され、そちらが閉じる。
+        if (editingNum !== null) return false;
+        if (selectedNums.size === 0 && Object.keys(failMap).length === 0) {
+          return false;
+        }
+        clearSelection();
+        return true;
+    }
+  }, composerOpen);
 
   /**
    * マイルストーン・ラベルを変更する（issue #305）。部分失敗は`failed`に載るため、失敗した
@@ -509,7 +600,12 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         <div className={styles.projectHeader}>
           <span className={styles.projectLabel}>プロジェクト</span>
         </div>
-        <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
+        <div
+          className={styles.tabs}
+          role="tablist"
+          aria-label="プロジェクト"
+          aria-keyshortcuts={ariaKeyShortcuts("prevProject", "nextProject")}
+        >
           {repos.map((r) => {
             const selected = r === repo;
             const dotColorVar = projectDotColorVar(
@@ -629,6 +725,10 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   key={o.key}
                   type="button"
                   aria-pressed={active}
+                  aria-keyshortcuts={ariaKeyShortcuts(
+                    "prevFilter",
+                    "nextFilter",
+                  )}
                   className={`${styles.filterBtn} ${active ? styles.filterBtnActive : ""} ${isOrphan ? styles.filterBtnOrphan : ""}`}
                   style={
                     o.count === 0 && !active ? { opacity: 0.55 } : undefined
@@ -930,10 +1030,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 milestones={openMilestones}
                 labels={repoLabels}
                 onApply={applyBulk}
-                onClear={() => {
-                  setSelected(new Set());
-                  setFailMap({});
-                }}
+                onClear={clearSelection}
               />
             )}
             <div
@@ -1003,12 +1100,14 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 const ago = formatRelativeTime(issue.updated_at);
                 const absTime = `${formatAbsoluteTime(issue.updated_at)} に更新`;
                 const picked = selectedNums.has(issue.number);
+                const isCursor = cursorNum === issue.number;
                 const failMsg = failMap[issue.number];
                 const rowClass = [
                   styles.row,
                   done ? styles.rowDone : "",
                   issue.is_orphaned ? styles.rowOrphan : "",
                   picked ? styles.rowSelected : "",
+                  isCursor ? styles.rowCursor : "",
                   editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
                 const cardClass = [
@@ -1016,6 +1115,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   done ? styles.cardDone : "",
                   issue.is_orphaned ? styles.cardOrphan : "",
                   picked ? styles.cardSelected : "",
+                  isCursor ? styles.cardCursor : "",
                   failMsg ? styles.cardFailed : "",
                   editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
@@ -1056,7 +1156,11 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                     >
                       {({ iconTrigger, panel }) => (
                         <>
-                          <div className={rowClass}>
+                          <div
+                            className={rowClass}
+                            data-cursor-target={issue.number}
+                            aria-current={isCursor ? "true" : undefined}
+                          >
                             {checkbox}
                             <span className={styles.numCell}>
                               <span className={styles.num}>
@@ -1104,7 +1208,11 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                               </button>
                             </div>
                           </div>
-                          <div className={cardClass}>
+                          <div
+                            className={cardClass}
+                            data-cursor-target={issue.number}
+                            aria-current={isCursor ? "true" : undefined}
+                          >
                             <div className={styles.cardTop}>
                               {checkbox}
                               {failMark}
@@ -1191,6 +1299,8 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           </>
         )}
       </div>
+
+      <ShortcutGuide hasSelection={selectedNums.size > 0} />
     </div>
   );
 }

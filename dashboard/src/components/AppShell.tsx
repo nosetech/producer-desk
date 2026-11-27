@@ -250,6 +250,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         showToast,
         openReply,
         openNewTask,
+        composerOpen,
         planEpoch,
         planRequests,
         markPlanRequested,
