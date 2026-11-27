@@ -1,26 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { postInstruct, postMarkInReview } from "@/lib/api";
+import { postMarkInReview } from "@/lib/api";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
-import { commentSummary, latestComment } from "@/lib/comment";
+import { cardDecisions, commentSummary, latestComment } from "@/lib/comment";
 import { formatRelativeTime } from "@/lib/time";
 import type { IssueComment, IssueSummary } from "@/lib/types";
 import { useApp } from "./AppContext";
+import InlineCode from "./InlineCode";
 import JobStatus from "./JobStatus";
 import CommentViewer from "./CommentViewer";
 import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./DecisionCard.module.css";
-
-// orchestrator/orchestrator/instruct.py の apply_instruction（コメント投稿は
-// handle_instructで、以降はapply_instruction内でon_stageコールバックが通知する）
-// と対応する。
-const APPROVE_STAGES: StageDef[] = [
-  { key: "comment", label: "コメントを投稿", note: "POST comment" },
-  { key: "label", label: "ラベルを更新", note: "label" },
-  { key: "dispatch", label: "エージェントへ引き渡し", note: "queue" },
-];
 
 // orchestrator/orchestrator/instruct.py の handle_mark_in_review のon_stageと対応する。
 const RELABEL_STAGES: StageDef[] = [
@@ -46,23 +38,6 @@ function RelabelIcon({ size = 15 }: { size?: number }) {
       style={{ flex: "none" }}
     >
       <path d="M4 7h13l-3-3M20 17H7l3 3" />
-    </svg>
-  );
-}
-
-function CheckIcon({ size = 15 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M20 6 9 17l-5-5" />
     </svg>
   );
 }
@@ -110,6 +85,48 @@ function PrCandidateIcon() {
   );
 }
 
+function QuestionIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "none" }}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01" />
+    </svg>
+  );
+}
+
+function OptionIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "none" }}
+    >
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="18" r="3" />
+      <path d="M6 9v6M18 15V9a3 3 0 0 0-3-3h-3" />
+    </svg>
+  );
+}
+
 function ReplyIcon() {
   return (
     <svg
@@ -140,7 +157,6 @@ export default function DecisionCard({
     comments?: IssueComment[],
   ) => void;
 }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [relabelOpen, setRelabelOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const { jobs, startJob, retryJob, dismissJob } = useApp();
@@ -149,7 +165,9 @@ export default function DecisionCard({
   const busy = job !== undefined;
 
   const last = latestComment(decision);
-  const summary = last ? commentSummary(last) : null;
+  // 「判断が必要な事項」があればそれを、無ければ従来の1行要約を表示する（issue #325）。
+  const decisions = last ? cardDecisions(last.body) : null;
+  const summary = last && !decisions ? commentSummary(last) : null;
   const titleUrl =
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
@@ -160,33 +178,6 @@ export default function DecisionCard({
     decision.pr_number != null
       ? `https://github.com/${decision.repo}/pull/${decision.pr_number}`
       : null;
-
-  function openConfirm() {
-    if (busy) return;
-    setConfirmOpen(true);
-  }
-
-  // 承認はバックグラウンドのジョブとして実行し、確認ダイアログは即座に閉じる。
-  // 進捗・失敗はカード内に表示する（issue #212）。
-  function handleConfirmApprove() {
-    setConfirmOpen(false);
-    startJob({
-      kind: "approve",
-      repo: decision.repo,
-      number: decision.number,
-      title: decision.title,
-      stages: APPROVE_STAGES,
-      exec: (progressId) =>
-        postInstruct(
-          decision.repo,
-          decision.number,
-          "approve",
-          undefined,
-          progressId,
-        ),
-      successMessage: `${repoName} #${decision.number} を承認しました。`,
-    });
-  }
 
   function handleConfirmRelabel() {
     setRelabelOpen(false);
@@ -259,13 +250,76 @@ export default function DecisionCard({
         ) : prCandidateCount > 1 ? (
           <span
             className={styles.prCandidateChip}
-            title="対応PRの候補が複数あります。承認・返信の前にGitHubで確認してください"
+            title="対応PRの候補が複数あります。返信の前にGitHubで確認してください"
           >
             <PrCandidateIcon />
             PR候補 {prCandidateCount}件
           </span>
         ) : null}
       </div>
+      {decisions && (
+        <section
+          className={styles.decBox}
+          aria-label={`判断が必要な事項 ${decisions.total}件`}
+        >
+          <div className={styles.decHead}>
+            <QuestionIcon />
+            <span className={styles.decHeadLabel}>判断が必要な事項</span>
+            <span className={styles.decCount}>{decisions.total}件</span>
+            <span className={styles.decHeadSpacer} />
+            <span className={styles.aiTag}>AI</span>
+          </div>
+          <ol role="list" className={styles.decList}>
+            {decisions.items.map((item, i) => (
+              <li key={i} className={styles.decRow}>
+                <span aria-hidden="true" className={styles.decNum}>
+                  {i + 1}
+                </span>
+                <div className={styles.decItemBody}>
+                  <div className={styles.decText}>
+                    <InlineCode
+                      text={item.text}
+                      codeClassName={styles.decCode}
+                    />
+                  </div>
+                  {item.optionLine && (
+                    <div title={item.optionTitle} className={styles.decOpt}>
+                      <OptionIcon />
+                      <span className={styles.decOptText}>
+                        選択肢: {item.optionLine}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+          {decisions.more > 0 && (
+            <button
+              type="button"
+              className={styles.decMoreBtn}
+              onClick={() => setViewerOpen(true)}
+              aria-haspopup="dialog"
+            >
+              ほか {decisions.more}件を全文で確認
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                style={{ flex: "none" }}
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+          )}
+        </section>
+      )}
       {summary && (
         <div className={styles.summary}>
           <span className={styles.aiTag}>AI</span>
@@ -287,16 +341,7 @@ export default function DecisionCard({
         <div className={`${styles.mainActs} ${busy ? styles.actionsBusy : ""}`}>
           <button
             type="button"
-            className={`${styles.btn} ${styles.btnApprove}`}
-            onClick={openConfirm}
-            disabled={busy}
-          >
-            <CheckIcon />
-            承認
-          </button>
-          <button
-            type="button"
-            className={`${styles.btn} ${styles.btnReply}`}
+            className={styles.replyBtn}
             onClick={() =>
               onReply(
                 decision.repo,
@@ -371,56 +416,6 @@ export default function DecisionCard({
           }}
           replyDisabled={busy}
         />
-      )}
-
-      {confirmOpen && (
-        <div
-          className={styles.confirmOverlay}
-          onClick={() => setConfirmOpen(false)}
-        >
-          <div
-            className={styles.confirmDialog}
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby={`confirm-approve-${decision.repo}-${decision.number}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={styles.confirmHeadingRow}>
-              <span className={styles.confirmIconBadge}>
-                <CheckIcon size={18} />
-              </span>
-              <span
-                id={`confirm-approve-${decision.repo}-${decision.number}`}
-                className={styles.confirmMessage}
-              >
-                この提案を承認しますか？
-              </span>
-            </div>
-            <p className={styles.confirmDetail}>
-              <span className={styles.confirmDetailNumber}>
-                {repoName} #{decision.number}
-              </span>{" "}
-              — {decision.title}
-            </p>
-            <div className={styles.confirmActions}>
-              <button
-                type="button"
-                className={styles.confirmCancelBtn}
-                onClick={() => setConfirmOpen(false)}
-              >
-                キャンセル
-              </button>
-              <button
-                type="button"
-                className={styles.confirmApproveBtn}
-                onClick={handleConfirmApprove}
-              >
-                <CheckIcon />
-                承認する
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {relabelOpen && (

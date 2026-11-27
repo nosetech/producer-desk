@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attachmentProxyUrl,
+  cardDecisions,
   commentSummary,
   extractDecisionPoints,
   parseAttachmentLine,
@@ -206,5 +207,63 @@ describe("extractDecisionPoints", () => {
   it("次の見出し・段落でセクションが終わる", () => {
     const body = "**判断が必要な事項**\n1. a\n\n**補足**\n1. 別のリスト";
     expect(extractDecisionPoints(body)).toEqual([{ text: "a", options: [] }]);
+  });
+});
+
+describe("cardDecisions", () => {
+  const body = (items: string[]) =>
+    ["作業報告です。", "", "**判断が必要な事項**", ...items].join("\n");
+
+  it("判断事項セクションが無ければnull（従来の要約表示）", () => {
+    expect(cardDecisions("作業報告のみです。")).toBeNull();
+    expect(cardDecisions("**判断が必要な事項**\n本文のみ")).toBeNull();
+  });
+
+  it("選択肢はタグを「 / 」で並べ、全文はツールチップ用に保持する", () => {
+    const r = cardDecisions(
+      body([
+        "1. `foo`をA案／B案のどちらで進めるか",
+        "   - A案: `bar`を使う",
+        "   - B案: 使わない",
+      ]),
+    );
+    expect(r).toEqual({
+      total: 1,
+      more: 0,
+      items: [
+        {
+          text: "`foo`をA案／B案のどちらで進めるか",
+          optionLine: "A案 / B案",
+          optionTitle: "A案: barを使う\nB案: 使わない",
+        },
+      ],
+    });
+  });
+
+  it("タグの無い選択肢は先頭14文字で省略し、5つ目以降は「ほかN」にまとめる", () => {
+    const r = cardDecisions(
+      body([
+        "1. どれにするか",
+        "   - あいうえおかきくけこさしすせそ",
+        "   - 二",
+        "   - 三",
+        "   - 四",
+        "   - 五",
+        "   - 六",
+      ]),
+    );
+    expect(r?.items[0].optionLine).toBe(
+      "あいうえおかきくけこさしす… / 二 / 三 / 四 ほか2",
+    );
+  });
+
+  it("3件目以降は出さず、残り件数をmoreに入れる", () => {
+    const r = cardDecisions(
+      body(["1. 一つ目", "2. 二つ目", "3. 三つ目", "4. 四つ目"]),
+    );
+    expect(r?.total).toBe(4);
+    expect(r?.items.map((i) => i.text)).toEqual(["一つ目", "二つ目"]);
+    expect(r?.items[0].optionLine).toBeNull();
+    expect(r?.more).toBe(2);
   });
 });

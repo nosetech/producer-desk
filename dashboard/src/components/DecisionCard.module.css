@@ -207,7 +207,7 @@
   margin-top: 13px;
 }
 
-/* 承認・返信の組。幅が足りないときは「全文を表示」だけが次の行（右寄せ）に回る。 */
+/* 返信ボタンの枠。幅が足りないときは「全文を表示」だけが次の行（右寄せ）に回る。 */
 .mainActs {
   display: flex;
   gap: 24px;
@@ -215,10 +215,12 @@
   min-width: 0;
 }
 
-/* 全文を表示: 承認（緑塗り）・返信（枠線のみ）と並ぶセカンダリボタン。
+/* 全文を表示: 返信（青塗りの主ボタン）と並ぶセカンダリボタン（issue #325で高さを返信とそろえた）。
    ジョブ実行中も無効化しない（読み取り専用操作）。Artifactデザインの fullTextBtn に準拠。 */
 .fullTextBtn {
   flex: none;
+  min-height: 40px;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -243,41 +245,187 @@
   box-shadow: 0 0 0 3px var(--accent-blue-bg);
 }
 
-.btn {
-  flex: 1;
+/* 返信: 判断待ちカードの主ボタン（Artifactデザイン issue-325 の decReplyBtn。issue #325）。 */
+.replyBtn {
+  flex: 1 1 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 10px 12px;
+  min-height: 40px;
+  padding: 10px 16px;
+  box-sizing: border-box;
   border-radius: 9px;
+  border: 1px solid var(--accent-blue);
+  background: var(--accent-blue);
+  color: #fff;
+  font-family: inherit;
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
-  border: 1px solid transparent;
-  transition: all 0.12s;
-}
-
-.btnApprove {
-  background: var(--accent-green);
-  border-color: var(--accent-green);
-  color: var(--accent-green-on);
   transition: filter 0.12s;
 }
 
-.btnApprove:hover:not(:disabled) {
+.replyBtn:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
-.btnReply {
-  background: transparent;
-  border: 1.5px solid var(--text-secondary);
-  color: var(--text-secondary);
+.replyBtn:disabled {
+  cursor: default;
 }
 
-.btnReply:hover:not(:disabled) {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
+/* 判断が必要な事項（Artifactデザイン issue-325 の decBox 系。判断待ちの既存アクセント（amber）のみ使用）。 */
+.decBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px 10px;
+  border-radius: 9px;
+  background: var(--accent-amber-bg);
+  border: 1px solid transparent;
+  box-shadow: inset 3px 0 0 var(--accent-amber);
+}
+
+.decHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--accent-amber);
+}
+
+.decHeadLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-amber);
+  letter-spacing: 0.02em;
+}
+
+.decCount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-amber);
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-amber);
+  line-height: 16px;
+}
+
+.decHeadSpacer {
+  flex: 1;
+}
+
+.decList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.decRow {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: start;
+}
+
+.decNum {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent-amber);
+  background: var(--bg-panel);
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  flex: none;
+}
+
+.decItemBody {
+  min-width: 0;
+}
+
+.decText {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.decCode {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.decOpt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.decOptText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.decMoreBtn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 2px 0 28px;
+  border: none;
+  background: transparent;
+  color: var(--accent-amber);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.decMoreBtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .replyBtn,
+  .fullTextBtn {
+    min-height: 44px;
+  }
+
+  .decBox {
+    padding: 10px 11px;
+  }
+
+  .decMoreBtn {
+    min-height: 36px;
+  }
 }
 
 .confirmOverlay {
@@ -343,35 +491,6 @@
   color: var(--accent-blue);
 }
 
-.confirmErrorBanner {
-  display: flex;
-  gap: 9px;
-  align-items: flex-start;
-  background: var(--warn-bg);
-  border: 1px solid var(--warn);
-  border-radius: 12px;
-  padding: 11px 12px;
-}
-
-.confirmErrorIcon {
-  flex-shrink: 0;
-  color: var(--warn);
-  margin-top: 2px;
-}
-
-.confirmErrorHeading {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--warn);
-}
-
-.confirmErrorDetail {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin-top: 3px;
-}
-
 .confirmActions {
   display: flex;
   justify-content: flex-end;
@@ -379,8 +498,7 @@
   margin-top: 2px;
 }
 
-.confirmCancelBtn,
-.confirmApproveBtn {
+.confirmCancelBtn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -389,12 +507,8 @@
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  border: 1px solid transparent;
-}
-
-.confirmCancelBtn {
+  border: 1px solid var(--border-subtle);
   background: transparent;
-  border-color: var(--border-subtle);
   color: var(--text-secondary);
   transition: all 0.12s;
 }
@@ -404,28 +518,9 @@
   color: var(--accent-blue);
 }
 
-.confirmApproveBtn {
-  background: var(--accent-green);
-  border-color: var(--accent-green);
-  color: var(--accent-green-on);
-  transition: filter 0.12s;
-}
-
-.confirmApproveBtn:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.confirmCancelBtn:disabled,
-.confirmApproveBtn:disabled {
-  cursor: default;
-}
-
 .confirmCancelBtn:disabled {
+  cursor: default;
   opacity: 0.45;
-}
-
-.confirmApproveBtn:disabled {
-  opacity: 0.82;
 }
 
 /* 操作の実行中・失敗中（issue #212）。他のカードの操作は妨げない。 */

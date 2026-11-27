@@ -134,7 +134,7 @@ Content-Type: application/json
 }
 ```
 
-- `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。
+- `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。ただしダッシュボードの判断待ちカードからは「承認」ボタンを削除したため（issue #325、運用上使われていなかった）、UIからこの経路で呼ばれることはない。APIとしては互換性のため存続し、主な利用者は下記のレビュー待ち（`status:in-review`）の承認（PRマージ）である。
 - `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。issueクローズに続けて、ラベルも`status:in-review`から`status:closed`へ即時遷移させる（`transition_label`）。これを省き背景ポーリング（`close_watcher.py`、5分間隔）でのラベル更新のみに委ねると、承認直後の[2-2「指示出し操作直後の同期更新」](#2-2-データ取得仕様ポーリング)時点ではまだ`status:in-review`のままのため、レビュー待ち一覧の判定（ラベルのみを見る）からカードが即座には消えない不具合になる（issue #70フォローアップ）。ラベル遷移に続けて、マージ済みPRのheadブランチ（`feature/*`）も`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`で削除する（issue #72）。ブランチ削除はマージ・issueクローズ成功後の後始末に過ぎないため、`gh pr merge --squash --delete-branch`のようにマージと同一コマンドには含めず分離したステップとし、削除の失敗（保護ブランチ設定・既に削除済み等）は握りつぶしてログ出力のみに留める（マージ・issueクローズが既に成功している以上、承認レスポンスとしては成功を返す。`--delete-branch`を同一コマンドに含めた場合、ブランチ削除だけの失敗でコマンド全体が非0終了扱いとなり後続の`close_issue`が実行されなくなる、というissue #58と同種の不具合を再発させるリスクがあるため）。
   - **対応PRの解決方法（issue #206）**: 対象リポジトリのOPEN PR一覧（`gh pr list --repo {repo} --state open --json number,title,url,isDraft,headRefName,baseRefName,body,closingIssuesReferences`）から、**issueをcloseする意図の「対応PR」だけ**を候補とする（`github_client.list_linked_prs`）。対応PRの判定条件は、(a) GraphQLの`closingIssuesReferences`に当該issueが含まれる、または (b) PR本文に`Closes|Fixes|Resolves #<issue番号>`（直後が数字でない。`#770`等の誤マッチ回避。大文字小文字不問）が含まれる、のいずれか。(b)の本文検索は、issue番号の直後に日本語が続く記法（`#77で`等）でGitHub側の参照解析が効かないCJK境界問題（issue #82）の補完を兼ねる。`Closes`等を伴わない単なる`#<issue番号>`への言及（`Refs #N`・後続の修正PR・フォローアップPR）のみのPR、およびマージ済み・クローズ済みPRは候補に含めない（従来の「timelineの`cross-referenced`の最後の1件を採用」「`updatedAt`最新を採用」は廃止）。
     - **候補数ごとの挙動**: 候補が**ちょうど1件**ならそのPRを自動で対象とする（`IssueSummary.pr_number`にセット、`github_client.resolve_pr_number`も同条件）。**0件**なら承認は`ReviewMergeError`（502、「対応PRが見つかりません」）。**2件以上**なら自動マージせず、承認リクエストは409・`code: "pr_selection_required"`・`pr_candidates`（候補一覧）を返し、ユーザーにマージするPRを選択させる。ダッシュボードのレビュー待ちカードのPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）は`pr_number`が特定できた場合のみ表示する。`IssueSummary.pr_candidates`（`number`/`title`/`url`/`is_draft`/`head_ref_name`/`base_ref_name`）は`status:in-review`のissueについて常に候補一覧を保持する。また、`needs-human-decision`（判断待ち）のissueについても同じ`list_linked_prs`で候補を解決し、判断待ちカードにPRリンク（候補1件）・「PR候補 N件」チップ（複数）を表示する（issue #270）。判断待ちではPR未作成が通常のため、候補0件のときは「PR未特定」も含め何も表示しない。判断待ちカードにはマージ操作は無く、リンク表示のみ。候補が1件でもDraftの場合の自動マージ可否は設けない（`gh pr merge`自体がDraft PRのマージを拒否し、その場合は502になるため）。
@@ -144,7 +144,7 @@ Content-Type: application/json
   - **ローカルworktreeの同期**: 上記のブランチ削除はGitHub側（リモート）のみに対する操作であり、そのままではAgent Runner実行用のローカルgit worktree（[2-1](#2-1-対象リポジトリ一覧の管理)の`worktree_path`）が削除済みブランチをチェックアウトしたまま残ってしまう（issue #80）。そのためブランチ削除が成功した場合に限り、`orchestrator/orchestrator/worktree.py`の`sync_worktree_after_branch_delete`を呼び出し、対象worktreeを`git fetch origin develop` → `git checkout --detach origin/develop`（**ブランチ名`develop`ではなくdetached HEAD**で最新の内容に合わせる） → 削除済みブランチの`git branch -D`の順に同期する。detached HEADにしているのは、Agent Runner用worktreeとオーケストレータ自身のソースディレクトリが同一リポジトリのlinked worktreeであり、オーケストレータ側が常時`develop`ブランチをチェックアウト済みのため、Agent Runner用worktree側で`develop`という**ブランチ名**をチェックアウトしようとするとgitの「同じブランチを複数worktreeで同時チェックアウトできない」制約に必ず抵触して失敗するためである（issue #88、当初`git checkout develop`としていたところ本番環境で常に失敗することが判明し修正）。`fetch`・`checkout`が失敗する場合（ネットワーク不調・未コミットの変更が残っている等）はそれ以降の処理を行わずログ警告のみに留め、この処理自体の失敗は承認レスポンスの成功に影響しない（ブランチ削除失敗時と同様の握りつぶし方針）。また、[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)の`DispatchQueue.is_running(repo)`が真の間（＝同一プロジェクトの別issueでAgent Runnerが実行中の間）は、実行中セッションの作業ディレクトリを横から書き換えないようこの同期処理自体をスキップする。
 - `instruct`: ダッシュボードのテキストボックスから入力した**自由記述のメッセージ**をコメント投稿する。issueの状態を問わず送信可能（作業中issueへの割り込み指示を含む）。
 - `approve`/`instruct` はいずれも、[1章「自由記述指示によるラベル遷移ルール」](#自由記述指示によるラベル遷移ルール)に従ってラベルを更新した上で、[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを行う（対象プロジェクトが実行中でなければ即時、実行中ならプロジェクト単位のキューに追加し実行完了後に処理）。上記の`status:in-review`での`approve`はこの限りではない。
-- 却下（差し戻し）操作は設けない。判断待ちのissueに対して人間が取れる操作は「承認」と「自由記述での指示」のみとする。方針を変えたい場合も、却下という専用アクションではなく自由記述（`instruct`）でその旨を伝える（issue #55の設計検討で、`reject`は`instruct`と同様コメント投稿する点は同じで、ディスパッチせずAgent Runnerを起こさないだけの違いしかなく、UI上の区別も誤操作の元になるため廃止）。
+- 却下（差し戻し）操作は設けない。判断待ちのissueに対して人間が取れる操作は「自由記述での指示」（返信）のみとする（API上は`approve`も受け付けるが、ダッシュボードの判断待ちカードからは呼ばない。issue #325）。方針を変えたい場合も、却下という専用アクションではなく自由記述（`instruct`）でその旨を伝える（issue #55の設計検討で、`reject`は`instruct`と同様コメント投稿する点は同じで、ディスパッチせずAgent Runnerを起こさないだけの違いしかなく、UI上の区別も誤操作の元になるため廃止）。
 
 #### 新規タスク（新規issue）の作成
 
@@ -384,7 +384,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
   - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
 - **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
-- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints`）が返信UIの引用領域でパースして番号付きで列挙する。
+- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints`）が返信UIの引用領域と判断待ちカード（`DecisionCard`。セクションが無い・書式に従っていない場合は従来の1行要約へフォールバック、issue #325）でパースして番号付きで列挙する。
   ```
   **判断が必要な事項**
   1. 〇〇をA案／B案のどちらで進めるか
@@ -572,7 +572,7 @@ AI計画ジョブ（issue #299）が`succeeded`または`failed`になった時�
 
 **承認・自由記述（既存issueへの指示）**
 
-1. プロデューサーがダッシュボードで対象issueの「承認」ボタン（押下後Yes/No確認）、または自由記述の指示入力欄からメッセージを送信する。
+1. プロデューサーがダッシュボードで対象issueの「承認」ボタン（押下後Yes/No確認。判断待ちカードには無く、レビュー待ちカードのみ。issue #325）、または自由記述の指示入力欄からメッセージを送信する。
 2. ダッシュボードが[2-3](#2-3-指示出しapi内部api)の内部API（`action: "approve" | "instruct"`）にリクエストを送信する。
 3. オーケストレータが対象issueの現在のラベルを取得する（[1章](#1-データモデル状態遷移設計)の冪等フロー）。
 4. `gh api` 経由でissueに定型コメント（承認）または自由記述メッセージ（instruct）を投稿する。
