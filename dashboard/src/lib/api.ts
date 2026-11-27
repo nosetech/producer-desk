@@ -1,3 +1,4 @@
+import type { AttachmentPayload } from "./mediaAttach";
 import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
@@ -164,11 +165,19 @@ export function postInstruct(
   message?: string,
   progressId?: string,
   prNumber?: number,
+  /** 画像・動画の添付（issue #301）。 */
+  attachments?: AttachmentPayload[],
 ): Promise<InstructResult> {
   return fetch(`${repoPath(repo)}/issues/${issueNumber}/instruct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, message, progressId, prNumber }),
+    body: JSON.stringify({
+      action,
+      message,
+      progressId,
+      prNumber,
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
 }
 
@@ -346,11 +355,20 @@ export function postCreateIssue(
   dispatch: Dispatch,
   progressId?: string,
   issueNumber?: number,
+  /** 画像・動画の添付（issue #301）。 */
+  attachments?: AttachmentPayload[],
 ): Promise<CreateIssueResult> {
   return fetch(`${repoPath(repo)}/issues`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, prompt, dispatch, progressId, issueNumber }),
+    body: JSON.stringify({
+      title,
+      prompt,
+      dispatch,
+      progressId,
+      issueNumber,
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   }).then((res) => parseJsonOrThrow<CreateIssueResult>(res));
 }
 

@@ -18,6 +18,7 @@ import threading
 import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
 from orchestrator.aggregation import (
@@ -51,6 +52,7 @@ from orchestrator.dispatch_status import (
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
+    CreateIssueWithAttachmentsFn,
     DeleteBranchFn,
     GetIssueDetailFn,
     GetPrBranchFn,
@@ -59,11 +61,15 @@ from orchestrator.github_client import (
     ListRepoLabelsFn,
     MergePrFn,
     PostCommentFn,
+    PostCommentWithAttachmentsFn,
     UpdateIssueMetaFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import close_issue_not_planned as gh_close_issue_not_planned
 from orchestrator.github_client import create_issue as gh_create_issue
+from orchestrator.github_client import (
+    create_issue_with_attachments as gh_create_issue_with_attachments,
+)
 from orchestrator.github_client import delete_branch as gh_delete_branch
 from orchestrator.github_client import ensure_labels as gh_ensure_labels
 from orchestrator.github_client import get_issue_detail as gh_get_issue_detail
@@ -74,6 +80,9 @@ from orchestrator.github_client import list_open_milestones as gh_list_open_mile
 from orchestrator.github_client import list_repo_labels as gh_list_repo_labels
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.github_client import (
+    post_comment_with_attachments as gh_post_comment_with_attachments,
+)
 from orchestrator.github_client import update_issue as gh_update_issue
 from orchestrator.github_client import update_issue_meta as gh_update_issue_meta
 from orchestrator.inbox import (
@@ -118,6 +127,15 @@ from orchestrator.labels import (
     gh_add_label,
     gh_get_labels,
     gh_remove_label,
+)
+from orchestrator.media_uploads import (
+    GH_ATTACH_REQUIRED_ERROR,
+    MAX_ATTACH_REQUEST_BYTES,
+    MediaAttachmentError,
+    SavedAttachment,
+    decode_attachments,
+    remove_saved,
+    save_attachments,
 )
 from orchestrator.plan_jobs import (
     STATUS_FAILED,
@@ -374,6 +392,14 @@ def _make_handler(
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
     ensure_inbox_labels: EnsureLabelsFn | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn = (
+        gh_post_comment_with_attachments
+    ),
+    create_issue_with_attachments: CreateIssueWithAttachmentsFn | None = (
+        gh_create_issue_with_attachments
+    ),
+    attach_supported: bool | None = None,
+    uploads_base_dir: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     ensure_labels_fn: EnsureLabelsFn = ensure_inbox_labels or (
@@ -398,6 +424,27 @@ def _make_handler(
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b"{}"
             return json.loads(raw)
+
+        def _read_attach_body(self) -> dict | None:
+            """添付を含みうるinstruct/create issueのJSONボディを読む（issue #301）。
+
+            `Content-Length`が添付付きリクエストの上限を超えたら413を返してNone。
+            """
+            if int(self.headers.get("Content-Length", 0)) > MAX_ATTACH_REQUEST_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます（添付は合計50MBまで）"})
+                return None
+            return self._read_json_body()
+
+        def _save_attachments(
+            self, repo: str, issue_key: str, raw: object
+        ) -> list[SavedAttachment]:
+            """`attachments`を検証して一時保存する。不正なら`MediaAttachmentError`。"""
+            decoded = decode_attachments(raw)
+            if decoded and attach_supported is False:
+                raise MediaAttachmentError(GH_ATTACH_REQUIRED_ERROR)
+            if not decoded:
+                return []
+            return save_attachments(repo, issue_key, decoded, base_dir=uploads_base_dir)
 
         def _refresh_store(self) -> bool:
             """instruct/create_issue成功直後にStateStoreを同期更新する（issue #70）。
@@ -1018,10 +1065,14 @@ def _make_handler(
                 return
 
             progress_id: str | None = None
+            saved: list[SavedAttachment] = []
+            dispatched = False
             try:
                 try:
                     try:
-                        payload = self._read_json_body()
+                        payload = self._read_attach_body()
+                        if payload is None:
+                            return
                         progress_id = payload.get("progressId")
                         on_stage = (
                             (lambda stage: progress_store.set(progress_id, stage))
@@ -1033,6 +1084,11 @@ def _make_handler(
                             not isinstance(pr_number, int) or isinstance(pr_number, bool)
                         ):
                             raise ValueError("prNumberは整数で指定してください")
+                        saved = self._save_attachments(
+                            repo, str(issue_number), payload.get("attachments")
+                        )
+                        if saved:
+                            on_stage("attach")
                         result = handle_instruct(
                             repo,
                             issue_number,
@@ -1052,7 +1108,10 @@ def _make_handler(
                             sync_worktree=sync_worktree,
                             on_stage=on_stage,
                             pr_number=pr_number,
+                            attachments=saved,
+                            post_comment_with_attachments=post_comment_with_attachments,
                         )
+                        dispatched = result.dispatched
                     except (KeyError, ValueError) as e:
                         self._send_json(400, {"error": str(e)})
                         return
@@ -1076,6 +1135,10 @@ def _make_handler(
                         return
                 finally:
                     instruct_locks.release(repo, issue_number)
+                    # ディスパッチしなかった（失敗した）場合、一時ファイルはAgent Runnerに
+                    # 渡らないためここで消す。ディスパッチした場合は実行終了後に消す。
+                    if saved and not dispatched:
+                        remove_saved([a.path for a in saved], base_dir=uploads_base_dir)
 
                 self._refresh_store()
                 self._send_json(200, dataclasses.asdict(result))
@@ -1531,9 +1594,13 @@ def _make_handler(
                 return
 
             progress_id: str | None = None
+            saved: list[SavedAttachment] = []
+            dispatched = False
             try:
                 try:
-                    payload = self._read_json_body()
+                    payload = self._read_attach_body()
+                    if payload is None:
+                        return
                     progress_id = payload.get("progressId")
                     on_stage = (
                         (lambda stage: progress_store.set(progress_id, stage))
@@ -1545,6 +1612,14 @@ def _make_handler(
                         isinstance(existing, bool) or not isinstance(existing, int)
                     ):
                         raise ValueError("issueNumberは整数で指定してください")
+                    # issue番号は作成後に決まるため、新規作成の保存先は`new`にまとめる。
+                    saved = self._save_attachments(
+                        repo,
+                        str(existing) if existing is not None else "new",
+                        payload.get("attachments"),
+                    )
+                    if saved:
+                        on_stage("attach")
                     result = handle_create_issue(
                         repo,
                         payload["title"],
@@ -1558,13 +1633,21 @@ def _make_handler(
                         remove_label=remove_label,
                         dispatch_queue=dispatch_queue,
                         on_stage=on_stage,
+                        attachments=saved,
+                        create_issue_with_attachments=create_issue_with_attachments,
+                        post_comment_with_attachments=post_comment_with_attachments,
                     )
+                    dispatched = result.dispatched
                 except (KeyError, ValueError) as e:
                     self._send_json(400, {"error": str(e)})
                     return
                 except subprocess.CalledProcessError as e:
                     self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
                     return
+                finally:
+                    # 「あとで着手」・失敗時はAgent Runnerに渡らないため、ここで消す。
+                    if saved and not dispatched:
+                        remove_saved([a.path for a in saved], base_dir=uploads_base_dir)
 
                 self._refresh_store()
                 self._send_json(201, dataclasses.asdict(result))
@@ -1616,6 +1699,14 @@ def make_server(
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
     ensure_inbox_labels: EnsureLabelsFn | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn = (
+        gh_post_comment_with_attachments
+    ),
+    create_issue_with_attachments: CreateIssueWithAttachmentsFn | None = (
+        gh_create_issue_with_attachments
+    ),
+    attach_supported: bool | None = None,
+    uploads_base_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -1651,6 +1742,10 @@ def make_server(
         update_issue=update_issue,
         close_issue_not_planned=close_issue_not_planned,
         ensure_inbox_labels=ensure_inbox_labels,
+        post_comment_with_attachments=post_comment_with_attachments,
+        create_issue_with_attachments=create_issue_with_attachments,
+        attach_supported=attach_supported,
+        uploads_base_dir=uploads_base_dir,
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         dashboard_settings=(

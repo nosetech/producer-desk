@@ -8,7 +8,7 @@
 
 - Node.js 20以降
 - Python 3.11以降
-- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。Agent Runnerが `gh issue comment --attach` で画像・動画を添付できるよう v2.99.0 以上を推奨。満たさない場合はorchestrator起動時に警告ログが出る）
+- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。Agent Runnerが `gh issue comment --attach` で画像・動画を添付できるよう、またダッシュボードの返信欄・新規タスク作成から画像・動画を添付して送れるよう（issue #301）、v2.99.0 以上を推奨。満たさない場合はorchestrator起動時に警告ログが出る）
 - [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
 

@@ -130,9 +130,12 @@ Content-Type: application/json
 
 {
   "action": "approve" | "instruct",
-  "message": "string（省略時はaction種別に応じた定型文を使用）"
+  "message": "string（省略時はaction種別に応じた定型文を使用）",
+  "attachments": [{"name": "string", "mimeType": "string", "dataBase64": "string"}]
 }
 ```
+
+- `attachments`（任意、`instruct`のみ、issue #301）: 画像・動画の添付。指定すると`gh issue comment --attach`で添付付きのコメントとして投稿し、添付が1件以上あれば`message`は空でもよい。形式・上限・Agent Runnerへの受け渡しは[2-4の「ダッシュボードからの画像・動画添付」](#ダッシュボードからの画像動画添付issue-301)を参照。
 
 - `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。ただしダッシュボードの判断待ちカードからは「承認」ボタンを削除したため（issue #325、運用上使われていなかった）、UIからこの経路で呼ばれることはない。APIとしては互換性のため存続し、主な利用者は下記のレビュー待ち（`status:in-review`）の承認（PRマージ）である。
 - `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。issueクローズに続けて、ラベルも`status:in-review`から`status:closed`へ即時遷移させる（`transition_label`）。これを省き背景ポーリング（`close_watcher.py`、5分間隔）でのラベル更新のみに委ねると、承認直後の[2-2「指示出し操作直後の同期更新」](#2-2-データ取得仕様ポーリング)時点ではまだ`status:in-review`のままのため、レビュー待ち一覧の判定（ラベルのみを見る）からカードが即座には消えない不具合になる（issue #70フォローアップ）。ラベル遷移に続けて、マージ済みPRのheadブランチ（`feature/*`）も`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`で削除する（issue #72）。ブランチ削除はマージ・issueクローズ成功後の後始末に過ぎないため、`gh pr merge --squash --delete-branch`のようにマージと同一コマンドには含めず分離したステップとし、削除の失敗（保護ブランチ設定・既に削除済み等）は握りつぶしてログ出力のみに留める（マージ・issueクローズが既に成功している以上、承認レスポンスとしては成功を返す。`--delete-branch`を同一コマンドに含めた場合、ブランチ削除だけの失敗でコマンド全体が非0終了扱いとなり後続の`close_issue`が実行されなくなる、というissue #58と同種の不具合を再発させるリスクがあるため）。
@@ -155,9 +158,12 @@ Content-Type: application/json
 {
   "title": "string",
   "prompt": "string",
-  "dispatch": "immediate" | "queued"
+  "dispatch": "immediate" | "queued",
+  "attachments": [{"name": "string", "mimeType": "string", "dataBase64": "string"}]
 }
 ```
+
+- `attachments`（任意、issue #301）: 画像・動画の添付。`gh issue create --attach`でissue本文に直接添付する（`gh issue create`が`--attach`に対応していない場合と、inbox項目の昇格（`issueNumber`指定）では、issueの作成・更新後、ディスパッチの前に添付付きのコメントを1件投稿する）。詳細は[2-4の「ダッシュボードからの画像・動画添付」](#ダッシュボードからの画像動画添付issue-301)を参照。
 
 - `gh issue create` 相当のAPIでissueを作成し、`status:todo` ラベルを付与する。issue本文には `prompt` をそのまま格納する。
 - `dispatch: "immediate"`: 作成直後に上記「既存issueへの指示」の `instruct` と同じ扱いで即時ディスパッチ（またはプロジェクトが実行中ならキュー）する。
@@ -281,6 +287,21 @@ UI変更のレビュー用に、Agent Runnerは`gh issue comment <n> --attach <f
   - **SSRF対策**: プロキシ対象は`https://github.com/user-attachments/(assets/<uuid>|files/<id>/<name>)`の形式に限定し、リダイレクト先も`githubusercontent.com`/`amazonaws.com`/`github.com`配下のhttpsに限定する。
   - 取得失敗時はGitHubのステータス（権限が無い・存在しない場合は404）をそのまま返す。
 - **実行ホストの前提**: `gh`がv2.99.0以上であること。満たさない場合、オーケストレータは起動時にログへ警告する。
+
+#### ダッシュボードからの画像・動画添付（issue #301）
+
+返信欄（`instruct`）と新規タスク作成の手動入力（`POST /api/projects/{repo}/issues`）から、画像・動画を添付して送れる。添付はGitHubの`user-attachments`として残るため、投稿後は上記の`CommentBody`・ライトボックスでそのまま表示される。
+
+- **対応形式**: 画像 png/jpg/jpeg/gif、動画 mp4/mov/webm。いずれも`gh --attach`で付けられる形式である。svgも`gh`では付けられるが、スクリプトを埋め込める（XSS）ため除外する。pdf/txt/zip等は、GitHubに`user-attachments`へアップロードする公開APIが無いため扱わない。
+- **上限**: 1ファイル10MB（画像・動画とも。無料プランの動画上限に合わせる）、1回10ファイル、合計50MB。値は`orchestrator/orchestrator/media_uploads.py`と`dashboard/src/lib/mediaAttach.ts`の定数にまとめ、両者を一致させる。
+- **ダッシュボード**: 添付ボタン（複数選択）・テキストエリアへのドラッグ&ドロップ・クリップボードからの貼り付け（スクリーンショット）で選ぶ。形式 → 1ファイルのサイズ → 件数 → 合計の順にクライアント側でも検証し、弾いたファイルは理由を表示してトレイに入れない。添付が1件以上あれば、返信は本文が空でも送信できる（新規作成はタイトル・指示内容が従来どおり必須）。計画モードには添付を付けない。デザインは[design-prompt-dashboard-diff-media-attach.md](./design-prompt-dashboard-diff-media-attach.md)。
+- **送信方式**: オーケストレータは標準ライブラリの`http.server`で動きmultipartのパーサを持たないため、添付はbase64にしてJSONの`attachments: [{name, mimeType, dataBase64}]`として既存のAPIに載せる。Next.jsのroute（App Router）は本文を`request.text()`でそのまま中継し、ボディサイズの上限は無い。送信は他の操作と同じくバックグラウンドのジョブとして行い、ジョブの段階の先頭に「添付をアップロード」が加わる（オーケストレータが添付を受信・保存した時点で`attach`を通知する）。失敗時の「再試行」は同じ添付をそのまま再送する。
+- **検証（オーケストレータ）**: 形式は拡張子とマジックバイトの両方で確かめ、対応形式でないもの・中身が拡張子と一致しないもの・base64として不正なもの・上限を超えるものは400で拒否する。リクエスト全体は`Content-Length`で判定し、添付付きリクエスト用の上限（合計上限のbase64換算＋1MB）を超えたら413を返す。`gh`がv2.99.0未満（起動時の`gh --version`で判定）の場合、添付付きのリクエストは400で拒否する（テキストだけの送信は従来どおり動く）。読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では他の書き込み系APIと同様に403。
+- **一時保存**: `gh --attach`に渡し、Agent Runnerに読ませるため、worktreeの外の`config/media_uploads/<owner>__<name>/<issue番号>/<uuid>.<ext>`（`.gitignore`対象。環境変数`MEDIA_UPLOADS_DIR`で変更可、新規作成はissue番号確定前のため`new/`）に保存する。ファイル名はサーバ側で採番し、クライアントのファイル名はパスに使わない。
+- **GitHubへの投稿**: 返信は`gh issue comment <n> --repo <repo> --body-file - --attach <file>...`で投稿し、本文には`post_comment`と同じく`BOT_COMMENT_MARKER`を付ける（comment_watcherの二重検知防止）。新規作成は`gh issue create --attach`でissue本文に直接添付する（一部の添付だけ失敗した場合もissueは作成済みのため、二重作成を避けてそのissueを使う）。
+- **Agent Runnerへの受け渡し**: Privateリポジトリの`user-attachments`のURLは認証が無いと取得できないため、ディスパッチキューに渡すメッセージの末尾にだけ「添付ファイル（Readツールで確認できます）:」と`- <元ファイル名> → <絶対パス>`の一覧を追記し、AIにローカルのファイルを読ませる。GitHubのコメント本文には入れない。
+- **後片付け**: 正本はGitHubの`user-attachments`にあるため、ローカルのファイルは一時ファイルとして扱う。ディスパッチした場合はAgent Runnerの実行が終わったら（成否を問わず）メッセージに追記したパスを削除する。ディスパッチしなかった場合（「あとで着手」・投稿の失敗）はリクエストの処理後すぐに削除する。異常終了などで残ったファイルは、オーケストレータの起動時に7日を過ぎたものだけ削除する。
+  - 「あとで着手（todo）」で登録したissueは、後から着手させる時点ではローカルのファイルが残っていない。AIはissue本文の`user-attachments`のURLしか参照できないため、Privateリポジトリでは画像を確認できない（既知の制約）。
 
 ### 2-5. 返信欄の定型文管理（issue #323）
 

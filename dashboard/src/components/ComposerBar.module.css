@@ -302,6 +302,12 @@
   min-height: 120px;
 }
 
+/* 新規作成のテキストエリアと添付UIの間（デザイン feature/issue-301 の 8px スペーサー）。 */
+.attachGap {
+  height: 8px;
+  flex: none;
+}
+
 .sendRow {
   display: flex;
   justify-content: flex-end;
