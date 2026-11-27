@@ -1,0 +1,31 @@
+/* カーソル行でEnterを押すと実行されるボタンの右上に出す小さな↵（issue #339）。値はArtifactsの
+   差分デザイン feature/issue-339-inbox-shortcuts.logic.js の kbEnterKbd に合わせる。文字色・枠線は
+   ボタンの文字色（currentColor）を使い、新しい色は足さない。ボタンの幅・列の配置は変えない。 */
+.kbd {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: var(--bg-panel);
+  box-shadow: 0 0 0 2px var(--bg-panel);
+  pointer-events: none;
+}
+
+/* モバイル（ボトムナビ表示幅）では表示しない。 */
+@media (max-width: 640px) {
+  .kbd {
+    display: none;
+  }
+}

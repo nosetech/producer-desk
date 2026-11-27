@@ -1035,3 +1035,8 @@
     padding-bottom: 300px;
   }
 }
+
+/* `Enter`の↵（EnterKbd、issue #339）を右上に重ねるボタン。 */
+.enterHost {
+  position: relative;
+}

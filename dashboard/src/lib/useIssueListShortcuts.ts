@@ -41,6 +41,9 @@ export function useIssueListShortcuts(
         shouldIgnoreShortcut(e, modalOpen, {
           allowShift: isFilter,
           allowRepeat,
+          // `Enter`はボタン・リンクにフォーカスがあるとき、その要素を押す本来の動作を優先する
+          // （issue #339）。
+          ignoreOnInteractive: action === "activate",
         })
       ) {
         return;
