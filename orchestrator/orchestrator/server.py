@@ -16,6 +16,7 @@ import re
 import subprocess
 import threading
 import urllib.parse
+import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1612,10 +1613,11 @@ def _make_handler(
                         isinstance(existing, bool) or not isinstance(existing, int)
                     ):
                         raise ValueError("issueNumberは整数で指定してください")
-                    # issue番号は作成後に決まるため、新規作成の保存先は`new`にまとめる。
+                    # issue番号は作成後に決まるため、新規作成はリクエストごとに`new-<uuid>`へ
+                    # 保存する（同時に届いた別リクエストの後片付けで消されないように分ける）。
                     saved = self._save_attachments(
                         repo,
-                        str(existing) if existing is not None else "new",
+                        str(existing) if existing is not None else f"new-{uuid.uuid4().hex}",
                         payload.get("attachments"),
                     )
                     if saved:
