@@ -29,6 +29,12 @@
 #                       （dashboardをそのTailscale IPでbindする。`tailscale ip -4`
 #                       で確認できる自機のTailscale IP。LAN_IPとは同時に指定
 #                       できない）
+#   DASHBOARD_PROCESS_NAME     dashboardのps上のプロセス名（既定:
+#                       producer-desk-dashboard）。空文字を指定すると上書きせず
+#                       nodeのままにする（issue #332）
+#   ORCHESTRATOR_PROCESS_NAME  orchestratorのps上のプロセス名（既定:
+#                       producer-desk-orchestrator）。空文字を指定すると上書きせず
+#                       pythonのままにする
 #   SLACK_WEBHOOK_URL   判断待ち・レビュー待ち発生時のSlack通知先。未設定の
 #                       場合、通知処理は単にスキップされる（起動エラーには
 #                       ならない）
