@@ -57,6 +57,11 @@
   color: var(--accent-blue);
 }
 
+/* カーソル行で効かないキー（issue #339の`Enter`）。値はデザインの kbdOff / labelStyle（opacity .45）。 */
+.kbdOff {
+  opacity: 0.45;
+}
+
 .label {
   color: var(--text-tertiary);
   font-weight: 500;
@@ -65,6 +70,10 @@
 .labelHot {
   color: var(--text-primary);
   font-weight: 600;
+}
+
+.labelOff {
+  opacity: 0.45;
 }
 
 /* モバイル（ボトムナビ表示幅）では表示しない。 */

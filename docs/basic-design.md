@@ -245,7 +245,7 @@ Content-Type: application/json
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claudeのチャットへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
 
-- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。
+- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。展開中のinbox項目はキーボードのカーソル移動（`j` / `k`）の対象に含まれ、`Enter`で「計画する」を押せる（issue #339、[issue一覧画面のキーボードショートカット](#issue一覧画面のキーボードショートカットissue-322)参照）。
 
 #### issue一覧画面のキーボードショートカット（issue #322）
 
@@ -254,14 +254,16 @@ Content-Type: application/json
 | 対象 | キー | 動作 |
 |---|---|---|
 | プロジェクト（上部のタブ） | `h` / `l` | 左／右のプロジェクトへ切り替える（`/projects/<repo>`へ遷移。端で止まり、反対側へ回り込まない） |
-| issue一覧 | `j` / `k` | カーソル（フォーカス行）を1つ下／上へ移す。押しっぱなしで連続移動する。未選択のときは`j`で先頭、`k`で末尾から始まり、端で止まる |
+| inbox・issue一覧 | `j` / `k` | カーソル（フォーカス行）を1つ下／上へ移す。押しっぱなしで連続移動する。未選択のときは`j`で先頭、`k`で末尾から始まり、端で止まる。inbox項目（展開中のみ。折りたたみ中は除く）→ issue一覧の行を1本の並びとして移動する（issue #339） |
+| inbox・issue一覧 | `Enter` | カーソル行の主な操作を実行する（issue #339）。issueの行は「返信する」（引用の取得中は何もしない）、inbox項目は「計画する」。inbox項目が計画を依頼中・計画ジョブあり（「計画を開く」等）・編集中のときは何もしない |
 | issue一覧 | `x` | カーソル行の行頭チェックボックスの選択（一括変更用、issue #305）を切り替える |
 | issue一覧 | `Esc` | issueの選択をすべて解除する（一括変更バーの「解除」と同じ） |
 | 状態フィルタ | `Shift`+`h` / `Shift`+`l` | 表示中のフィルタボタンの並びで左／右のフィルタを選ぶ（端で止まる） |
 
-- **カーソルとチェックボックスの選択は別物**として扱う。カーソルはissue番号で持ち、再取得・絞り込みで行が表示から消えたときは、直前の表示順で後ろにあった最も近い行（無ければ前の行）へ寄せ、どちらも無ければ未選択に戻す。カーソル行が画面外なら`scrollIntoView({ block: "nearest" })`で見える位置までスクロールする。プロジェクト切替でページがマウントし直されるため、カーソル・選択・フィルタは初期化される。
-- **無効になる条件**: 文字入力中（INPUT/TEXTAREA/SELECT/contentEditable）、IME変換中、Ctrl/Meta/Alt付き、処理済みイベント、モーダル・ポップオーバー（`role="dialog"` / `aria-modal="true"`。個別編集・一括変更・MetaFilterのドロップダウンを含む）表示中、返信・新規作成のバー（ComposerBar）表示中。`Esc`はこれらが開いているとき、選択解除ではなくそちらの「閉じる」を優先する。`H` / `L`以外はShift付きでは反応しない（Shift付きのキーは画面遷移ショートカット側では無視されるため衝突しない）。
-- **表示**: カーソル行（PCの行・モバイルのカード）を強調表示し`aria-current`を付ける。タブ・フィルタボタンには`aria-keyshortcuts`を付ける。PC表示では画面下部にショートカットガイドを`kbd`で表示し、モバイル表示（ボトムナビ表示幅）では表示しない。デザインは[design-prompt-dashboard-diff-keyboard-shortcuts.md](./design-prompt-dashboard-diff-keyboard-shortcuts.md)参照。
+- **カーソルとチェックボックスの選択は別物**として扱う。カーソルはissue番号で持ち（inboxとissueは同じリポジトリのissue番号なので重複しない）、移動順は`cursorOrder`（inbox項目を`sortInbox`の順 → issue一覧の表示順、inbox折りたたみ中はissue一覧のみ）で作る。再取得・絞り込み・inboxの折りたたみで行が表示から消えたときは、直前の表示順で後ろにあった最も近い行（無ければ前の行）へ寄せ、どちらも無ければ未選択に戻す。カーソル行が画面外なら`scrollIntoView({ block: "nearest" })`で見える位置までスクロールする。プロジェクト切替でページがマウントし直されるため、カーソル・選択・フィルタは初期化される。
+- **無効になる条件**: 文字入力中（INPUT/TEXTAREA/SELECT/contentEditable）、IME変換中、Ctrl/Meta/Alt付き、処理済みイベント、モーダル・ポップオーバー（`role="dialog"` / `aria-modal="true"`。個別編集・一括変更・MetaFilterのドロップダウンを含む）表示中、返信・新規作成のバー（ComposerBar）表示中。`Enter`は、これらに加えてボタン・リンク等の操作できる要素（`BUTTON` / `A` / `SUMMARY`・`role="button"`等）にフォーカスがあるときも反応せず、ブラウザ本来の動作（フォーカス中の要素を押す）を優先する。押しっぱなし（repeat）・Shift付きの`Enter`も反応しない。`Esc`はこれらが開いているとき、選択解除ではなくそちらの「閉じる」を優先する。`H` / `L`以外はShift付きでは反応しない（Shift付きのキーは画面遷移ショートカット側では無視されるため衝突しない）。
+- **`Enter`の実装**: 押せる主操作ボタン（issue行の「返信する」、inbox行の「計画する」）に`data-shortcut-enter`を付け、カーソル行（`data-cursor-target`）の中で表示中かつ無効でない目印付きボタンを`click()`する。表示条件・無効状態の判定はボタン側だけに持ち、ショートカット側で二重に持たない。
+- **表示**: カーソル行（PCの行・モバイルのカード・inbox行）を強調表示し`aria-current`を付ける。タブ・フィルタボタンには`aria-keyshortcuts`を付ける。PC表示では画面下部にショートカットガイドを`kbd`で表示し、モバイル表示（ボトムナビ表示幅）では表示しない。デザインは[design-prompt-dashboard-diff-keyboard-shortcuts.md](./design-prompt-dashboard-diff-keyboard-shortcuts.md)・[design-prompt-dashboard-diff-inbox-shortcuts.md](./design-prompt-dashboard-diff-inbox-shortcuts.md)（inbox・`Enter`、issue #339）参照。
 
 #### コメント添付ファイル（画像・動画）の表示（issue #218）
 

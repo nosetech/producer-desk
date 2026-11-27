@@ -32,6 +32,35 @@ export interface IgnoreShortcutOptions {
   allowShift?: boolean;
   /** キーの押しっぱなし（repeat）を許可する（issue一覧の`j` / `k`の連続移動）。 */
   allowRepeat?: boolean;
+  /**
+   * ボタン・リンク等の操作できる要素にフォーカスがあるときも無視する（issue一覧の`Enter`、
+   * issue #339）。そうした要素ではブラウザ本来の`Enter`動作（フォーカス中の要素を押す）を優先する。
+   */
+  ignoreOnInteractive?: boolean;
+}
+
+const INTERACTIVE_TAGS = new Set(["BUTTON", "A", "SUMMARY"]);
+
+function isInteractiveTarget(target: unknown): boolean {
+  if (!target || typeof target !== "object") return false;
+  const el = target as { tagName?: string; getAttribute?: unknown };
+  if (INTERACTIVE_TAGS.has(el.tagName ?? "")) return true;
+  // `role="button"`等の、ボタンとして振る舞う要素も含める。
+  if (typeof el.getAttribute === "function") {
+    const role = (el.getAttribute as (n: string) => string | null).call(
+      target,
+      "role",
+    );
+    return (
+      role === "button" ||
+      role === "link" ||
+      role === "menuitem" ||
+      role === "option" ||
+      role === "tab" ||
+      role === "checkbox"
+    );
+  }
+  return false;
 }
 
 /**
@@ -47,6 +76,8 @@ export function shouldIgnoreShortcut(
   return (
     modalOpen ||
     isEditableTarget(event.target) ||
+    (options.ignoreOnInteractive === true &&
+      isInteractiveTarget(event.target)) ||
     event.isComposing === true ||
     event.keyCode === 229 ||
     event.ctrlKey === true ||
@@ -79,7 +110,8 @@ export type IssueListAction =
   | "toggleSelect"
   | "clearSelection"
   | "prevFilter"
-  | "nextFilter";
+  | "nextFilter"
+  | "activate";
 
 /**
  * issue一覧画面のショートカットの割り当て（issue #322）。`key`は`KeyboardEvent.key`と完全一致で
@@ -99,6 +131,8 @@ export const ISSUE_LIST_SHORTCUTS = [
   { key: "l", action: "nextProject", label: "次", group: "project" },
   { key: "H", action: "prevFilter", label: "前", group: "filter" },
   { key: "L", action: "nextFilter", label: "次", group: "filter" },
+  // カーソル行の主な操作（issueの行は「返信する」、inbox項目は「計画する」、issue #339）。
+  { key: "Enter", action: "activate", label: "返信／計画", group: "activate" },
 ] as const satisfies readonly {
   key: string;
   action: IssueListAction;
@@ -140,6 +174,21 @@ export function stepIndex(
   if (length <= 0) return null;
   if (current < 0 || current >= length) return delta >= 0 ? 0 : length - 1;
   return Math.min(Math.max(current + delta, 0), length - 1);
+}
+
+/**
+ * `j` / `k`で移動するカーソルの並び（issue #339）。inbox項目（`sortInbox`の順）→ issue一覧の行
+ * （表示順）の1本の配列にする。inboxが折りたたまれている間（`inboxOpen`がfalse）はinbox項目を
+ * 含めない。inboxとissueは同じリポジトリのissue番号なので重複しないが、念のため後勝ちで除く。
+ */
+export function cursorOrder(
+  inboxNums: readonly number[],
+  issueNums: readonly number[],
+  inboxOpen: boolean,
+): number[] {
+  const head = inboxOpen ? inboxNums : [];
+  const issues = new Set(issueNums);
+  return [...head.filter((n) => !issues.has(n)), ...issueNums];
 }
 
 /**

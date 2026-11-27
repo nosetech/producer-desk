@@ -3,6 +3,7 @@ import {
   ISSUE_LIST_SHORTCUTS,
   NAV_SHORTCUTS,
   ariaKeyShortcuts,
+  cursorOrder,
   isSameScreen,
   relocateCursor,
   resolveIssueListAction,
@@ -122,6 +123,7 @@ describe("resolveIssueListAction", () => {
     expect(resolveIssueListAction("Escape")).toBe("clearSelection");
     expect(resolveIssueListAction("H")).toBe("prevFilter");
     expect(resolveIssueListAction("L")).toBe("nextFilter");
+    expect(resolveIssueListAction("Enter")).toBe("activate");
   });
   it("Shift付きの英小文字は大文字として扱う", () => {
     expect(resolveIssueListAction("h", true)).toBe("prevFilter");
@@ -180,5 +182,81 @@ describe("relocateCursor", () => {
     expect(relocateCursor(2, [1, 2], [])).toBeNull();
     expect(relocateCursor(2, [], [1])).toBeNull();
     expect(relocateCursor(null, [1], [1])).toBeNull();
+  });
+});
+
+describe("shouldIgnoreShortcut（Enter、issue #339）", () => {
+  const enter = { key: "Enter", target: { tagName: "DIV" } };
+  const opts = { ignoreOnInteractive: true };
+  it("通常要素では無視しない", () => {
+    expect(shouldIgnoreShortcut(enter, false, opts)).toBe(false);
+  });
+  it.each(["BUTTON", "A", "SUMMARY"])(
+    "%sにフォーカスがあるときは無視する",
+    (tagName) => {
+      expect(
+        shouldIgnoreShortcut({ ...enter, target: { tagName } }, false, opts),
+      ).toBe(true);
+    },
+  );
+  it("role=buttonの要素にフォーカスがあるときは無視する", () => {
+    const target = {
+      tagName: "DIV",
+      getAttribute: (n: string) => (n === "role" ? "button" : null),
+    };
+    expect(shouldIgnoreShortcut({ ...enter, target }, false, opts)).toBe(true);
+  });
+  it("オプションが無ければボタン上でも無視しない（既存のショートカット）", () => {
+    expect(
+      shouldIgnoreShortcut({ ...base, target: { tagName: "BUTTON" } }),
+    ).toBe(false);
+  });
+  it("入力中・IME変換中・押しっぱなし・モーダル表示中は無視する", () => {
+    expect(
+      shouldIgnoreShortcut(
+        { ...enter, target: { tagName: "TEXTAREA" } },
+        false,
+        opts,
+      ),
+    ).toBe(true);
+    expect(
+      shouldIgnoreShortcut({ ...enter, isComposing: true }, false, opts),
+    ).toBe(true);
+    expect(shouldIgnoreShortcut({ ...enter, repeat: true }, false, opts)).toBe(
+      true,
+    );
+    expect(shouldIgnoreShortcut(enter, true, opts)).toBe(true);
+  });
+});
+
+describe("cursorOrder（issue #339）", () => {
+  it("inbox項目 → issue一覧の順に並べる", () => {
+    expect(cursorOrder([30, 20], [5, 3, 1], true)).toEqual([30, 20, 5, 3, 1]);
+  });
+  it("inboxが折りたたまれている間はinbox項目を含めない", () => {
+    expect(cursorOrder([30, 20], [5, 3], false)).toEqual([5, 3]);
+  });
+  it("重複する番号はissue一覧側に残す", () => {
+    expect(cursorOrder([30, 5], [5, 3], true)).toEqual([30, 5, 3]);
+  });
+  it("inboxの最後からjでissue一覧の先頭へ、issue一覧の先頭からkでinboxの最後へ移る", () => {
+    const order = cursorOrder([30, 20], [5, 3], true);
+    expect(order[stepIndex(order.indexOf(20), 1, order.length)!]).toBe(5);
+    expect(order[stepIndex(order.indexOf(5), -1, order.length)!]).toBe(20);
+  });
+  it("端では止まる", () => {
+    const order = cursorOrder([30], [5], true);
+    expect(order[stepIndex(0, -1, order.length)!]).toBe(30);
+    expect(order[stepIndex(1, 1, order.length)!]).toBe(5);
+  });
+  it("inboxを折りたたむと、inbox上のカーソルはissue一覧の先頭へ寄せる", () => {
+    const prev = cursorOrder([30, 20], [5, 3], true);
+    const next = cursorOrder([30, 20], [5, 3], false);
+    expect(relocateCursor(20, prev, next)).toBe(5);
+  });
+  it("折りたたみで寄せる先が無ければ未選択に戻す", () => {
+    const prev = cursorOrder([30], [], true);
+    const next = cursorOrder([30], [], false);
+    expect(relocateCursor(30, prev, next)).toBeNull();
   });
 });
