@@ -318,12 +318,18 @@ describe("extractWorkReport", () => {
     });
   });
 
-  it("読めない項目だけnullにする", () => {
+  it("CIもレビューも読めなければnull", () => {
     expect(
       extractWorkReport(
         "**作業結果**\n- CI: 失敗\n- レビュー: 指摘3件（対応済1件・未対応1件）",
       ),
     ).toBeNull();
+  });
+
+  it("読めない項目だけnullにする", () => {
+    expect(
+      extractWorkReport("**作業結果**\n- CI: 失敗\n- レビュー: 未実施"),
+    ).toEqual({ ci: null, review: { status: "none" } });
     expect(
       extractWorkReport("**作業結果**\n- CI: 完了\n- レビュー: いくつか対応"),
     ).toEqual({ ci: "done", review: null });
