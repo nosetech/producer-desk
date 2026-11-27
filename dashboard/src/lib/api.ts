@@ -213,6 +213,22 @@ export function postMarkInReview(
   }).then((res) => parseJsonOrThrow<{ label: string }>(res));
 }
 
+/**
+ * 利用リミット待ちの自動再開を取り消す（issue #331）。取り消しコメントを投稿するだけで、
+ * ラベルは変えない（判断待ちのまま）。
+ */
+export function postCancelLimitWait(
+  repo: string,
+  issueNumber: number,
+  progressId?: string,
+): Promise<{ cancelled: boolean }> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}/limit-wait/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ progressId }),
+  }).then((res) => parseJsonOrThrow<{ cancelled: boolean }>(res));
+}
+
 export type PlanJobStatus = "queued" | "running" | "succeeded" | "failed";
 /** 失敗種別。`interrupted`はオーケストレータ再起動で中断されたジョブ。 */
 export type PlanJobErrorCode =

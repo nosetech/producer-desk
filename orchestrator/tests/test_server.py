@@ -2524,6 +2524,7 @@ def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
             _post(server, f"/api/projects/{repo}/issues/1/instruct", {"action": "approve"}),
             _post(server, f"/api/projects/{repo}/issues/1/redispatch", {}),
             _post(server, f"/api/projects/{repo}/issues/1/mark-in-review", {}),
+            _post(server, f"/api/projects/{repo}/issues/1/limit-wait/cancel", {}),
             _post(server, f"/api/projects/{repo}/issues", {"title": "t", "body": "b"}),
             _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
             _put(server, "/api/prompts/anything", {"body": "x"}),
@@ -2938,3 +2939,71 @@ def test_snippet_writes_rejected_in_read_only_mode(_isolated_snippets_path) -> N
     assert [status for status, _ in results] == [403, 403, 403, 403]
     assert list_status == 200
     assert not _isolated_snippets_path.exists()
+
+
+def _limit_wait_issue(*, latest_body: str, labels: list[str] | None = None) -> IssueSummary:
+    return IssueSummary(
+        repo=PROJECT_A.repo,
+        number=1,
+        title="t",
+        labels=labels if labels is not None else [STATUS_NEEDS_HUMAN_DECISION],
+        comments=[{"body": latest_body}],
+        updated_at="2026-11-27T00:00:00Z",
+    )
+
+
+_LIMIT_WAIT_BODY = (
+    ":warning: 利用リミット\n\n<!-- producer-desk:limit-wait\n"
+    '{"reset_at": "2026-11-27T13:00:00+09:00", "attempt": 1}\n-->\n\n'
+    "<!-- producer-desk:bot-comment -->"
+)
+
+
+def test_cancel_limit_wait_posts_cancel_comment_without_label_change() -> None:
+    """issue #331: 自動再開の取り消しは取り消しコメントの投稿のみ（ラベル・ディスパッチなし）。"""
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: [_limit_wait_issue(latest_body=_LIMIT_WAIT_BODY)],
+    )
+    try:
+        path = "/api/projects/nosetech/project-a/issues/1/limit-wait/cancel"
+        status, body = _post(server, path, {})
+        assert status == 200
+        assert body == {"cancelled": True}
+        assert len(comments.posted) == 1
+        assert "<!-- producer-desk:limit-wait-cancel -->" in comments.posted[0][2]
+        assert labels.labels_by_issue[1] == {STATUS_NEEDS_HUMAN_DECISION}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_cancel_limit_wait_rejects_issue_not_waiting_and_unknown_repo() -> None:
+    comments = FakeComments()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: [
+            _limit_wait_issue(latest_body="人間の返信")  # マーカーの後に返信済み
+        ],
+    )
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/project-a/issues/1/limit-wait/cancel", {})
+        assert status == 409
+        assert comments.posted == []
+        status, _ = _post(server, "/api/projects/nosetech/unknown/issues/1/limit-wait/cancel", {})
+        assert status == 404
+    finally:
+        server.shutdown()

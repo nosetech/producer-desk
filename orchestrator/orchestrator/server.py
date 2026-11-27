@@ -87,9 +87,11 @@ from orchestrator.inbox import (
 )
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE_SPEC,
+    NoLimitWaitError,
     NotNeedsHumanDecisionError,
     PrSelectionRequiredError,
     ReviewMergeError,
+    handle_cancel_limit_wait,
     handle_create_issue,
     handle_instruct,
     handle_mark_in_review,
@@ -170,6 +172,10 @@ REDISPATCH_PATH = re.compile(
 # 判断待ち→レビュー待ちへのUI操作による変更（issue #274）。ラベル変更のみ。
 MARK_IN_REVIEW_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/mark-in-review$"
+)
+# 利用リミット待ちの自動再開の取り消し（issue #331）。取り消しコメントの投稿のみ。
+LIMIT_WAIT_CANCEL_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/limit-wait/cancel$"
 )
 # 単一issueの本文・コメント取得（issue #231）。返信UIの引用表示用。
 ISSUE_DETAIL_PATH = re.compile(
@@ -736,6 +742,14 @@ def _make_handler(
                 )
                 return
 
+            limit_wait_cancel_match = LIMIT_WAIT_CANCEL_PATH.match(self.path)
+            if limit_wait_cancel_match:
+                self._handle_cancel_limit_wait(
+                    limit_wait_cancel_match.group("repo"),
+                    int(limit_wait_cancel_match.group("issue_number")),
+                )
+                return
+
             create_issue_match = CREATE_ISSUE_PATH.match(self.path)
             if create_issue_match:
                 self._handle_create_issue(create_issue_match.group("repo"))
@@ -1205,6 +1219,50 @@ def _make_handler(
 
                 self._refresh_store()
                 self._send_json(200, {"label": STATUS_IN_REVIEW})
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
+        def _handle_cancel_limit_wait(self, repo: str, issue_number: int) -> None:
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+
+            if not instruct_locks.try_acquire(repo, issue_number):
+                message = f"{repo}#{issue_number} は他の操作を処理中です。しばらくお待ちください"
+                self._send_json(409, {"error": message})
+                return
+
+            progress_id: str | None = None
+            try:
+                try:
+                    payload = self._read_json_body()
+                    progress_id = payload.get("progressId") if isinstance(payload, dict) else None
+                    if not isinstance(progress_id, str):
+                        progress_id = None
+                except ValueError:
+                    progress_id = None
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
+                try:
+                    issue = self._fetch_issue(repo, issue_number)
+                    if issue is None:
+                        return
+                    handle_cancel_limit_wait(issue, post_comment=post_comment, on_stage=on_stage)
+                except NoLimitWaitError as e:
+                    self._send_json(409, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+                finally:
+                    instruct_locks.release(repo, issue_number)
+
+                self._refresh_store()
+                self._send_json(200, {"cancelled": True})
             finally:
                 if progress_id:
                     progress_store.clear(progress_id)

@@ -232,6 +232,11 @@ Content-Type: application/json
 - 現在のラベルが`needs-human-decision`でない場合は409。未登録リポジトリは404。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では他の書き込み系APIと同様に403。
 - ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタン（確認ダイアログ付き）から呼ばれる。デザインは[design-prompt-dashboard-diff-relabel.md](./design-prompt-dashboard-diff-relabel.md)参照。
 
+**`POST /api/projects/{repo}/issues/{issue_number}/limit-wait/cancel`（利用リミット待ちの自動再開の取り消し、issue #331）**
+
+- 最新コメントが利用リミット待ちマーカー付きの判断待ちissueに、取り消しコメント（`<!-- producer-desk:limit-wait-cancel -->`、`BOT_COMMENT_MARKER`付きのためcomment_watcherの再ディスパッチ対象にならない）を投稿する。ラベルは変えず、ディスパッチもしない。最新コメントがマーカーでなくなるため、`limit_watcher`の自動再開対象から外れる（[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)）。
+- リクエストボディは任意（`progressId`のみ。`on_stage`は`comment`）。応答は`200 {"cancelled": true}`。利用リミット待ちでない（マーカーの後にコメントがある・判断待ちでない・クローズ済み）場合は409。未登録リポジトリは404、対象issueが見つからない場合は404、`gh`の失敗は502。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では403。
+
 **inbox API（issue #288）**
 
 - `POST /api/projects/{repo}/inbox`: inbox項目を作成する。ボディは`{"title"（必須）, "body"（任意）, "kind"（`bug`/`enhancement`/`other`、必須）}`。`create_issue`＋`inbox`ラベル＋種別ラベル1つを付与し、状態ラベルは付けずディスパッチもしない。種別が3つ以外・titleが空は400、対象リポジトリに`inbox`/種別ラベルが無い場合は作成前に`gh label create`で補う（`github_client.ensure_labels`）。応答は`201 {"issue_number": n}`。
@@ -328,6 +333,7 @@ echo "<指示内容>" | claude -p \
 
 - **ヘルスチェック**: ワンショット実行のため常時稼働のプロセス監視（ヘルスチェックエンドポイント等）は設けない。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueにコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与を第一とする。[1章](#1-データモデル状態遷移設計)参照）。**実行中の進捗確認は、プロセス監視ではなく後述のログ収集（`tail -f`によるリアルタイム追跡）で行う（issue #49）。**
   - **異常終了時のコメント文面**: 異常終了は大抵の場合APIリミット到達（429）が原因であり、その場合は終了コード・ログパスを提示しても人間が読むべき情報にならない（issue #146）。`run_agent_runner`はNDJSON出力の最後の`"type":"result"`イベント（`_parse_result_payload`、利用量記録用の`_extract_usage_records`と共通の抽出処理`_classify_run_error`（issue #60）を経由）から`is_error`/`api_error_status`を参照し、`api_error_status == 429`かつ`usage_store.parse_limit_reset_text()`で`result`の自由文から解除予定時刻（例: `resets 1pm (Asia/Tokyo)`）を抜き出せた場合に限り、「Claude CodeのAPI利用リミットに達したため停止しました」という趣旨のメッセージ（解除予定時刻付き）に切り替える（`agent_runner.py`の`_build_failure_comment`）。**429到達時でも`result`が空・非文字列で解除予定時刻等の情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り終了コード・ログパスを含むメッセージにフォールバックする**（予期しない例外等も同様）。**429以外の異常終了では、`result`が非空の文字列として得られていればコメント本文に「エラー内容: <result>」として含め（2000文字を超える場合は切り詰めて「…（省略、詳細はログを参照）」を付す）、ログパスも詳細調査用に併記する。`payload`が`None`（NDJSON出力が壊れている・`result`イベントが無い）または`result`が空/非文字列の場合は従来通りログパスのみのメッセージにフォールバックする（issue #190）**。いずれの場合も`needs-human-decision`へのラベル遷移自体は変わらない。
+    - **利用リミット待ちマーカー（issue #331）**: 429到達時に、解除予定時刻の記述を`usage_store.parse_limit_reset_at()`で絶対時刻に変換できた場合は、コメント本文に「解除予定の<M/D HH:MM>（JST）を過ぎたら同じセッションで自動的に再開する。別モデルで今すぐ再開・自動再開の取り消しはダッシュボードの判断待ちカードから行う」旨を加え、機械可読マーカー`<!-- producer-desk:limit-wait {"reset_at": "<ISO 8601>", "attempt": <連続回数>} -->`（`limit_wait.LIMIT_WAIT_MARKER_PREFIX`）を埋め込む。変換できない場合・プロジェクト設定`limit_auto_resume: false`・(B) LiteLLM Proxy経由での実行時はマーカーを付けず従来どおりの文面にする。連続の自動再開が上限（`limit_auto_resume_max_attempts`、既定3回）に達した場合もマーカーを付けず、その旨を本文に書く。遷移先はいずれも`needs-human-decision`（[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)参照）。
 - **正常終了時の決定的フォールバック**: プロセスが正常終了（exit 0）しても、Agent Runnerが上記の自己申告ラベル遷移（`AGENT_RUNNER_LABEL_INSTRUCTION`）を実行し忘れることがある（issue #70）。正常終了時、issueは必ず「PR作成済み（`status:in-review`）」「人間への確認が必要（`needs-human-decision`）」のいずれかに到達している設計であるため、オーケストレータは`run_agent_runner`の成功分岐でissueコメント投稿後に現在のラベルを再取得し、`status:in-progress`のまま変化していなければ（＝`needs-human-decision`・`status:in-review`いずれにも自己遷移していなければ）常に異常とみなし、`needs-human-decision`へ強制的に遷移させる（`result`テキストの自然文判定は行わない。既存の「異常終了時は`needs-human-decision`に強制遷移」ロジックと対称的な構造。issue #78）。Agent Runnerが既に自己遷移済みの場合、`transition_label`の冪等性によりこのフォールバックは何も行わない。
   - **遷移先の判定（issue #274）**: `status:in-progress`のまま正常終了した場合、作業ブランチ（worktreeのカレントブランチ）をheadとするオープンPRがあれば、既存PRへの追加pushだけで終えて自己遷移を怠ったケースとみなして`status:in-review`へ遷移させる（あわせてPR本文へのissue参照補完を行う）。オープンPRが無い（または判定に失敗した）場合のみ従来どおり`needs-human-decision`へ遷移させる。CI待ちマーカーがある場合は従来どおりスキップする。また`AGENT_RUNNER_LABEL_INSTRUCTION`に「既存PRへの追加pushで終える場合も最終的に`status:in-review`へ遷移させる」旨を明記している。
   - **CI完了待ちとの区別（issue #173）**: 上記フォールバックは当初「`status:in-progress`のまま正常終了＝常にラベル遷移漏れ」と一律に扱っており、CI完了待ちのため意図的に（`AGENT_RUNNER_LABEL_INSTRUCTION`の指示通りに）ターンを終了したケースも区別できずに`needs-human-decision`へ落としてしまっていた。`run_agent_runner`は現在、最終応答（`result`）から`agent_runner.extract_ci_wait_marker`でCI待機マーカーの有無を確認し、マーカーが検出された場合のみこのフォールバックをスキップして`status:in-progress`を維持する。CI完了の検知・後続処理の自動再開は3-5節の`orchestrator.ci_watcher`が担う。
@@ -366,6 +372,22 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
   - CIが未完了なら次回ポーリングまで待つ。
   - 既にディスパッチ中（前回ポーリングでのresumeが進行中等）のissueは`DispatchQueue.is_active`で判定しスキップし、二重ディスパッチを避ける。
 - **無限待機の防止**: `CiWaitTracker`がissueごとにCI待機マーカーを最初に検出した時刻を記録し、`CI_WAIT_TIMEOUT`（既定6時間、`config/projects.yaml`の`ci_wait_timeout_hours`で変更可）を超えてもCIが完了しない場合は、オーケストレータが直接`needs-human-decision`へ遷移させ、その旨をissueコメントで通知するフェイルセーフを備える。
+
+### 3-5-1. 利用リミット解除時の自動再開（issue #331）
+
+[要件定義書 3-4](./requirements.md#3-4-コスト制約)の「(A)選択時は利用リミット到達時にリセットまで待機する」を、3-5節のCI待ちと同じ「マーカー＋オーケストレータのポーリング」方式で実現する。
+
+- **解除予定時刻の絶対時刻化**: `usage_store.parse_limit_reset_at(text, recorded_at)`が、`parse_limit_reset_text`で抜き出した記述（実ログで確認済みの`resets 1pm (Asia/Tokyo)` / `resets 6:30pm (Asia/Tokyo)`のほか、日付付きの`resets Nov 28, 3pm (...)`・`resets Nov 28 at 3pm`、24時間表記の`resets 13:00`）を、記録時刻を基準にタイムゾーン付きの絶対時刻へ変換する。時刻のみなら記録時刻以降で最初にその時刻になる日時、日付付きなら記録時刻の年（1日以上過去になる場合は翌年）とする。括弧内のタイムゾーン名は`zoneinfo`で解決し、無いときはJSTとみなす。書式不明・解決できないタイムゾーン名・am/pmも分も無い時刻（12/24時間表記が判別できない）は`None`を返し、推測で補わない。
+- **Agent Runner異常終了時**: 3-2節のとおり、変換できた場合に限り失敗コメントへ利用リミット待ちマーカーを付け、`needs-human-decision`へ遷移させる（判断待ち一覧に出して人間が選べるようにするため、`status:in-progress`には残さない）。プロジェクト設定（`config/projects.yaml`の`Project`）の`limit_auto_resume`（既定`true`）が`false`なら付けない。
+- **オーケストレータ側（`orchestrator/orchestrator/limit_watcher.py`）**: `main.py`の`on_issues_fetched`から、`ci_watcher`の後にポーリングのたびに`process_limit_waiting_issues`を呼ぶ。対象は、OPENかつ`needs-human-decision`で、**最新コメント**が利用リミット待ちマーカー付きのBot投稿（`BOT_COMMENT_MARKER`付き）のissue。
+  - 現在時刻が解除予定時刻＋余裕（`LIMIT_RESUME_GRACE`、3分）以降になったら、`status:in-progress`へ冪等に遷移させ（`transition_label`）、`DispatchQueue.enqueue`で既存セッションを`--resume`する。再開メッセージは「解除予定時刻を過ぎたため自動で再開した。中断した作業の続きを進める」趣旨で、連続回数のマーカー`<!-- producer-desk:limit-resume {"attempt": n} -->`を含む。
+  - 既にディスパッチ中（`DispatchQueue.is_active`）のissueはスキップする。`gh`の失敗はポーリングループへ伝えず警告ログを出し、次回に再試行する。読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では`on_issues_fetched`自体が何もしないため自動再開しない。
+  - マーカーの後に人間のコメント（返信・`/model`指定）や取り消しコメントが付けば、最新コメントではなくなるので自然に対象外になる。待機状態はコメントから毎回導けるため、オーケストレータを再起動しても待機は失われない（追加の永続化ファイルは持たない）。
+- **無限ループ防止**: 自動再開後にまた429になった場合、`run_agent_runner`は再開メッセージの連続回数を引き継いで`attempt + 1`のマーカーを付ける。上限（`limit_auto_resume_max_attempts`、既定3）を超える場合はマーカーを付けずに判断待ちで止め、その旨をコメントする。人間の指示で再開した場合は回数が0から数え直しになる。
+- **人間の選択肢（ダッシュボードの判断待ちカード）**: 集計API（`GET /api/state`）は判断待ちissueに`limit_wait: {"reset_at", "attempt"}`（自動再開予定のときのみ、それ以外は`null`）を付けて返す。カードは「利用リミット待ち」と自動再開予定時刻・残り時間を表示し、次の操作を提供する。
+  - **別モデルで今すぐ再開**: LiteLLMのモデルエイリアス（プロジェクト設定API`GET /api/projects/{repo}/settings`の`available_models`）を選び、既存の`instruct`で`/model litellm:<alias>`行＋再開メッセージをissueコメントとして投稿する（[4章](#実行手段の選択自走タスク本体issue-174)の都度指示）。この指定は`execution_overrides.json`に保存され以降も使われるため、UIでその旨と`/model claude_code`で戻せることを示す。
+  - **自動再開を取り消す**: `POST /api/projects/{repo}/issues/{issue_number}/limit-wait/cancel`（[2-3](#2-3-指示出しapi内部api)）で取り消しコメントを投稿する。判断待ちのまま、返信での指示を待つ。
+- **対象外**: AI計画ジョブ（`issue_plan.py`の`limit`失敗）の自動再試行、(B) LiteLLM Proxy経由のプロバイダ側レート制限（429）。
 
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
@@ -441,6 +463,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
 - **issueコメントでの都度指示（構文確定、issue #176）**: ダッシュボードの自由記述指示（[2-3](#2-3-指示出しapi内部api)の`instruct`）またはGitHub issueへの直接コメントで、当該issueへの以降のディスパッチに限り実行手段をプロジェクトのデフォルトから一時的に変更できる。メッセージ本文中に独立した行として`/model claude_code`（(A)へ戻す）または`/model litellm:<LiteLLM Proxyのモデルエイリアス>`（(B)へ切り替える。例: `/model litellm:project-a-ollama-qwen`）を書く（`orchestrator/orchestrator/execution_mode.py`の`parse_override_directive`が`re.MULTILINE`で行頭一致を見るため、本文中の他の説明文とは干渉しない）。検出した都度上書き指定は`config/execution_overrides.json`（`.gitignore`対象、`session_store.py`の`config/sessions.json`と同様issue単位で保存する`execution_override_store.py`）に永続化され、以降のディスパッチ（`--resume`によるセッション再開を含む）でも同じ指定が使われ続ける。ディレクティブ行自体はAgent Runnerへ渡すプロンプト本文からは取り除く（`strip_override_directive`）。実行手段は「メッセージ中の都度指定 → issueに保存済みの都度上書き → プロジェクトのデフォルト設定」の優先順位で解決する（`resolve_execution_settings`）。
 - **環境変数への反映**: 上記いずれの経路で決定された実行手段も、`run_agent_runner`が最終的に[3-1](#3-1-起動パラメータ)の`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`設定有無（`orchestrator/orchestrator/litellm_proxy.py`の`build_env_overrides`）に変換し、サブプロセス起動時の環境変数に適用する。(B)選択時はあわせて`claude -p --model <litellm_model>`でモデルエイリアスを明示する（LiteLLM Proxy側の`model_list`がこのエイリアス名でどのプロバイダ・モデルへ中継するかを解決する）。
 - **LiteLLM Proxy疎通不能時のフォールバック（issue #176で確定）**: `run_agent_runner`はLiteLLM Proxyへディスパッチする前に軽量な死活確認（`GET /health/liveliness`、`litellm_proxy.is_healthy`）を行う。応答が無い場合は(A) Claude Code CLI直利用へ**自動フォールバック**し、その旨をissueコメントで通知したうえでそのまま実行を続行する（`needs-human-decision`へは倒さない）。LiteLLM Proxyは実行手段の選択肢の一つに過ぎずAgent Runnerの正しさを左右する要素ではないため、プロセスの一時的な不調で自走タスクの進行自体を止めない方針とする（CI完了待ちの自動再開・孤立in-progress検知等、インフラ的な不整合は極力自動復旧を優先する既存の設計思想を踏襲）。永続化済みの都度上書き・プロジェクト設定自体は変更しないため、次回ディスパッチでは改めてLiteLLM Proxyへの接続を試みる。
+- **利用リミット到達時（issue #331）**: (A) Claude Code直利用で利用リミットに達した場合は、解除予定時刻を過ぎたら同じセッションで自動再開する。判断待ちカードから、解除を待たずにLiteLLMのモデルを選んで今すぐ再開することもできる（上記の都度指示を使う）。詳細は[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)参照。
 
 ### LiteLLM Proxyの利用量計測（`usage_store.py`統合、issue #174）
 

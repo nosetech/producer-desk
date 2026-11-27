@@ -20,6 +20,11 @@ const HEADING: Record<Job["kind"], { running: string; failed: string }> = {
     running: "レビュー待ちへ変更中",
     failed: "レビュー待ちへの変更に失敗しました",
   },
+  limitResume: { running: "別モデルで再開中", failed: "再開に失敗しました" },
+  limitCancel: {
+    running: "自動再開を取り消し中",
+    failed: "自動再開の取り消しに失敗しました",
+  },
 };
 
 export function ErrorIcon({ size = 15 }: { size?: number }) {
@@ -98,7 +103,9 @@ export default function JobStatus({
       <div className={styles.head}>
         {err ? <ErrorIcon /> : <SpinnerIcon />}
         <span className={`${styles.heading} ${err ? styles.headingError : ""}`}>
-          {err ? HEADING[job.kind].failed : HEADING[job.kind].running}
+          {err
+            ? HEADING[job.kind].failed
+            : (job.runningHeading ?? HEADING[job.kind].running)}
         </span>
         <span className={styles.spacer} />
         <span className={styles.count}>

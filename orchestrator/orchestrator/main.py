@@ -36,6 +36,7 @@ from orchestrator.github_client import gh_supports_attach
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.issue_plan import PlanRunner, execution_env, generate_plan
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
+from orchestrator.limit_watcher import process_limit_waiting_issues
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
@@ -231,6 +232,15 @@ def main() -> None:
             dispatch_queue=dispatch_queue,
             post_comment=gh_post_comment,
             ci_wait_timeout=timedelta(hours=ci_wait_timeout_hours),
+        )
+        # issue #331: 利用リミット待ちで判断待ちになったissueを、解除予定時刻を過ぎたら
+        # 同じセッションで自動再開する。
+        process_limit_waiting_issues(
+            issues_by_repo,
+            get_labels=gh_get_labels,
+            add_label=gh_add_label,
+            remove_label=gh_remove_label,
+            dispatch_queue=dispatch_queue,
         )
 
     def on_update(state: AggregatedState) -> None:

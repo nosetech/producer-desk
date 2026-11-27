@@ -10,6 +10,7 @@ import type { IssueComment, IssueSummary } from "@/lib/types";
 import { useApp } from "./AppContext";
 import DecisionPointsBox from "./DecisionPointsBox";
 import JobStatus from "./JobStatus";
+import LimitWaitBox from "./LimitWaitBox";
 import CommentViewer from "./CommentViewer";
 import DispatchDiagnosis from "./DispatchDiagnosis";
 import styles from "./DecisionCard.module.css";
@@ -123,9 +124,12 @@ export default function DecisionCard({
   const busy = job !== undefined;
 
   const last = latestComment(decision);
+  // 利用リミット待ち（issue #331）なら、判断事項・要約の代わりにその表示を主な情報にする。
+  const limitWait = decision.limit_wait ?? null;
   // 「判断が必要な事項」があればそれを、無ければ従来の1行要約を表示する（issue #325）。
-  const decisions = last ? cardDecisions(last.body) : null;
-  const summary = last && !decisions ? commentSummary(last) : null;
+  const decisions = last && !limitWait ? cardDecisions(last.body) : null;
+  const summary =
+    last && !limitWait && !decisions ? commentSummary(last) : null;
   const titleUrl =
     last?.url ??
     `https://github.com/${decision.repo}/issues/${decision.number}`;
@@ -215,6 +219,9 @@ export default function DecisionCard({
           </span>
         ) : null}
       </div>
+      {limitWait && (
+        <LimitWaitBox decision={decision} limitWait={limitWait} busy={busy} />
+      )}
       {decisions && (
         <DecisionPointsBox
           decisions={decisions}

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from orchestrator.aggregation import PrCandidate
+from orchestrator.aggregation import IssueSummary, PrCandidate, latest_limit_wait
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
@@ -42,6 +42,7 @@ from orchestrator.labels import (
     resolve_instruction_label,
     transition_label,
 )
+from orchestrator.limit_wait import LIMIT_WAIT_CANCEL_MARKER
 from orchestrator.prompts import PromptSpec, load_prompt_text
 from orchestrator.worktree import SyncWorktreeFn
 from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
@@ -128,6 +129,43 @@ def handle_mark_in_review(
         add_label=add_and_notify,
         remove_label=remove_and_notify,
     )
+
+
+class NoLimitWaitError(RuntimeError):
+    """自動再開を取り消そうとしたissueが、利用リミット待ちでない場合に送出する（issue #331）。"""
+
+
+LIMIT_WAIT_CANCEL_COMMENT = (
+    ":no_entry_sign: 利用リミット解除後の自動再開を取り消しました。"
+    "判断待ちのまま、返信での指示を待ちます。"
+)
+
+
+def handle_cancel_limit_wait(
+    issue: IssueSummary,
+    *,
+    post_comment: PostCommentFn,
+    on_stage: OnStageFn = _noop_on_stage,
+) -> None:
+    """利用リミット待ちの自動再開を取り消す（issue #331）。
+
+    取り消しコメントを投稿するだけで、ラベルは変えない（判断待ちのまま）。最新コメントが
+    利用リミット待ちマーカーでなくなるため、`limit_watcher`の対象から外れる。投稿は
+    `post_comment`が`BOT_COMMENT_MARKER`を付けるため、comment_watcherの再ディスパッチ
+    対象にもならない。
+    """
+    if (
+        issue.state != "OPEN"
+        or STATUS_NEEDS_HUMAN_DECISION not in issue.labels
+        or latest_limit_wait(issue) is None
+    ):
+        raise NoLimitWaitError(
+            f"{issue.repo}#{issue.number} は自動再開を待っていないため、取り消せません"
+        )
+    post_comment(
+        issue.repo, issue.number, f"{LIMIT_WAIT_CANCEL_COMMENT}\n\n{LIMIT_WAIT_CANCEL_MARKER}"
+    )
+    on_stage("comment")
 
 
 class PrSelectionRequiredError(RuntimeError):
