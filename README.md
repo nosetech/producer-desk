@@ -10,7 +10,7 @@ producer-deskは、プロデューサー1名が複数プロジェクト（3〜5�
 
 - Node.js 20以降
 - Python 3.11以降
-- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。画像・動画の添付には v2.99.0 以上を推奨。Privateリポジトリを管理対象にする場合は `config/projects.yaml` の `github_token` も設定する。[SETUP](dist/SETUP.md)参照）
+- [GitHub CLI (`gh`)](https://cli.github.com/)（`gh auth login` 済みであること。画像・動画の添付（Agent Runnerからの添付と、ダッシュボードの返信欄・新規タスク作成からの添付）には v2.99.0 以上を推奨。Privateリポジトリを管理対象にする場合は `config/projects.yaml` の `github_token` も設定する。[SETUP](dist/SETUP.md)参照）
 - [Claude Code CLI](https://claude.com/product/claude-code)（自走タスク本体の既定の実行手段。Pro/Maxプラン等のサブスクリプション認証済みであること）
 - macOS（DBバックアップのlaunchd連携を含め、動作確認はmacOSのみ）
 
@@ -216,6 +216,18 @@ TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
 ./bin/stop.sh
 ```
 
+orchestrator（バックエンド）とdashboard（フロントエンド）を片方だけ起動・停止したい場合（thothのように、プロセスごとに起動・停止するアプリ管理ツールへ登録する場合など。issue #326）は、個別スクリプトを使います。
+
+```bash
+./bin/backend_start.sh   # orchestratorのみ起動（バックグラウンドで起動して即終了）
+./bin/backend_stop.sh    # orchestratorのみ停止
+./bin/frontend_start.sh  # dashboardのみ起動（npm ci + ビルド + next start）
+./bin/frontend_stop.sh   # dashboardのみ停止
+SKIP_BUILD=1 ./bin/frontend_start.sh  # npm ci・ビルドを省略して再起動のみ（ビルド済みの場合のみ）
+```
+
+PIDファイル（`logs/orchestrator.pid`・`logs/dashboard.pid`）・ログ・環境変数は`./bin/start.sh` / `./bin/stop.sh`と同一のため、一括と個別を混在させても停止できます（例: 個別に起動したものを`./bin/stop.sh`で止める）。
+
 ### 本体の常時起動（macOS launchd、任意）
 
 `./bin/start.sh`はPIDファイル方式の手動起動のため、macOSの再起動・ログアウト・プロセスクラッシュ時に自動復旧しません。自動復旧させたい場合は、同梱の`./bin/service.sh`でorchestrator・dashboardをlaunchdのper-user LaunchAgentとして登録します。**ログイン中のみ動作する**（ログイン前の起動が必要なLaunchDaemonは対象外です）。
@@ -243,7 +255,7 @@ TAILSCALE_IP=$(tailscale ip -4) ./bin/start.sh
 
 起動後、ブラウザで`http://127.0.0.1:3000`（またはLAN IP経由）を開くとダッシュボードが表示されます。
 
-- **判断待ち一覧**: `needs-human-decision`ラベルが付いたissue（Agent Runnerが自ら「人間の判断が必要」と判断して停止したもの）が横断的に並びます。各カードから「承認」（定型文「承認します。進めてください。」をissueにコメント投稿し、Agent Runnerを再開させる）、または自由記述での指示（方針変更・追加情報の提供等をそのままコメント投稿する）ができます。専用の「却下」操作はなく、方針を変えたい場合も自由記述で伝えます。
+- **判断待ち一覧**: `needs-human-decision`ラベルが付いたissue（Agent Runnerが自ら「人間の判断が必要」と判断して停止したもの）が横断的に並びます。各カードには、AIの最終応答に「判断が必要な事項」セクションがあればその判断事項が番号付きで表示されます（無ければ最新コメントの要約）。「返信」から自由記述で指示（判断の回答・方針変更・追加情報の提供等をそのままコメント投稿する）すると、Agent Runnerが再開します。専用の「却下」操作はなく、方針を変えたい場合も自由記述で伝えます。
 - **レビュー待ち一覧**: `status:in-review`ラベルが付いたissue（Agent RunnerがPRを作成し終えたもの）が並びます。紐づくPRへのリンクが表示されるので内容を確認し、「承認」でそのPRをsquash mergeしてissueをクローズします。差し戻したい場合は自由記述で修正指示を送ると、Agent Runnerが同じPRブランチで対応を続けます。
 - **新規タスクの作成**: プロジェクトを選び、タイトルと自由記述のプロンプト（指示内容）を入力してissueを新規作成できます。「即時着手」を選ぶとすぐにAgent Runnerがディスパッチされ、「todo登録」を選ぶと`status:todo`のまま登録だけ行われ、後で着手を指示できます。
 - **プロジェクトの並行状況**: プロジェクト（リポジトリ）ごとに、直近更新issueの状態と状態別のissue件数が表示されます。ラベルは付いているのに対応するAgent Runnerのプロセスが実際には動いていない異常（`status:in-progress`のまま停止している等）は警告アイコンで示されます。

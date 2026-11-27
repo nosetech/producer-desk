@@ -33,6 +33,11 @@
 #     投稿・Slack通知は一切行わない（環境変数で上書きできない）。
 #   - 運用shell由来のNODE_ENV（bin/start.shのproduction）は子プロセスから外す。
 #     `next dev`はNODE_ENV=productionだとglobals.cssのparseに失敗してHTTP 500になる。
+#   - ps上のプロセス名（issue #332）は運用インスタンスと区別できるよう`<名前>-dev`
+#     にする（既定: producer-desk-orchestrator-dev / producer-desk-dashboard-dev。
+#     ORCHESTRATOR_PROCESS_NAME / DASHBOARD_PROCESS_NAMEを指定すればその名前に-dev
+#     を付け、空文字なら上書きしない）。本体はラッパープロセスの子として起動し、
+#     記録するPID（=PGID）は名前を変えないラッパー側にする（stopの目印確認のため）。
 #   - 起動後にdashboardへアクセスし、HTTP 200でなければ警告する。
 #   - dashboardはnode_modulesが必要（無ければエラー終了する。dashboardで`npm ci`
 #     を実行しておくこと）。
@@ -165,10 +170,14 @@ launch() {
         export "${MARKER_ENV}=${marker}"
         # 運用インスタンス由来のNODE_ENV=productionで`next dev`が500になるため外す。
         unset NODE_ENV
+        # 本体をexecせず子として起動し、このラッパー（記録するPID=PGID）は終了を待つ。
+        # 本体はps上のプロセス名を書き換える（issue #332）が、macOSではその際に
+        # `ps eww`から環境変数が見えなくなり、stopの目印確認が通らなくなるため。
+        # stopはグループごとSIGTERMするので、ラッパーと本体は一緒に終了する。
         nohup python3 -I -c '
-import os, sys
+import os, subprocess, sys
 os.setsid()
-os.execvp(sys.argv[1], sys.argv[1:])
+sys.exit(subprocess.call(sys.argv[1:]))
 ' "$@" >>"${logfile}" 2>&1 &
         echo $! >"$(record_file "${name}" pid)"
     )
@@ -269,6 +278,8 @@ cmd_start() {
     export PLAN_JOBS_PATH="${PLAN_JOBS_PATH:-${DEV_DIR}/plan_jobs.json}"
     export EXECUTION_OVERRIDES_PATH="${EXECUTION_OVERRIDES_PATH:-${DEV_DIR}/execution_overrides.json}"
     export ORCHESTRATOR_PROMPTS_PATH="${ORCHESTRATOR_PROMPTS_PATH:-${DEV_DIR}/prompts.yaml}"
+    export ORCHESTRATOR_SNIPPETS_PATH="${ORCHESTRATOR_SNIPPETS_PATH:-${DEV_DIR}/snippets.yaml}"
+    export MEDIA_UPLOADS_DIR="${MEDIA_UPLOADS_DIR:-${DEV_DIR}/media_uploads}"
     # 実リポジトリを書き込み不可で参照する（下記のORCHESTRATOR_READ_ONLY）。ファイルは
     # 毎回生成し直す（古いプレースホルダ設定の持ち越しを防ぐ）。
     if [ "${PROJECTS_CONFIG_PATH}" = "${DEV_DIR}/projects.yaml" ]; then
@@ -286,12 +297,24 @@ cmd_start() {
     # 読み取り専用モードは環境変数の継承・指定に関わらず常に有効にする。
     export ORCHESTRATOR_READ_ONLY=1
 
+    # ps上のプロセス名（issue #332）。運用インスタンスと区別できるよう-devを付ける。
+    # 空文字が指定されていれば上書きしない。
+    local orch_name="${ORCHESTRATOR_PROCESS_NAME-producer-desk-orchestrator}"
+    local dash_name="${DASHBOARD_PROCESS_NAME-producer-desk-dashboard}"
+    export ORCHESTRATOR_PROCESS_NAME="${orch_name:+${orch_name}-dev}"
+    local dash_title="${dash_name:+${dash_name}-dev}"
+    local dash_node_options="${NODE_OPTIONS:-}"
+    if [ -n "${dash_title}" ]; then
+        dash_node_options="${dash_node_options:+${dash_node_options} }--require \"${SCRIPT_DIR}/set_process_title.cjs\""
+    fi
+
     log "orchestrator を起動します（ポート${orch_port}）..."
     ORCHESTRATOR_PORT="${orch_port}" launch orchestrator "${ORCHESTRATOR_DIR}" "${DEV_DIR}/orchestrator.log" \
         "${python}" -m orchestrator.main || return 1
 
     log "dashboard を起動します（ポート${dash_port}）..."
-    if ! ORCHESTRATOR_URL="http://127.0.0.1:${orch_port}" launch dashboard "${DASHBOARD_DIR}" "${DEV_DIR}/dashboard.log" \
+    if ! ORCHESTRATOR_URL="http://127.0.0.1:${orch_port}" PROCESS_TITLE="${dash_title}" \
+        NODE_OPTIONS="${dash_node_options}" launch dashboard "${DASHBOARD_DIR}" "${DEV_DIR}/dashboard.log" \
         "${next_bin}" dev -p "${dash_port}"; then
         err "dashboard の起動に失敗したため orchestrator も停止します。"
         cmd_stop

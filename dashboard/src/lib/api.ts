@@ -1,3 +1,4 @@
+import type { AttachmentPayload } from "./mediaAttach";
 import {
   EMPTY_STATUS_COUNTS,
   type AggregatedState,
@@ -11,6 +12,7 @@ import {
   type InstructAction,
   type InstructResult,
   type IssueDetail,
+  type Snippet,
   type PrCandidate,
   type ProgressResponse,
   type ProjectIssuesResponse,
@@ -40,6 +42,17 @@ export class PrSelectionRequiredError extends Error {
   }
 }
 
+/** APIがエラー応答を返したときの例外。`status`でHTTPステータスを判別できる。 */
+export class HttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const data = await res.json();
   if (!res.ok) {
@@ -51,9 +64,47 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
         Array.isArray(data.pr_candidates) ? data.pr_candidates : [],
       );
     }
-    throw new Error(message);
+    throw new HttpError(message, res.status);
   }
   return data as T;
+}
+
+/** 定型文一覧（issue #323）。 */
+export function fetchSnippets(): Promise<{ snippets: Snippet[] }> {
+  return fetch("/api/snippets", { cache: "no-store" }).then((res) =>
+    parseJsonOrThrow<{ snippets: Snippet[] }>(res),
+  );
+}
+
+/** 定型文の追加（`id`なし）・更新。 */
+export function saveSnippet(
+  input: { title: string; body: string },
+  id?: string,
+): Promise<Snippet> {
+  return fetch(
+    id ? `/api/snippets/${encodeURIComponent(id)}` : "/api/snippets",
+    {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  ).then((res) => parseJsonOrThrow<Snippet>(res));
+}
+
+export function deleteSnippet(id: string): Promise<{ snippets: Snippet[] }> {
+  return fetch(`/api/snippets/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }).then((res) => parseJsonOrThrow<{ snippets: Snippet[] }>(res));
+}
+
+export function reorderSnippets(
+  ids: string[],
+): Promise<{ snippets: Snippet[] }> {
+  return fetch("/api/snippets/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  }).then((res) => parseJsonOrThrow<{ snippets: Snippet[] }>(res));
 }
 
 export function fetchState(): Promise<AggregatedState> {
@@ -114,11 +165,19 @@ export function postInstruct(
   message?: string,
   progressId?: string,
   prNumber?: number,
+  /** 画像・動画の添付（issue #301）。 */
+  attachments?: AttachmentPayload[],
 ): Promise<InstructResult> {
   return fetch(`${repoPath(repo)}/issues/${issueNumber}/instruct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, message, progressId, prNumber }),
+    body: JSON.stringify({
+      action,
+      message,
+      progressId,
+      prNumber,
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   }).then((res) => parseJsonOrThrow<InstructResult>(res));
 }
 
@@ -161,6 +220,22 @@ export function postMarkInReview(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ progressId }),
   }).then((res) => parseJsonOrThrow<{ label: string }>(res));
+}
+
+/**
+ * 利用リミット待ちの自動再開を取り消す（issue #331）。取り消しコメントを投稿するだけで、
+ * ラベルは変えない（判断待ちのまま）。
+ */
+export function postCancelLimitWait(
+  repo: string,
+  issueNumber: number,
+  progressId?: string,
+): Promise<{ cancelled: boolean }> {
+  return fetch(`${repoPath(repo)}/issues/${issueNumber}/limit-wait/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ progressId }),
+  }).then((res) => parseJsonOrThrow<{ cancelled: boolean }>(res));
 }
 
 export type PlanJobStatus = "queued" | "running" | "succeeded" | "failed";
@@ -280,11 +355,20 @@ export function postCreateIssue(
   dispatch: Dispatch,
   progressId?: string,
   issueNumber?: number,
+  /** 画像・動画の添付（issue #301）。 */
+  attachments?: AttachmentPayload[],
 ): Promise<CreateIssueResult> {
   return fetch(`${repoPath(repo)}/issues`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, prompt, dispatch, progressId, issueNumber }),
+    body: JSON.stringify({
+      title,
+      prompt,
+      dispatch,
+      progressId,
+      issueNumber,
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   }).then((res) => parseJsonOrThrow<CreateIssueResult>(res));
 }
 

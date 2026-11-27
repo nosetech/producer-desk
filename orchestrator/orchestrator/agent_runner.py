@@ -62,6 +62,7 @@ from orchestrator.labels import (
     gh_remove_label,
     transition_label,
 )
+from orchestrator.limit_wait import build_limit_wait_marker, extract_limit_resume_attempt
 from orchestrator.litellm_model_config import SessionGuardSettings
 from orchestrator.litellm_model_config import (
     resolve_session_guard_settings as litellm_resolve_session_guard_settings,
@@ -92,6 +93,7 @@ from orchestrator.usage_store import (
     RecordLocalLlmUsageReportFn,
     RecordUsageFn,
     UsageRecord,
+    parse_limit_reset_at,
     parse_limit_reset_text,
 )
 from orchestrator.usage_store import (
@@ -313,6 +315,20 @@ AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION = (
     "     - A案: …\n"
     "     - B案: …\n"
     "  2. PR #163をレビューし、問題なければマージする\n"
+    "- status:in-reviewラベルを付与して終える場合は、最終応答に次の書式の「作業結果」"
+    "セクションを必ず含めてください（ダッシュボードのレビュー待ちカードがこのセクションを"
+    "パースして表示します。見出し文言・各行の書式は変えないでください）。\n"
+    "  **作業結果**\n"
+    "  - CI: 完了\n"
+    "  - レビュー: 指摘3件（対応済2件・未対応1件）\n"
+    "  ※ CIの値は、CIが正常終了した場合は`完了`、CIワークフローが無いリポジトリでは"
+    "`未設定`と書いてください。\n"
+    "  ※ レビューの値は、コードレビューを実施しなかった場合は`未実施`、実施した場合は"
+    "`指摘X件（対応済X件・未対応X件）`の形で件数を書いてください（指摘0件なら"
+    "`指摘0件（対応済0件・未対応0件）`）。\n"
+    "  ※ 未対応の指摘がある場合は、その理由を最終応答の本文に書いてください。\n"
+    "  ※ 承認前に{user_name}に判断してほしい事項がある場合は、上記の"
+    "「判断が必要な事項」セクションを同じ書式で併記してください。\n"
     "- Monitor/ScheduleWakeupといった内部ツール名や、ポーリングの実装方法など、"
     "作業手順上の実装詳細は{user_name}向け報告に含めないでください。"
 )
@@ -338,6 +354,23 @@ AGENT_RUNNER_ATTACHMENT_INSTRUCTION = (
     "Publicリポジトリでは誰でも添付ファイルを見られます。\n"
     "- 録画・撮影は、承認・返信・新規作成・保存などの書き込み系ボタンを押さず、"
     "読み取り専用の操作のみで行ってください。"
+)
+
+
+# issue #203前後（focara）: Agent Runnerの最終応答（「Agent Runner実行結果:」として
+# issueコメントに無編集で投稿される）が途中から英語になる事象があった。`claude -p`
+# では利用者のグローバルCLAUDE.md（回答言語ルール）が適用されず（docs/basic-design.md
+# 3-1・issue #139）、`--append-system-prompt`にも回答言語の指定が無かったため、
+# 言語がモデル任せになっていた。対象プロジェクトのCLAUDE.mdに言語指定が無くても
+# 確実に日本語で書かせるため、ここで明示する。
+AGENT_RUNNER_LANGUAGE_INSTRUCTION = (
+    "{user_name}向けに書く文章は、特に指定がない限りすべて日本語で書いてください。"
+    "対象は、最終応答（「Agent Runner実行結果:」としてissueコメントに投稿されます）、"
+    "issueコメント、PRのタイトル・本文・コメント、コミットメッセージの説明文です。"
+    "作業が長くなったり、ツール出力やコード・英語の資料を長く読んだ後でも、"
+    "途中から英語に切り替えず最後まで日本語で書いてください。"
+    "コード・コマンド・ファイル名・ラベル名・固有名詞・エラーメッセージの引用など、"
+    "そのまま書くべきものは原文のままで構いません。"
 )
 
 
@@ -367,7 +400,7 @@ AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION = (
 )
 
 
-# issue #149: 上記6つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
+# issue #149: 上記7つの指示文は、ダッシュボードから編集できるようconfig/prompts.yaml
 # （orchestrator/prompts.py）の上書きを許す。定数自体はコード内蔵のデフォルト値として
 # 残し、上書きが無い・不正な場合のフォールバックとする。必須トークンは、オーケス
 # トレータ側の処理（ラベル遷移判定・CI待ち再開・コメント監視）
@@ -426,6 +459,12 @@ AGENT_RUNNER_PROMPT_SPECS: tuple[PromptSpec, ...] = (
         title="最終応答の書き方の指示",
         description="最終応答が{user_name}向けのissueコメントになることを踏まえた書き方の指示",
         default=AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION,
+    ),
+    PromptSpec(
+        key="language_instruction",
+        title="回答言語の指示",
+        description="最終応答・issueコメント・PR本文を日本語で書かせる指示（途中から英語になるのを防ぐ）",
+        default=AGENT_RUNNER_LANGUAGE_INSTRUCTION,
     ),
     PromptSpec(
         key="attachment_instruction",
@@ -906,16 +945,59 @@ _FAILURE_COMMENT_ERROR_MAX_CHARS = 2000
 # 既に検知している`is_error`/`api_error_status`をここでも参照し、429の場合は
 # ログパスの代わりにリミット到達である旨と解除予定時刻を伝える。429以外の
 # 異常終了（予期しない例外等）ではデバッグに必要なため従来通りログパスを含める。
-def _build_failure_comment(payload: dict | None, *, returncode: int, log_path: Path) -> str:
+def _format_reset_at(reset_at: datetime) -> str:
+    local = reset_at.astimezone(JST)
+    return f"{local.month}/{local.day} {local.hour:02d}:{local.minute:02d}"
+
+
+@dataclass(frozen=True)
+class LimitAutoResume:
+    """利用リミット到達時の自動再開の設定（issue #331）。
+
+    `previous_attempt`は、今回の実行が自動再開だった場合の連続回数（自動再開でなければ0）。
+    """
+
+    max_attempts: int
+    previous_attempt: int = 0
+
+
+def _build_failure_comment(
+    payload: dict | None,
+    *,
+    returncode: int,
+    log_path: Path,
+    recorded_at: datetime | None = None,
+    auto_resume: LimitAutoResume | None = None,
+) -> str:
     error_info = _classify_run_error(payload)
 
     # `result`が空/非文字列で解除予定時刻等の情報が一切得られない場合、
     # ログパスを省いた文面では人間が調査する手がかりが無くなってしまうため、
     # 429以外の異常終了と同じ従来通りのログパス付きメッセージにフォールバックする。
     if error_info.is_error and error_info.api_error_status == 429 and error_info.limit_reset_text:
-        return (
+        base = (
             ":warning: Claude CodeのAPI利用リミットに達したため停止しました。"
             f"（{error_info.limit_reset_text}）"
+        )
+        # issue #331: 解除予定時刻を絶対時刻に変換できた場合だけ、自動再開のマーカーを付ける。
+        # 変換できない場合は推測で時刻を補わず、従来どおり判断待ちのまま残す。
+        if auto_resume is None or recorded_at is None:
+            return base
+        reset_at = parse_limit_reset_at(error_info.limit_reset_text, recorded_at)
+        if reset_at is None:
+            return base
+        attempt = auto_resume.previous_attempt + 1
+        if attempt > auto_resume.max_attempts:
+            return (
+                f"{base}\n\n連続の自動再開が上限（{auto_resume.max_attempts}回）に達したため、"
+                "自動再開は行いません。解除後に返信で再開を指示してください。"
+            )
+        return (
+            f"{base}\n\n:hourglass_flowing_sand: 解除予定の"
+            f"{_format_reset_at(reset_at)}（JST）を過ぎたら、同じセッションで自動的に再開します。"
+            "別のモデルで今すぐ再開する場合や、自動再開を取り消す場合はダッシュボードの"
+            "判断待ちカードから操作してください。\n\n"
+            f"{build_limit_wait_marker(reset_at, attempt)}"
         )
 
     base = f":warning: Agent Runnerが異常終了しました（終了コード: {returncode}）。"
@@ -1192,7 +1274,24 @@ def run_agent_runner(
                 append_pr_issue_reference_fn=append_pr_issue_reference_fn,
             )
     else:
-        error_comment = _build_failure_comment(payload, returncode=returncode, log_path=log_path)
+        # issue #331: (A) Claude Code直利用で`limit_auto_resume`が有効なプロジェクトに限り、
+        # 解除予定時刻に自動再開するためのマーカーを付ける。
+        auto_resume = (
+            LimitAutoResume(
+                max_attempts=project.limit_auto_resume_max_attempts,
+                previous_attempt=extract_limit_resume_attempt(message),
+            )
+            if project.limit_auto_resume
+            and execution_settings.execution_mode == EXECUTION_MODE_CLAUDE_CODE
+            else None
+        )
+        error_comment = _build_failure_comment(
+            payload,
+            returncode=returncode,
+            log_path=log_path,
+            recorded_at=now(),
+            auto_resume=auto_resume,
+        )
         post_comment(project.repo, issue_number, error_comment)
         transition_label(
             project.repo,

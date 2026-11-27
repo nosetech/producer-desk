@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchIssueDetail,
@@ -43,16 +44,27 @@ import {
   type ResizableColumn,
 } from "@/lib/issueColumns";
 import { shortRepoName } from "@/lib/projectStatus";
+import {
+  ariaKeyShortcuts,
+  cursorOrder,
+  relocateCursor,
+  stepIndex,
+  type IssueListAction,
+} from "@/lib/shortcuts";
+import { useIssueListShortcuts } from "@/lib/useIssueListShortcuts";
 import { projectDotColorVar, statusCountMeta } from "@/lib/status";
 import { formatRelativeTime } from "@/lib/time";
 import type { InboxItem, ProjectIssue } from "@/lib/types";
 import { findIssueJob } from "@/lib/jobs";
+import { sortInbox } from "@/lib/inbox";
 import { useApp } from "./AppContext";
 import { DispatchDiagnosisSlot } from "./DispatchDiagnosis";
 import JobStatus from "./JobStatus";
 import InboxSection from "./InboxSection";
 import { ExternalLinkIcon, PlusIcon, WarningIcon } from "./Icons";
 import RefreshButton from "./RefreshButton";
+import EnterKbd from "./EnterKbd";
+import ShortcutGuide, { type EnterHint } from "./ShortcutGuide";
 import SyncAgo from "./SyncAgo";
 import diagStyles from "./DispatchDiagnosis.module.css";
 import styles from "./ProjectIssues.module.css";
@@ -126,6 +138,16 @@ function CommentIcon({ size }: { size: number }) {
   );
 }
 
+/**
+ * カーソル行の印（`data-cursor-target`）が付いた要素のうち表示中のもの。issueの行はPC用の行と
+ * モバイル用のカードの両方に印があるため、表示中の方を返す（issue #322 / #339）。
+ */
+function visibleCursorElement(num: number): HTMLElement | undefined {
+  return [
+    ...document.querySelectorAll<HTMLElement>(`[data-cursor-target="${num}"]`),
+  ].find((el) => el.offsetParent !== null);
+}
+
 export default function ProjectIssues({ repo }: { repo: string }) {
   const {
     state,
@@ -140,7 +162,9 @@ export default function ProjectIssues({ repo }: { repo: string }) {
     jobs,
     retryJob,
     dismissJob,
+    composerOpen,
   } = useApp();
+  const router = useRouter();
   // キャッシュ（issue #198）があればスケルトンを挟まず即時表示する。ページは`key={repo}`で
   // プロジェクトごとにマウントし直されるため、前プロジェクトの一覧が残ることはない。
   const [initialCache] = useState(() => lookupIssues(repo));
@@ -169,6 +193,14 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   );
   const [failMap, setFailMap] = useState<Record<number, string>>({});
   const [editingNum, setEditingNum] = useState<number | null>(null);
+  // キーボード操作用のカーソル行（issue番号、issue #322）。チェックボックスの選択とは別。
+  // inbox（issue #288）とissue一覧の行を1本の並びとして持つ（issue #339）。
+  const [cursorNum, setCursorNum] = useState<number | null>(null);
+  // inboxセクションの開閉。折りたたみ中はinbox項目をカーソルの並びに含めない（issue #339）。
+  const [inboxOpen, setInboxOpen] = useState(true);
+  // 「計画する」を押せる（`Enter`が効く）inbox項目。ショートカットガイドの表示に使う。
+  const [plannable, setPlannable] = useState<number[]>([]);
+  const prevOrderRef = useRef<number[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [filter, setFilter] = useState<string>(DEFAULT_FILTER);
   const [showDone, setShowDone] = useState(false);
@@ -414,6 +446,118 @@ export default function ProjectIssues({ repo }: { repo: string }) {
   const visibleNums = rows.map((i) => i.number);
   const allState = selectAllState(visibleNums, selectedNums);
   const selectedIssues = issues.filter((i) => selectedNums.has(i.number));
+  const clearSelection = () => {
+    setSelected(new Set());
+    setFailMap({});
+  };
+
+  // `j` / `k`の移動順: inbox項目（展開中のみ）→ issue一覧の行（issue #339）。
+  const showInbox = load !== "error";
+  const order = cursorOrder(
+    sortInbox(inbox).map((it) => it.number),
+    visibleNums,
+    showInbox && inboxOpen,
+  );
+
+  // 再取得・絞り込み・inboxの折りたたみでカーソル行が表示から消えたら、近い行へ寄せる
+  // （無ければ未選択に戻す）。
+  const orderKey = order.join(",");
+  useEffect(() => {
+    const next = orderKey ? orderKey.split(",").map(Number) : [];
+    // 更新関数は次の描画時に遅れて呼ばれるため、その時点では`prevOrderRef`が`next`に
+    // 上書き済みになる。直前の並びはここで取り出して渡す。
+    const prev = prevOrderRef.current;
+    setCursorNum((c) => relocateCursor(c, prev, next));
+    prevOrderRef.current = next;
+  }, [orderKey]);
+
+  // ショートカットガイドの`Enter`: カーソル行で効くときは強調、効かない行では薄くする。
+  const enterHint: EnterHint =
+    cursorNum === null || !order.includes(cursorNum)
+      ? "idle"
+      : visibleNums.includes(cursorNum)
+        ? replyLoading.has(cursorNum)
+          ? "off"
+          : "on"
+        : plannable.includes(cursorNum)
+          ? "on"
+          : "off";
+
+  // カーソル行が画面外なら見える位置までスクロールする。inboxの行も対象にするため、
+  // ページ全体から探す（issue #339）。
+  useEffect(() => {
+    if (cursorNum === null) return;
+    visibleCursorElement(cursorNum)?.scrollIntoView({ block: "nearest" });
+  }, [cursorNum]);
+
+  useIssueListShortcuts((action: IssueListAction) => {
+    switch (action) {
+      case "prevProject":
+      case "nextProject": {
+        const i = repos.indexOf(repo);
+        const next = stepIndex(
+          i,
+          action === "nextProject" ? 1 : -1,
+          repos.length,
+        );
+        if (next === null || next === i) return false;
+        router.push(`/projects/${repos[next]}`);
+        return true;
+      }
+      case "prevFilter":
+      case "nextFilter": {
+        const i = options.findIndex((o) => o.key === filter);
+        const next = stepIndex(
+          i,
+          action === "nextFilter" ? 1 : -1,
+          options.length,
+        );
+        if (next === null || next === i) return false;
+        setFilter(options[next].key);
+        setCursorNum(null);
+        return true;
+      }
+      case "cursorDown":
+      case "cursorUp": {
+        const i = cursorNum === null ? -1 : order.indexOf(cursorNum);
+        const next = stepIndex(
+          i,
+          action === "cursorDown" ? 1 : -1,
+          order.length,
+        );
+        if (next === null) return false;
+        setCursorNum(order[next]);
+        return true;
+      }
+      case "activate": {
+        // カーソル行の主な操作（issueの行は「返信する」、inbox項目は「計画する」）を押す。
+        // 押せるボタンには`data-shortcut-enter`が付いており、表示条件・disabledの判定は
+        // ボタン側に任せる（引用の取得中・計画の依頼中・編集中は押さない、issue #339）。
+        if (cursorNum === null || !order.includes(cursorNum)) return false;
+        const btn = visibleCursorElement(
+          cursorNum,
+        )?.querySelector<HTMLButtonElement>(
+          "button[data-shortcut-enter]:not(:disabled)",
+        );
+        if (!btn) return false;
+        btn.click();
+        return true;
+      }
+      case "toggleSelect":
+        if (cursorNum === null || !visibleNums.includes(cursorNum))
+          return false;
+        setSelected(toggleSelected(selectedNums, cursorNum));
+        return true;
+      case "clearSelection":
+        // 個別編集ポップオーバー等が開いている間はフック側で無視され、そちらが閉じる。
+        if (editingNum !== null) return false;
+        if (selectedNums.size === 0 && Object.keys(failMap).length === 0) {
+          return false;
+        }
+        clearSelection();
+        return true;
+    }
+  }, composerOpen);
 
   /**
    * マイルストーン・ラベルを変更する（issue #305）。部分失敗は`failed`に載るため、失敗した
@@ -509,7 +653,12 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         <div className={styles.projectHeader}>
           <span className={styles.projectLabel}>プロジェクト</span>
         </div>
-        <div className={styles.tabs} role="tablist" aria-label="プロジェクト">
+        <div
+          className={styles.tabs}
+          role="tablist"
+          aria-label="プロジェクト"
+          aria-keyshortcuts={ariaKeyShortcuts("prevProject", "nextProject")}
+        >
           {repos.map((r) => {
             const selected = r === repo;
             const dotColorVar = projectDotColorVar(
@@ -596,11 +745,15 @@ export default function ProjectIssues({ repo }: { repo: string }) {
         </div>
       )}
 
-      {load !== "error" && (
+      {showInbox && (
         <InboxSection
           repo={repo}
           items={inbox}
           onChanged={() => void fetchIssues("poll")}
+          open={inboxOpen}
+          onOpenChange={setInboxOpen}
+          cursorNum={cursorNum}
+          onPlannableChange={setPlannable}
         />
       )}
 
@@ -629,6 +782,10 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   key={o.key}
                   type="button"
                   aria-pressed={active}
+                  aria-keyshortcuts={ariaKeyShortcuts(
+                    "prevFilter",
+                    "nextFilter",
+                  )}
                   className={`${styles.filterBtn} ${active ? styles.filterBtnActive : ""} ${isOrphan ? styles.filterBtnOrphan : ""}`}
                   style={
                     o.count === 0 && !active ? { opacity: 0.55 } : undefined
@@ -930,10 +1087,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 milestones={openMilestones}
                 labels={repoLabels}
                 onApply={applyBulk}
-                onClear={() => {
-                  setSelected(new Set());
-                  setFailMap({});
-                }}
+                onClear={clearSelection}
               />
             )}
             <div
@@ -1003,12 +1157,14 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                 const ago = formatRelativeTime(issue.updated_at);
                 const absTime = `${formatAbsoluteTime(issue.updated_at)} に更新`;
                 const picked = selectedNums.has(issue.number);
+                const isCursor = cursorNum === issue.number;
                 const failMsg = failMap[issue.number];
                 const rowClass = [
                   styles.row,
                   done ? styles.rowDone : "",
                   issue.is_orphaned ? styles.rowOrphan : "",
                   picked ? styles.rowSelected : "",
+                  isCursor ? styles.rowCursor : "",
                   editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
                 const cardClass = [
@@ -1016,6 +1172,7 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                   done ? styles.cardDone : "",
                   issue.is_orphaned ? styles.cardOrphan : "",
                   picked ? styles.cardSelected : "",
+                  isCursor ? styles.cardCursor : "",
                   failMsg ? styles.cardFailed : "",
                   editingNum === issue.number ? styles.rowEditing : "",
                 ].join(" ");
@@ -1056,7 +1213,11 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                     >
                       {({ iconTrigger, panel }) => (
                         <>
-                          <div className={rowClass}>
+                          <div
+                            className={rowClass}
+                            data-cursor-target={issue.number}
+                            aria-current={isCursor ? "true" : undefined}
+                          >
                             {checkbox}
                             <span className={styles.numCell}>
                               <span className={styles.num}>
@@ -1095,16 +1256,25 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                               {!done && iconTrigger(14)}
                               <button
                                 type="button"
-                                className={styles.replyBtn}
+                                className={`${styles.replyBtn} ${styles.enterHost}`}
                                 onClick={reply}
                                 disabled={replyBusy}
+                                data-shortcut-enter=""
+                                aria-keyshortcuts={
+                                  isCursor ? "Enter" : undefined
+                                }
                               >
                                 <ReplyIcon size={13} />
                                 返信する
+                                {isCursor && <EnterKbd />}
                               </button>
                             </div>
                           </div>
-                          <div className={cardClass}>
+                          <div
+                            className={cardClass}
+                            data-cursor-target={issue.number}
+                            aria-current={isCursor ? "true" : undefined}
+                          >
                             <div className={styles.cardTop}>
                               {checkbox}
                               {failMark}
@@ -1158,12 +1328,17 @@ export default function ProjectIssues({ repo }: { repo: string }) {
                               {!done && iconTrigger(15)}
                               <button
                                 type="button"
-                                className={styles.replyBtn}
+                                className={`${styles.replyBtn} ${styles.enterHost}`}
                                 onClick={reply}
                                 disabled={replyBusy}
+                                data-shortcut-enter=""
+                                aria-keyshortcuts={
+                                  isCursor ? "Enter" : undefined
+                                }
                               >
                                 <ReplyIcon size={14} />
                                 返信する
+                                {isCursor && <EnterKbd />}
                               </button>
                             </div>
                           </div>
@@ -1191,6 +1366,11 @@ export default function ProjectIssues({ repo }: { repo: string }) {
           </>
         )}
       </div>
+
+      <ShortcutGuide
+        hasSelection={selectedNums.size > 0}
+        enterHint={enterHint}
+      />
     </div>
   );
 }

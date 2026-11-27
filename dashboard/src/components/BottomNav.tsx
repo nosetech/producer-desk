@@ -2,8 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { DashboardIcon, IssuesIcon, PromptIcon, WarningIcon } from "./Icons";
-import { ISSUES_NAV_HREF, PROMPTS_NAV_HREF } from "./Sidebar";
+import {
+  DashboardIcon,
+  IssuesIcon,
+  PromptIcon,
+  SnippetIcon,
+  WarningIcon,
+} from "./Icons";
+import {
+  ISSUES_NAV_HREF,
+  PROMPTS_NAV_HREF,
+  SNIPPETS_NAV_HREF,
+} from "./Sidebar";
 import styles from "./BottomNav.module.css";
 
 /** モバイル幅のボトムナビゲーション（PC幅ではCSSで非表示、サイドバーが代わりに表示される）。 */
@@ -17,7 +27,8 @@ export default function BottomNav({
   const pathname = usePathname();
   const onIssues = pathname.startsWith("/projects");
   const onPrompts = pathname.startsWith(PROMPTS_NAV_HREF);
-  const onDashboard = !onIssues && !onPrompts;
+  const onSnippets = pathname.startsWith(SNIPPETS_NAV_HREF);
+  const onDashboard = !onIssues && !onPrompts && !onSnippets;
 
   const itemClass = (active: boolean) =>
     `${styles.item} ${active ? styles.itemActive : ""}`;
@@ -60,7 +71,18 @@ export default function BottomNav({
         <span className={pillClass(onPrompts)}>
           <PromptIcon size={20} />
         </span>
-        <span>プロンプト設定</span>
+        {/* 4項目が並ぶため、デザインどおり短い表記にする（issue #323） */}
+        <span>プロンプト</span>
+      </Link>
+      <Link
+        href={SNIPPETS_NAV_HREF}
+        className={itemClass(onSnippets)}
+        aria-current={onSnippets ? "page" : undefined}
+      >
+        <span className={pillClass(onSnippets)}>
+          <SnippetIcon size={20} />
+        </span>
+        <span>定型文</span>
       </Link>
     </nav>
   );

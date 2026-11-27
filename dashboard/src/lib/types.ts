@@ -29,6 +29,19 @@ export interface IssueSummary {
   pr_number: number | null;
   /** `status:in-review` のissueの対応PR候補（issue #206）。 */
   pr_candidates: PrCandidate[];
+  /**
+   * 利用リミット待ちで自動再開が予定されている判断待ちissueのみ（issue #331）。
+   * 最新コメントの利用リミット待ちマーカーからオーケストレータが埋める。
+   */
+  limit_wait?: LimitWaitInfo | null;
+}
+
+/** 利用リミット待ちの情報（issue #331）。オーケストレータのLimitWaitInfoに対応する。 */
+export interface LimitWaitInfo {
+  /** 解除予定時刻（ISO 8601、タイムゾーン付き）。過ぎた後のポーリングで自動再開する。 */
+  reset_at: string;
+  /** 連続の自動再開のうち何回目の待機か（1始まり）。 */
+  attempt: number;
 }
 
 /** issueの対応PR候補。オーケストレータのPrCandidateに対応する（issue #206）。 */
@@ -55,11 +68,21 @@ export interface StatusCounts {
   untagged: number;
 }
 
-/** ディスパッチキュー上の1エントリ（issue #233）。issueが一覧に無ければtitle・labelともnull。 */
+/**
+ * ディスパッチキュー上の1エントリ（issue #233）。issueが一覧に無ければtitle・labelともnull。
+ * AI計画ジョブ（issue #335）は`kind: "plan"`で、`number`は負の内部番号（表示に使わない）、
+ * `title`は依頼文の1行目（解決できなければnull）、`label`は常にnull。
+ * 旧オーケストレータは`kind`等を返さないため省略可能とし、省略時は自走タスクとして扱う。
+ */
 export interface QueueEntry {
   number: number;
   title: string | null;
   label: StatusLabel | null;
+  kind?: "issue" | "plan";
+  plan_job_id?: string | null;
+  inbox_issue_number?: number | null;
+  /** 計画ジョブが既に計画を持つ（修正指示の実行・待機中）か。 */
+  plan_revising?: boolean;
 }
 
 /** プロジェクトのディスパッチキュー状態（実行中1件＋待機中、待機はFIFO順）。 */
@@ -284,6 +307,13 @@ export interface IssuesMetaInput {
 export interface IssuesMetaResult {
   succeeded: number[];
   failed: { number: number; error: string }[];
+}
+
+/** GET /api/snippets の snippets 配列要素（返信欄の定型文、issue #323）。 */
+export interface Snippet {
+  id: string;
+  title: string;
+  body: string;
 }
 
 /** GET /api/prompts の prompts 配列要素（issue #149）。 */

@@ -24,6 +24,7 @@ import { formatAbsoluteTime } from "@/lib/issueList";
 import type { InboxItem, InboxKind } from "@/lib/types";
 import { useApp } from "./AppContext";
 import { PlusIcon, WarningIcon } from "./Icons";
+import EnterKbd from "./EnterKbd";
 import PlanBadge from "./PlanBadge";
 import PlanComposer from "./PlanComposer";
 import styles from "./InboxSection.module.css";
@@ -494,11 +495,28 @@ export default function InboxSection({
   repo,
   items,
   onChanged,
+  open,
+  onOpenChange,
+  cursorNum,
+  onPlannableChange,
 }: {
   repo: string;
   items: InboxItem[];
   /** 登録・編集・削除の成功後に、一覧を再取得させる。 */
   onChanged: () => void;
+  /**
+   * セクションの開閉。折りたたみ中の項目はキーボードのカーソル移動の対象外にするため、
+   * issue一覧画面側で持つ（issue #339）。
+   */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** キーボード操作用のカーソル行（issue番号、issue #339）。issue一覧の行と共通。 */
+  cursorNum: number | null;
+  /**
+   * 「計画する」を押せる（`Enter`が効く）項目の番号を知らせる。ショートカットガイドの`Enter`の
+   * 強調・減光に使う（issue #339）。折りたたみ中は空。
+   */
+  onPlannableChange: (nums: number[]) => void;
 }) {
   const {
     openNewTask,
@@ -509,6 +527,17 @@ export default function InboxSection({
   } = useApp();
   const [planOpen, setPlanOpen] = useState<number | null>(null);
   const closePlan = useCallback(() => setPlanOpen(null), []);
+  // ダッシュボードのキュー図の「計画を開く」（issue #335）から`?plan=<inbox番号>`付きで
+  // 遷移してきた場合は、その項目の計画確認パネルを開いた状態で表示する。
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const n = Number(url.searchParams.get("plan"));
+    if (!url.searchParams.has("plan")) return;
+    // リロード・ブックマークで開き直したときに再びパネルが開かないよう、読んだら消す。
+    url.searchParams.delete("plan");
+    window.history.replaceState(window.history.state, "", url);
+    if (Number.isInteger(n) && n > 0) setPlanOpen(n);
+  }, []);
   // 計画の完了・失敗は、控えめなトーストで知らせる（Slackにも通知済み）。
   const planJobs = usePlanJobs(repo, {
     onFinished: (job) => {
@@ -540,7 +569,6 @@ export default function InboxSection({
   useEffect(() => {
     for (const n of planByInbox.keys()) clearPlanRequested(repo, n);
   });
-  const [open, setOpen] = useState(true);
   const [kind, setKind] = useState<InboxKind>(DEFAULT_INBOX_KIND);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -552,6 +580,18 @@ export default function InboxSection({
   const [newId, setNewId] = useState<number | null>(null);
 
   const sorted = sortInbox(items);
+  // 「計画する」ボタンを出す（計画ジョブも依頼中の状態もない）項目か。
+  const canPlan = (n: number) =>
+    !planByInbox.has(n) && !planRequests.includes(`${repo}#${n}`);
+  const plannableKey = open
+    ? sorted
+        .filter((it) => editing !== it.number && canPlan(it.number))
+        .map((it) => it.number)
+        .join(",")
+    : "";
+  useEffect(() => {
+    onPlannableChange(plannableKey ? plannableKey.split(",").map(Number) : []);
+  }, [plannableKey, onPlannableChange]);
   const adding = phase === "busy";
   const canAdd = canSubmitInbox({ kind, title, body }) && !adding;
 
@@ -584,7 +624,7 @@ export default function InboxSection({
           aria-expanded={open}
           aria-controls="inbox-body"
           title={open ? "inboxを折りたたむ" : "inboxを展開する"}
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => onOpenChange(!open)}
         >
           <span
             className={styles.chev}
@@ -727,7 +767,12 @@ export default function InboxSection({
                 className={styles.list}
               >
                 {sorted.map((it) => (
-                  <div role="listitem" key={it.number}>
+                  <div
+                    role="listitem"
+                    key={it.number}
+                    data-cursor-target={it.number}
+                    aria-current={cursorNum === it.number ? "true" : undefined}
+                  >
                     {editing === it.number ? (
                       <InboxRowEditor
                         repo={repo}
@@ -740,7 +785,7 @@ export default function InboxSection({
                       />
                     ) : (
                       <div
-                        className={`${styles.row} ${newId === it.number ? styles.rowNew : ""}`}
+                        className={`${styles.row} ${newId === it.number ? styles.rowNew : ""} ${cursorNum === it.number ? styles.rowCursor : ""}`}
                       >
                         <span className={styles.kindCell}>
                           <KindBadge kind={it.kind} />
@@ -782,19 +827,23 @@ export default function InboxSection({
                                 依頼中…
                               </button>
                             )}
-                          {!planByInbox.has(it.number) &&
-                            !planRequests.includes(`${repo}#${it.number}`) && (
-                              <button
-                                type="button"
-                                className={styles.plan}
-                                aria-label={`${repo} #${it.number} を計画する`}
-                                title="AIに計画してもらう（承認するとissueに昇格）"
-                                onClick={() => openNewTask(repo, it)}
-                              >
-                                <Icon d={PATHS.sparkle} />
-                                計画する
-                              </button>
-                            )}
+                          {canPlan(it.number) && (
+                            <button
+                              type="button"
+                              className={`${styles.plan} ${styles.enterHost}`}
+                              aria-label={`${repo} #${it.number} を計画する`}
+                              title={`AIに計画してもらう（承認するとissueに昇格）${cursorNum === it.number ? "（Enter）" : ""}`}
+                              onClick={() => openNewTask(repo, it)}
+                              data-shortcut-enter=""
+                              aria-keyshortcuts={
+                                cursorNum === it.number ? "Enter" : undefined
+                              }
+                            >
+                              <Icon d={PATHS.sparkle} />
+                              計画する
+                              {cursorNum === it.number && <EnterKbd />}
+                            </button>
+                          )}
                           {planByInbox.has(it.number) &&
                             planByInbox.get(it.number)!.status !== "queued" &&
                             (planByInbox.get(it.number)!.status !== "running" ||

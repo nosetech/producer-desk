@@ -12,16 +12,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from orchestrator.aggregation import PrCandidate
+from orchestrator.aggregation import IssueSummary, PrCandidate, latest_limit_wait
 from orchestrator.dispatch_queue import DispatchQueue
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
+    CreateIssueWithAttachmentsFn,
     DeleteBranchFn,
     GetPrBranchFn,
     ListLinkedPrsFn,
     MergePrFn,
     PostCommentFn,
+    PostCommentWithAttachmentsFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import delete_branch as gh_delete_branch
@@ -42,6 +44,8 @@ from orchestrator.labels import (
     resolve_instruction_label,
     transition_label,
 )
+from orchestrator.limit_wait import LIMIT_WAIT_CANCEL_MARKER
+from orchestrator.media_uploads import SavedAttachment, append_attachment_paths
 from orchestrator.prompts import PromptSpec, load_prompt_text
 from orchestrator.worktree import SyncWorktreeFn
 from orchestrator.worktree import sync_worktree_after_branch_delete as gh_sync_worktree
@@ -130,6 +134,43 @@ def handle_mark_in_review(
     )
 
 
+class NoLimitWaitError(RuntimeError):
+    """自動再開を取り消そうとしたissueが、利用リミット待ちでない場合に送出する（issue #331）。"""
+
+
+LIMIT_WAIT_CANCEL_COMMENT = (
+    ":no_entry_sign: 利用リミット解除後の自動再開を取り消しました。"
+    "判断待ちのまま、返信での指示を待ちます。"
+)
+
+
+def handle_cancel_limit_wait(
+    issue: IssueSummary,
+    *,
+    post_comment: PostCommentFn,
+    on_stage: OnStageFn = _noop_on_stage,
+) -> None:
+    """利用リミット待ちの自動再開を取り消す（issue #331）。
+
+    取り消しコメントを投稿するだけで、ラベルは変えない（判断待ちのまま）。最新コメントが
+    利用リミット待ちマーカーでなくなるため、`limit_watcher`の対象から外れる。投稿は
+    `post_comment`が`BOT_COMMENT_MARKER`を付けるため、comment_watcherの再ディスパッチ
+    対象にもならない。
+    """
+    if (
+        issue.state != "OPEN"
+        or STATUS_NEEDS_HUMAN_DECISION not in issue.labels
+        or latest_limit_wait(issue) is None
+    ):
+        raise NoLimitWaitError(
+            f"{issue.repo}#{issue.number} は自動再開を待っていないため、取り消せません"
+        )
+    post_comment(
+        issue.repo, issue.number, f"{LIMIT_WAIT_CANCEL_COMMENT}\n\n{LIMIT_WAIT_CANCEL_MARKER}"
+    )
+    on_stage("comment")
+
+
 class PrSelectionRequiredError(RuntimeError):
     """レビュー承認時、対応PRを一意に特定できずユーザーの選択が必要な場合に送出する（issue #206）。
 
@@ -213,7 +254,14 @@ def handle_instruct(
     sync_worktree: SyncWorktreeFn = gh_sync_worktree,
     on_stage: OnStageFn = _noop_on_stage,
     pr_number: int | None = None,
+    attachments: list[SavedAttachment] | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn | None = None,
 ) -> InstructResult:
+    """`attachments`（issue #301）があれば、`gh issue comment --attach`で添付付きのコメントを
+    投稿し、Agent Runnerへのメッセージ末尾にだけローカルパスを追記する。添付は`instruct`のみ。
+    """
+    if attachments and action != "instruct":
+        raise ValueError("画像・動画の添付はinstructアクションでのみ指定できます")
     if action == "approve" and STATUS_IN_REVIEW in get_labels(repo, issue_number):
         # レビュー待ちの承認は「コメント投稿→ラベル遷移→ディスパッチ」経路には乗せず、
         # 紐づくPRのsquash mergeのみを行う（issue #58）。
@@ -297,19 +345,26 @@ def handle_instruct(
     if action == "approve":
         comment = message or load_prompt_text(APPROVE_DEFAULT_MESSAGE_SPEC)
     elif action == "instruct":
-        if not message:
+        if not message and not attachments:
             raise ValueError("instructアクションにはmessageが必須です")
-        comment = message
+        comment = message or ""
     else:
         raise ValueError(f"不明なaction: {action}")
 
-    post_comment(repo, issue_number, comment)
+    if attachments:
+        if post_comment_with_attachments is None:
+            raise ValueError("post_comment_with_attachmentsが必要です")
+        post_comment_with_attachments(
+            repo, issue_number, comment, [str(a.path) for a in attachments]
+        )
+    else:
+        post_comment(repo, issue_number, comment)
     on_stage("comment")
 
     label = apply_instruction(
         repo,
         issue_number,
-        comment,
+        append_attachment_paths(comment, attachments or []),
         get_labels=get_labels,
         add_label=add_label,
         remove_label=remove_label,
@@ -333,15 +388,27 @@ def handle_create_issue(
     on_stage: OnStageFn = _noop_on_stage,
     existing_issue_number: int | None = None,
     update_issue: UpdateIssueFn | None = None,
+    attachments: list[SavedAttachment] | None = None,
+    create_issue_with_attachments: CreateIssueWithAttachmentsFn | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn | None = None,
 ) -> CreateIssueResult:
     """issueを作成（または既存inbox項目を昇格）して`status:todo`にし、必要ならディスパッチする。
 
     `existing_issue_number`を指定した場合（issue #288）は新規作成せず、そのinbox項目の
     タイトル・本文を更新し、`inbox`ラベルを外して`status:todo`を付与する（重複issueを
     作らない）。ラベル操作は現在のラベルを取得して差分のみ適用する（冪等）。
+
+    `attachments`（issue #301）があれば、`create_issue_with_attachments`（`gh issue create
+    --attach`）でissue本文に直接添付する。それが無い（ghの`issue create`が`--attach`に未対応）
+    場合や、inbox項目の昇格では、issueを作成・更新したあと、ディスパッチの前に添付付きの
+    コメントを1件投稿する。今すぐ着手する場合は、Agent Runnerへのメッセージ末尾にだけ
+    ローカルパスを追記する。
     """
     if dispatch not in ("immediate", "queued"):
         raise ValueError(f"不明なdispatch: {dispatch}")
+    paths = [str(a.path) for a in attachments or []]
+    if paths and post_comment_with_attachments is None:
+        raise ValueError("post_comment_with_attachmentsが必要です")
 
     if existing_issue_number is not None:
         if update_issue is None:
@@ -350,10 +417,17 @@ def handle_create_issue(
         if INBOX_LABEL not in get_labels(repo, issue_number):
             raise ValueError(f"{repo}#{issue_number} はinbox項目ではありません")
         update_issue(repo, issue_number, title, prompt)
+        if paths:
+            post_comment_with_attachments(repo, issue_number, "", paths)  # type: ignore[misc]
         on_stage("issue")
         remove_label(repo, issue_number, INBOX_LABEL)
+    elif paths and create_issue_with_attachments is not None:
+        issue_number = create_issue_with_attachments(repo, title, prompt, paths)
+        on_stage("issue")
     else:
         issue_number = create_issue(repo, title, prompt)
+        if paths:
+            post_comment_with_attachments(repo, issue_number, "", paths)  # type: ignore[misc]
         on_stage("issue")
     add_label(repo, issue_number, STATUS_TODO)
     on_stage("label")
@@ -369,6 +443,6 @@ def handle_create_issue(
         add_label=add_label,
         remove_label=remove_label,
     )
-    dispatch_queue.enqueue(repo, issue_number, prompt)
+    dispatch_queue.enqueue(repo, issue_number, append_attachment_paths(prompt, attachments or []))
     on_stage("dispatch")
     return CreateIssueResult(issue_number=issue_number, dispatched=True)

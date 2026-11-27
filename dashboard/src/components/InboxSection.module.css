@@ -933,3 +933,26 @@
     padding: 12px;
   }
 }
+
+/* キーボード操作のカーソル行（issue #339）。issue一覧のカーソル行（ProjectIssues の rowCursor /
+   cardCursor）と同じ青い2pxの枠線で表し、inboxからissue一覧へ移っても同じカーソルと分かるようにする。
+   追加直後の背景（rowNew）や計画バッジとは塗り・中身で区別される。値は差分デザイン
+   issue-339-inbox-shortcuts の rowCur / cardCur。 */
+.rowCursor {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+/* `Enter`の↵（EnterKbd）を右上に重ねるボタン。 */
+.enterHost {
+  position: relative;
+}
+
+@media (max-width: 640px) {
+  .rowCursor {
+    outline-offset: 2px;
+    z-index: auto;
+  }
+}

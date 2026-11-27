@@ -1,7 +1,14 @@
 import type { StageDef } from "./stageProgress";
 
 export type JobKind =
-  "approve" | "merge" | "reply" | "new" | "rerun" | "relabel";
+  | "approve"
+  | "merge"
+  | "reply"
+  | "new"
+  | "rerun"
+  | "relabel"
+  | "limitResume"
+  | "limitCancel";
 
 /**
  * 画面操作（承認・マージ・返信・新規作成）のバックグラウンド実行状態（issue #212）。
@@ -21,6 +28,8 @@ export interface Job {
   /** サーバのon_stageで通知された最新の完了段階（ポーリングで更新）。 */
   polledStage: string | null;
   progressId: string;
+  /** 実行中の見出しの上書き（例: 「LiteLLM · qwen3-coder で再開中」。issue #331）。 */
+  runningHeading?: string;
 }
 
 export function issueKey(repo: string, number: number): string {
@@ -66,6 +75,8 @@ const FAIL_NOUN: Record<JobKind, string> = {
   new: "issueの作成",
   rerun: "指示の再実行",
   relabel: "レビュー待ちへの変更",
+  limitResume: "別モデルでの再開",
+  limitCancel: "自動再開の取り消し",
 };
 
 export function jobLabel(job: Pick<Job, "repo" | "number" | "kind">): string {

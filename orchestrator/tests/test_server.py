@@ -310,13 +310,79 @@ def test_get_api_state_includes_dispatch_queue_snapshot_per_project() -> None:
     try:
         _, body = _get(server, "/api/state")
         queue = body["project_status"][0]["queue"]
-        assert queue["running"] == {"number": 1, "title": "t1", "label": "status:in-progress"}
-        assert queue["waiting"] == [{"number": 7, "title": None, "label": None}]
+        assert queue["running"] == {
+            "number": 1,
+            "title": "t1",
+            "label": "status:in-progress",
+            "kind": "issue",
+            "plan_job_id": None,
+            "inbox_issue_number": None,
+            "plan_revising": False,
+        }
+        assert queue["waiting"] == [
+            {
+                "number": 7,
+                "title": None,
+                "label": None,
+                "kind": "issue",
+                "plan_job_id": None,
+                "inbox_issue_number": None,
+                "plan_revising": False,
+            }
+        ]
         # キュー上の#1は理由の内訳に数えない（issue #272）。
         assert body["project_status"][0]["in_progress_breakdown"] == {
             "ci_waiting": 0,
             "orphaned": 0,
         }
+    finally:
+        release.set()
+        server.shutdown()
+
+
+def test_get_api_state_queue_includes_plan_jobs_in_fifo_order(tmp_path) -> None:
+    """計画ジョブも実際のFIFO順で`queue`に載り、破棄済みのジョブは待機列に出ない（#335）。"""
+    from orchestrator.issue_plan import IssuePlan, PlanRunner
+    from orchestrator.plan_jobs import PlanJobStore
+
+    store = StateStore()
+    store.set(AggregatedState(project_status=[ProjectStatus(repo="nosetech/project-a")]))
+    started = threading.Event()
+    release = threading.Event()
+
+    def dispatch_fn(repo: str, issue_number: int, message: str) -> None:
+        started.set()
+        release.wait(timeout=2)
+
+    dispatch_queue = DispatchQueue(dispatch_fn=dispatch_fn)
+    plan_store = PlanJobStore(tmp_path / "jobs.json")
+    plan_runner = PlanRunner(dispatch_queue, plan_store)
+    dispatch_queue.enqueue("nosetech/project-a", 1, "m")
+    assert started.wait(timeout=2)
+    kept = plan_store.create("nosetech/project-a", "ログイン画面を作る\n詳細", None, 42)
+    dropped = plan_store.create("nosetech/project-a", "破棄する計画", None, None)
+    plan_runner.enqueue(PROJECT_A, kept.id, lambda: IssuePlan("T", "B"))
+    plan_runner.enqueue(PROJECT_A, dropped.id, lambda: IssuePlan("T", "B"))
+    dispatch_queue.enqueue("nosetech/project-a", 7, "m")
+    plan_store.delete(dropped.id)
+    server, _ = _run_server(
+        store,
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        plan_runner=plan_runner,
+        plan_store=plan_store,
+    )
+    try:
+        _, body = _get(server, "/api/state")
+        queue = body["project_status"][0]["queue"]
+        assert queue["running"]["number"] == 1
+        assert [(e["kind"], e["title"]) for e in queue["waiting"]] == [
+            ("plan", "ログイン画面を作る"),
+            ("issue", None),
+        ]
+        assert queue["waiting"][0]["plan_job_id"] == kept.id
+        assert queue["waiting"][0]["inbox_issue_number"] == 42
+        assert queue["waiting"][1]["number"] == 7
     finally:
         release.set()
         server.shutdown()
@@ -2078,6 +2144,7 @@ def test_get_prompts_lists_all_prompts_with_required_tokens() -> None:
         "comment_marker_instruction",
         "pr_instruction",
         "final_message_instruction",
+        "language_instruction",
         "attachment_instruction",
         "dev_instance_instruction",
         "plan_issue_instruction",
@@ -2457,6 +2524,7 @@ def test_read_only_server_rejects_write_requests_without_side_effects() -> None:
             _post(server, f"/api/projects/{repo}/issues/1/instruct", {"action": "approve"}),
             _post(server, f"/api/projects/{repo}/issues/1/redispatch", {}),
             _post(server, f"/api/projects/{repo}/issues/1/mark-in-review", {}),
+            _post(server, f"/api/projects/{repo}/issues/1/limit-wait/cancel", {}),
             _post(server, f"/api/projects/{repo}/issues", {"title": "t", "body": "b"}),
             _patch(server, f"/api/projects/{repo}/settings", {"execution_mode": "claude_code"}),
             _put(server, "/api/prompts/anything", {"body": "x"}),
@@ -2790,5 +2858,152 @@ def test_list_issues_includes_repo_labels_or_null_on_failure() -> None:
     try:
         _, body = _get(server, "/api/projects/nosetech/project-a/issues")
         assert body["labels"] is None
+    finally:
+        server.shutdown()
+
+
+# --- 定型文（issue #323） ---
+
+
+def test_snippets_crud_and_reorder() -> None:
+    server = _prompt_server()
+    try:
+        empty_status, empty = _get(server, "/api/snippets")
+        s1, a = _request(server, "POST", "/api/snippets", {"title": "A", "body": "本文A"})
+        _, b = _request(server, "POST", "/api/snippets", {"title": "B", "body": "本文B"})
+        s2, updated = _request(
+            server, "PUT", f"/api/snippets/{a['id']}", {"title": "A2", "body": "x"}
+        )
+        s3, ordered = _request(server, "PUT", "/api/snippets/order", {"ids": [b["id"], a["id"]]})
+        s4, after_delete = _request(server, "DELETE", f"/api/snippets/{b['id']}")
+        _, listed = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert (empty_status, empty) == (200, {"snippets": []})
+    assert s1 == 201 and a["title"] == "A"
+    assert s2 == 200 and updated == {"id": a["id"], "title": "A2", "body": "x"}
+    assert s3 == 200 and [s["id"] for s in ordered["snippets"]] == [b["id"], a["id"]]
+    assert s4 == 200 and after_delete["snippets"] == [updated]
+    assert listed["snippets"] == [updated]
+
+
+def test_snippet_validation_and_not_found_errors() -> None:
+    server = _prompt_server()
+    try:
+        invalid = _request(server, "POST", "/api/snippets", {"title": "", "body": ""})
+        missing_put = _request(server, "PUT", "/api/snippets/abc123", {"title": "t", "body": "b"})
+        missing_delete = _request(server, "DELETE", "/api/snippets/abc123")
+        stale_order = _request(server, "PUT", "/api/snippets/order", {"ids": ["abc123"]})
+        not_object = _request(server, "POST", "/api/snippets", [])  # type: ignore[arg-type]
+        bad_ids = _request(server, "PUT", "/api/snippets/order", {"ids": "x"})
+    finally:
+        server.shutdown()
+
+    assert invalid[0] == 400
+    assert "タイトルが空です" in invalid[1]["errors"]
+    assert missing_put[0] == 404
+    assert missing_delete[0] == 404
+    assert stale_order[0] == 409
+    assert not_object[0] == 400
+    assert bad_ids[0] == 400
+
+
+def test_get_snippets_returns_empty_for_broken_yaml(_isolated_snippets_path) -> None:
+    _isolated_snippets_path.write_text("snippets: [unclosed", encoding="utf-8")
+    server = _prompt_server()
+    try:
+        status, body = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert (status, body) == (200, {"snippets": []})
+
+
+def test_snippet_writes_rejected_in_read_only_mode(_isolated_snippets_path) -> None:
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(), projects=[PROJECT_A], dispatch_queue=dispatch_queue, read_only=True
+    )
+    try:
+        results = [
+            _request(server, "POST", "/api/snippets", {"title": "t", "body": "b"}),
+            _request(server, "PUT", "/api/snippets/abc123", {"title": "t", "body": "b"}),
+            _request(server, "PUT", "/api/snippets/order", {"ids": []}),
+            _request(server, "DELETE", "/api/snippets/abc123"),
+        ]
+        list_status, _ = _get(server, "/api/snippets")
+    finally:
+        server.shutdown()
+
+    assert [status for status, _ in results] == [403, 403, 403, 403]
+    assert list_status == 200
+    assert not _isolated_snippets_path.exists()
+
+
+def _limit_wait_issue(*, latest_body: str, labels: list[str] | None = None) -> IssueSummary:
+    return IssueSummary(
+        repo=PROJECT_A.repo,
+        number=1,
+        title="t",
+        labels=labels if labels is not None else [STATUS_NEEDS_HUMAN_DECISION],
+        comments=[{"body": latest_body}],
+        updated_at="2026-11-27T00:00:00Z",
+    )
+
+
+_LIMIT_WAIT_BODY = (
+    ":warning: 利用リミット\n\n<!-- producer-desk:limit-wait\n"
+    '{"reset_at": "2026-11-27T13:00:00+09:00", "attempt": 1}\n-->\n\n'
+    "<!-- producer-desk:bot-comment -->"
+)
+
+
+def test_cancel_limit_wait_posts_cancel_comment_without_label_change() -> None:
+    """issue #331: 自動再開の取り消しは取り消しコメントの投稿のみ（ラベル・ディスパッチなし）。"""
+    labels = FakeLabels(initial={1: {STATUS_NEEDS_HUMAN_DECISION}})
+    comments = FakeComments()
+    dispatch_queue, calls, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: [_limit_wait_issue(latest_body=_LIMIT_WAIT_BODY)],
+    )
+    try:
+        path = "/api/projects/nosetech/project-a/issues/1/limit-wait/cancel"
+        status, body = _post(server, path, {})
+        assert status == 200
+        assert body == {"cancelled": True}
+        assert len(comments.posted) == 1
+        assert "<!-- producer-desk:limit-wait-cancel -->" in comments.posted[0][2]
+        assert labels.labels_by_issue[1] == {STATUS_NEEDS_HUMAN_DECISION}
+        assert calls == []
+    finally:
+        server.shutdown()
+
+
+def test_cancel_limit_wait_rejects_issue_not_waiting_and_unknown_repo() -> None:
+    comments = FakeComments()
+    dispatch_queue, _, _ = _recording_dispatch_queue()
+    server, _ = _run_server(
+        StateStore(),
+        projects=[PROJECT_A],
+        dispatch_queue=dispatch_queue,
+        post_comment=comments.post_comment,
+        list_issues=lambda repo: [
+            _limit_wait_issue(latest_body="人間の返信")  # マーカーの後に返信済み
+        ],
+    )
+    try:
+        status, _ = _post(server, "/api/projects/nosetech/project-a/issues/1/limit-wait/cancel", {})
+        assert status == 409
+        assert comments.posted == []
+        status, _ = _post(server, "/api/projects/nosetech/unknown/issues/1/limit-wait/cancel", {})
+        assert status == 404
     finally:
         server.shutdown()

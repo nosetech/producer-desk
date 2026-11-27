@@ -158,15 +158,19 @@ export interface DecisionPoint {
   options: string[];
 }
 
-function isDecisionHeading(line: string): boolean {
-  const text = line
+/** 見出し行から`##`・`**`・末尾コロンを除いた文言を返す（判断事項・作業結果で共通）。 */
+function headingText(line: string): string {
+  return line
     .trim()
     .replace(/^#{1,6}\s+/, "")
     .replace(/^\*\*(.*?)\*\*$/, "$1")
     .replace(/[:：]\s*$/, "")
     .replace(/^\*\*(.*?)\*\*$/, "$1")
     .trim();
-  return text === DECISION_POINTS_HEADING;
+}
+
+function isDecisionHeading(line: string): boolean {
+  return headingText(line) === DECISION_POINTS_HEADING;
 }
 
 /**
@@ -208,4 +212,158 @@ export function extractDecisionPoints(body: string): DecisionPoint[] | null {
     else current.text += ` ${line.trim()}`;
   }
   return points.length ? points : null;
+}
+
+/** 判断待ちカードに出す判断事項の最大件数。超えた分は「ほか N件」にまとめる（issue #325）。 */
+export const CARD_DECISION_MAX = 2;
+/** 判断待ちカードで1項目に並べる選択肢ラベルの最大数（issue #325）。 */
+export const CARD_OPTION_MAX = 4;
+
+/** 「Foo: 説明」形式の選択肢は、先頭（12文字以内）をタグとして分ける（issue #234）。 */
+export function splitOptionTag(
+  option: string,
+): { tag: string; text: string } | null {
+  const m = option.match(/^([^:：\s]{1,12})\s*[:：]\s*(.+)$/);
+  return m ? { tag: m[1], text: m[2] } : null;
+}
+
+export interface CardDecisionItem {
+  text: string;
+  /** 選択肢ラベルを「 / 」で並べた1行。選択肢が無ければnull。 */
+  optionLine: string | null;
+  /** 選択肢の全文（ツールチップ用、改行区切り）。 */
+  optionTitle: string;
+}
+
+export interface CardDecisions {
+  total: number;
+  items: CardDecisionItem[];
+  /** カードに出しきれなかった件数（0なら省略なし）。 */
+  more: number;
+}
+
+function optionLabel(option: string): string {
+  const tagged = splitOptionTag(option);
+  if (tagged) return tagged.tag;
+  const text = option.replace(/`/g, "").replace(/\*\*/g, "");
+  return text.length > 14 ? `${text.slice(0, 13)}…` : text;
+}
+
+/**
+ * 判断待ちカード用に、コメントの「判断が必要な事項」を先頭CARD_DECISION_MAX件まで取り出す（issue #325）。
+ * 選択肢はラベル（タグ、無ければ本文の先頭14文字）だけを並べる。判断事項が無ければnull（従来の要約表示）。
+ */
+export function cardDecisions(body: string): CardDecisions | null {
+  const points = extractDecisionPoints(body);
+  if (!points) return null;
+  const items = points.slice(0, CARD_DECISION_MAX).map((p) => {
+    const labels = p.options.map(optionLabel);
+    const shown = labels.slice(0, CARD_OPTION_MAX);
+    const rest = labels.length - shown.length;
+    return {
+      text: p.text,
+      optionLine: labels.length
+        ? shown.join(" / ") + (rest > 0 ? ` ほか${rest}` : "")
+        : null,
+      optionTitle: p.options
+        .map((o) => {
+          const tagged = splitOptionTag(o);
+          return (tagged ? `${tagged.tag}: ${tagged.text}` : o).replace(
+            /`/g,
+            "",
+          );
+        })
+        .join("\n"),
+    };
+  });
+  return { total: points.length, items, more: points.length - items.length };
+}
+
+/** 作業結果セクションの見出し文言。書式仕様はdocs/basic-design.md 3-6、AIへの指示はagent_runner.pyと一致させる（issue #324）。 */
+export const WORK_REPORT_HEADING = "作業結果";
+
+export type WorkReportCi = "done" | "none";
+
+export type WorkReportReview =
+  | { status: "none" }
+  | { status: "done"; total: number; resolved: number; unresolved: number };
+
+export interface WorkReport {
+  /** CIの結果。行が無い・読めない場合はnull（その行を非表示）。 */
+  ci: WorkReportCi | null;
+  /** コードレビューの結果。行が無い・読めない場合はnull（その行を非表示）。 */
+  review: WorkReportReview | null;
+}
+
+function isWorkReportHeading(line: string): boolean {
+  return headingText(line) === WORK_REPORT_HEADING;
+}
+
+function parseWorkReportCi(value: string): WorkReportCi | null {
+  if (/^完了(?:\s*[（(].*[)）])?$/.test(value)) return "done";
+  if (/^未設定(?:\s*[（(].*[)）])?$/.test(value)) return "none";
+  return null;
+}
+
+function parseWorkReportReview(value: string): WorkReportReview | null {
+  if (/^未実施(?:\s*[（(].*[)）])?$/.test(value)) return { status: "none" };
+  const m = value.match(
+    /^指摘\s*(\d+)\s*件\s*(?:[（(]\s*対応済\s*(\d+)\s*件\s*[・、,，/／\s]\s*未対応\s*(\d+)\s*件\s*[)）])?$/,
+  );
+  if (!m) return null;
+  const total = Number(m[1]);
+  if (m[2] === undefined) {
+    // 「指摘0件」だけの省略形は許容する。指摘がある場合は内訳が無いと読めない。
+    return total === 0
+      ? { status: "done", total: 0, resolved: 0, unresolved: 0 }
+      : null;
+  }
+  const resolved = Number(m[2]);
+  const unresolved = Number(m[3]);
+  if (resolved + unresolved !== total) return null;
+  return { status: "done", total, resolved, unresolved };
+}
+
+/**
+ * コメント本文から「作業結果」セクション（CI・レビュー）を取り出す（issue #324）。
+ * セクションが無い、またはCI・レビューのどちらも読めない場合はnull（従来の要約表示へフォールバック）。
+ * 読めない項目だけはその項目をnullにする。コードブロック内の同名見出しは対象外。
+ */
+export function extractWorkReport(body: string): WorkReport | null {
+  const lines = stripBotMarkers(body).split("\n");
+  let inCode = false;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
+    if (!inCode && isWorkReportHeading(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) return null;
+
+  const report: WorkReport = { ci: null, review: null };
+  let seenItem = false;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) {
+      if (seenItem) break;
+      continue;
+    }
+    const item = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (!item) break;
+    seenItem = true;
+    const kv = item[1]
+      .replace(/\*\*/g, "")
+      .match(/^([^:：]+?)\s*[:：]\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const key = kv[1].trim();
+    const value = kv[2].replace(/`/g, "").trim();
+    if (key.toUpperCase() === "CI") report.ci = parseWorkReportCi(value);
+    else if (key === "レビュー") report.review = parseWorkReportReview(value);
+  }
+  return report.ci || report.review ? report : null;
 }

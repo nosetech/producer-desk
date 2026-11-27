@@ -31,15 +31,20 @@ from orchestrator.config import (
     resolve_github_token,
 )
 from orchestrator.dispatch_queue import DispatchFn, DispatchQueue
+from orchestrator.github_client import (
+    create_issue_with_attachments as gh_create_issue_with_attachments,
+)
 from orchestrator.github_client import get_pr_status_check_rollup as gh_get_pr_status_check_rollup
-from orchestrator.github_client import gh_supports_attach
+from orchestrator.github_client import gh_issue_create_supports_attach, gh_supports_attach
 from orchestrator.github_client import post_comment as gh_post_comment
 from orchestrator.issue_plan import PlanRunner, execution_env, generate_plan
 from orchestrator.labels import gh_add_label, gh_get_labels, gh_remove_label
+from orchestrator.limit_watcher import process_limit_waiting_issues
 from orchestrator.litellm_proxy import is_healthy as litellm_is_healthy
 from orchestrator.litellm_proxy import resolve_api_key as litellm_resolve_api_key
 from orchestrator.litellm_proxy import resolve_base_url as litellm_resolve_base_url
 from orchestrator.logging_config import configure_logging
+from orchestrator.media_uploads import cleanup_after_run, cleanup_stale_uploads
 from orchestrator.plan_jobs import PlanJobStore
 from orchestrator.polling import run_polling_loop
 from orchestrator.polling_health import (
@@ -47,6 +52,7 @@ from orchestrator.polling_health import (
     PollingHealthNotifier,
     run_health_watchdog,
 )
+from orchestrator.process_title import apply_process_name
 from orchestrator.server import DEFAULT_PORT, StateStore, make_server
 from orchestrator.slack_notifier import DecisionNotifier, PlanNotifier, ReviewNotifier
 
@@ -71,15 +77,20 @@ def _make_dispatch_fn(
             # issue #287: 負の番号は計画生成ジョブ（実issueではない）。
             plan_runner_ref[0].run_job(issue_number)
             return
-        run_agent_runner(
-            projects_by_repo[repo],
-            issue_number,
-            message,
-            log_retention_days=log_retention_days,
-            check_litellm_health_fn=lambda base_url: litellm_is_healthy(
-                base_url, timeout=litellm_health_timeout_seconds
-            ),
-        )
+        try:
+            run_agent_runner(
+                projects_by_repo[repo],
+                issue_number,
+                message,
+                log_retention_days=log_retention_days,
+                check_litellm_health_fn=lambda base_url: litellm_is_healthy(
+                    base_url, timeout=litellm_health_timeout_seconds
+                ),
+            )
+        finally:
+            # issue #301: ダッシュボードから添付された画像・動画の一時ファイルは、
+            # Agent Runnerの実行が終わったら（成否を問わず）削除する。
+            cleanup_after_run(message)
 
     return dispatch_fn
 
@@ -113,6 +124,9 @@ def _make_generate_plan_fn(litellm_health_timeout_seconds: float):
 def main() -> None:
     log_retention_days = load_log_retention_days()
     configure_logging(retention_days=log_retention_days)
+    # issue #332: ps上で他のpythonプロセスと判別できるようにする（警告をログに残すため
+    # configure_logging()の直後に行う）。
+    apply_process_name()
 
     projects = load_projects()
 
@@ -143,11 +157,18 @@ def main() -> None:
             "添付画像は表示できません（github_token設定またはgh auth loginが必要）"
         )
 
-    if gh_supports_attach() is False:
+    attach_supported = gh_supports_attach()
+    if attach_supported is False:
         logger.warning(
             "ghコマンドがv2.99.0未満のため、Agent Runnerによる`gh issue comment --attach`"
-            "（画像・動画の添付、issue #218）は使えません。ghをアップデートしてください。"
+            "（画像・動画の添付、issue #218）と、ダッシュボードからの画像・動画添付"
+            "（issue #301）は使えません。ghをアップデートしてください。"
         )
+    # issue #301: `gh issue create`が`--attach`に未対応なら、作成後に添付付きコメントを投稿する。
+    create_supports_attach = attach_supported is not False and gh_issue_create_supports_attach()
+    removed_uploads = cleanup_stale_uploads()
+    if removed_uploads:
+        logger.info("取り残した添付の一時ファイルを%d件削除しました", removed_uploads)
 
     # タイミング系設定（issue #201）。不正値はここで起動時エラーにする。
     polling_interval_seconds = load_polling_interval_seconds()
@@ -228,6 +249,15 @@ def main() -> None:
             post_comment=gh_post_comment,
             ci_wait_timeout=timedelta(hours=ci_wait_timeout_hours),
         )
+        # issue #331: 利用リミット待ちで判断待ちになったissueを、解除予定時刻を過ぎたら
+        # 同じセッションで自動再開する。
+        process_limit_waiting_issues(
+            issues_by_repo,
+            get_labels=gh_get_labels,
+            add_label=gh_add_label,
+            remove_label=gh_remove_label,
+            dispatch_queue=dispatch_queue,
+        )
 
     def on_update(state: AggregatedState) -> None:
         store.set(state)
@@ -274,6 +304,10 @@ def main() -> None:
         dashboard_settings=dashboard_settings,
         github_token=attachment_token,
         read_only=read_only,
+        attach_supported=attach_supported,
+        create_issue_with_attachments=(
+            gh_create_issue_with_attachments if create_supports_attach else None
+        ),
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         plan_runner=plan_runner,

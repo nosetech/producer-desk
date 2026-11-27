@@ -250,6 +250,44 @@
   cursor: pointer;
 }
 
+/* 返信欄の定型文セレクト（issue #323、デザイン feature/issue-323-snippets の sn.*）。 */
+.snippetSelectOff {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.snippetLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+  text-decoration: none;
+}
+
+.snippetLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.snippetError {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--warn);
+  white-space: nowrap;
+  min-width: 0;
+}
+
 .modelHint {
   min-width: 0;
   font-family: var(--font-mono, monospace);
@@ -262,6 +300,12 @@
 
 .textareaPrompt {
   min-height: 120px;
+}
+
+/* 新規作成のテキストエリアと添付UIの間（デザイン feature/issue-301 の 8px スペーサー）。 */
+.attachGap {
+  height: 8px;
+  flex: none;
 }
 
 .sendRow {
@@ -340,6 +384,10 @@
 
   .modelHint {
     display: none;
+  }
+
+  .snippetLink {
+    min-height: 40px;
   }
 
   .panel {

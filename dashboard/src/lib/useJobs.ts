@@ -27,6 +27,8 @@ export interface JobSpec {
   successMessage: string;
   /** trueを返すとジョブを失敗扱いにせず静かに破棄する（呼び出し側で別途処理済み）。 */
   onFailure?: (e: unknown) => boolean;
+  /** 実行中の見出しの上書き（issue #331）。 */
+  runningHeading?: string;
 }
 
 let newJobSeq = 0;
@@ -112,6 +114,7 @@ export function useJobs({
           status: "running",
           polledStage: null,
           progressId: "",
+          runningHeading: spec.runningHeading,
         },
       ]);
       run(key);

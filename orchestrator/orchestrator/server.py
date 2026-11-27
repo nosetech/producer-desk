@@ -16,8 +16,10 @@ import re
 import subprocess
 import threading
 import urllib.parse
+import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from orchestrator.agent_runner import AGENT_RUNNER_PROMPT_SPECS
 from orchestrator.aggregation import (
@@ -51,6 +53,7 @@ from orchestrator.dispatch_status import (
 from orchestrator.github_client import (
     CloseIssueFn,
     CreateIssueFn,
+    CreateIssueWithAttachmentsFn,
     DeleteBranchFn,
     GetIssueDetailFn,
     GetPrBranchFn,
@@ -59,11 +62,15 @@ from orchestrator.github_client import (
     ListRepoLabelsFn,
     MergePrFn,
     PostCommentFn,
+    PostCommentWithAttachmentsFn,
     UpdateIssueMetaFn,
 )
 from orchestrator.github_client import close_issue as gh_close_issue
 from orchestrator.github_client import close_issue_not_planned as gh_close_issue_not_planned
 from orchestrator.github_client import create_issue as gh_create_issue
+from orchestrator.github_client import (
+    create_issue_with_attachments as gh_create_issue_with_attachments,
+)
 from orchestrator.github_client import delete_branch as gh_delete_branch
 from orchestrator.github_client import ensure_labels as gh_ensure_labels
 from orchestrator.github_client import get_issue_detail as gh_get_issue_detail
@@ -74,6 +81,9 @@ from orchestrator.github_client import list_open_milestones as gh_list_open_mile
 from orchestrator.github_client import list_repo_labels as gh_list_repo_labels
 from orchestrator.github_client import merge_pr as gh_merge_pr
 from orchestrator.github_client import post_comment as gh_post_comment
+from orchestrator.github_client import (
+    post_comment_with_attachments as gh_post_comment_with_attachments,
+)
 from orchestrator.github_client import update_issue as gh_update_issue
 from orchestrator.github_client import update_issue_meta as gh_update_issue_meta
 from orchestrator.inbox import (
@@ -87,9 +97,11 @@ from orchestrator.inbox import (
 )
 from orchestrator.instruct import (
     APPROVE_DEFAULT_MESSAGE_SPEC,
+    NoLimitWaitError,
     NotNeedsHumanDecisionError,
     PrSelectionRequiredError,
     ReviewMergeError,
+    handle_cancel_limit_wait,
     handle_create_issue,
     handle_instruct,
     handle_mark_in_review,
@@ -117,6 +129,15 @@ from orchestrator.labels import (
     gh_get_labels,
     gh_remove_label,
 )
+from orchestrator.media_uploads import (
+    GH_ATTACH_REQUIRED_ERROR,
+    MAX_ATTACH_REQUEST_BYTES,
+    MediaAttachmentError,
+    SavedAttachment,
+    decode_attachments,
+    remove_saved,
+    save_attachments,
+)
 from orchestrator.plan_jobs import (
     STATUS_FAILED,
     STATUS_QUEUED,
@@ -136,6 +157,17 @@ from orchestrator.prompts import (
     load_overrides_safe,
     reset_prompt_override,
     save_prompt_override,
+)
+from orchestrator.snippets import (
+    SnippetNotFoundError,
+    SnippetOrderConflictError,
+    SnippetStorageError,
+    SnippetValidationError,
+    create_snippet,
+    delete_snippet,
+    load_snippets_safe,
+    reorder_snippets,
+    update_snippet,
 )
 from orchestrator.usage_store import DailyModelUsage, LimitStatus
 from orchestrator.usage_store import current_limit_status as store_current_limit_status
@@ -159,6 +191,10 @@ REDISPATCH_PATH = re.compile(
 # 判断待ち→レビュー待ちへのUI操作による変更（issue #274）。ラベル変更のみ。
 MARK_IN_REVIEW_PATH = re.compile(
     r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/mark-in-review$"
+)
+# 利用リミット待ちの自動再開の取り消し（issue #331）。取り消しコメントの投稿のみ。
+LIMIT_WAIT_CANCEL_PATH = re.compile(
+    r"^/api/projects/(?P<repo>[^/]+/[^/]+)/issues/(?P<issue_number>\d+)/limit-wait/cancel$"
 )
 # 単一issueの本文・コメント取得（issue #231）。返信UIの引用表示用。
 ISSUE_DETAIL_PATH = re.compile(
@@ -193,6 +229,12 @@ PROMPTS_PATH = "/api/prompts"
 # issueコメント添付ファイルのプロキシ取得（issue #218）。クエリ`url`に添付ファイルのURLを渡す。
 ATTACHMENT_PATH = "/api/attachment"
 PROMPT_ITEM_PATH = re.compile(r"^/api/prompts/(?P<key>[a-z_]+)$")
+# 返信欄の定型文（issue #323）。並び替えは個別更新と同じPUTのため、先に判定する。
+SNIPPETS_PATH = "/api/snippets"
+SNIPPETS_ORDER_PATH = "/api/snippets/order"
+SNIPPET_ITEM_PATH = re.compile(r"^/api/snippets/(?P<snippet_id>[0-9a-f]+)$")
+# 定型文API（POST/PUT）のリクエスト上限。本文は最大2000文字・最大50件程度。
+MAX_SNIPPET_BODY_BYTES = 64 * 1024
 
 # ダッシュボードから閲覧・編集できるプロンプト一覧（表示順）。
 PROMPT_SPECS: tuple[PromptSpec, ...] = (
@@ -351,6 +393,14 @@ def _make_handler(
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
     ensure_inbox_labels: EnsureLabelsFn | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn = (
+        gh_post_comment_with_attachments
+    ),
+    create_issue_with_attachments: CreateIssueWithAttachmentsFn | None = (
+        gh_create_issue_with_attachments
+    ),
+    attach_supported: bool | None = None,
+    uploads_base_dir: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     projects_by_repo = {project.repo: project for project in projects}
     ensure_labels_fn: EnsureLabelsFn = ensure_inbox_labels or (
@@ -375,6 +425,27 @@ def _make_handler(
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b"{}"
             return json.loads(raw)
+
+        def _read_attach_body(self) -> dict | None:
+            """添付を含みうるinstruct/create issueのJSONボディを読む（issue #301）。
+
+            `Content-Length`が添付付きリクエストの上限を超えたら413を返してNone。
+            """
+            if int(self.headers.get("Content-Length", 0)) > MAX_ATTACH_REQUEST_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます（添付は合計50MBまで）"})
+                return None
+            return self._read_json_body()
+
+        def _save_attachments(
+            self, repo: str, issue_key: str, raw: object
+        ) -> list[SavedAttachment]:
+            """`attachments`を検証して一時保存する。不正なら`MediaAttachmentError`。"""
+            decoded = decode_attachments(raw)
+            if decoded and attach_supported is False:
+                raise MediaAttachmentError(GH_ATTACH_REQUIRED_ERROR)
+            if not decoded:
+                return []
+            return save_attachments(repo, issue_key, decoded, base_dir=uploads_base_dir)
 
         def _refresh_store(self) -> bool:
             """instruct/create_issue成功直後にStateStoreを同期更新する（issue #70）。
@@ -431,6 +502,9 @@ def _make_handler(
                 return
             if self.path == PROMPTS_PATH:
                 self._send_json(200, {"prompts": describe_prompts(PROMPT_SPECS)})
+                return
+            if self.path == SNIPPETS_PATH:
+                self._send_json(200, {"snippets": load_snippets_safe()})
                 return
             if urllib.parse.urlsplit(self.path).path == ATTACHMENT_PATH:
                 self._handle_attachment()
@@ -527,6 +601,13 @@ def _make_handler(
                 },
             )
 
+        def _resolve_plan_job(self, job_number: int) -> PlanJob | None:
+            """キュー上の計画ジョブ番号（負数）から計画ジョブを引く（issue #335）。"""
+            if plan_runner is None or plan_store is None:
+                return None
+            job_id = plan_runner.job_id_for(job_number)
+            return plan_store.get(job_id) if job_id is not None else None
+
         def _state_payload(self, state: AggregatedState | None) -> dict:
             if state is None:
                 return {
@@ -544,7 +625,9 @@ def _make_handler(
                 repo = project["repo"]
                 project["queue"] = dataclasses.asdict(
                     build_project_queue(
-                        dispatch_queue.snapshot(repo), state.issues_by_repo.get(repo, [])
+                        dispatch_queue.snapshot(repo, include_plans=True),
+                        state.issues_by_repo.get(repo, []),
+                        self._resolve_plan_job,
                     )
                 )
                 # 「作業中」件数のうちキューに載っていない分の理由（issue #272）。件数はGitHubの
@@ -707,6 +790,14 @@ def _make_handler(
                 )
                 return
 
+            limit_wait_cancel_match = LIMIT_WAIT_CANCEL_PATH.match(self.path)
+            if limit_wait_cancel_match:
+                self._handle_cancel_limit_wait(
+                    limit_wait_cancel_match.group("repo"),
+                    int(limit_wait_cancel_match.group("issue_number")),
+                )
+                return
+
             create_issue_match = CREATE_ISSUE_PATH.match(self.path)
             if create_issue_match:
                 self._handle_create_issue(create_issue_match.group("repo"))
@@ -715,6 +806,10 @@ def _make_handler(
             inbox_match = INBOX_PATH.match(self.path)
             if inbox_match:
                 self._handle_create_inbox(inbox_match.group("repo"))
+                return
+
+            if self.path == SNIPPETS_PATH:
+                self._handle_snippet_write(None)
                 return
 
             self._send_json(404, {"error": "not found"})
@@ -758,6 +853,15 @@ def _make_handler(
                 self._handle_update_prompt(prompt_match.group("key"))
                 return
 
+            if self.path == SNIPPETS_ORDER_PATH:
+                self._handle_reorder_snippets()
+                return
+
+            snippet_match = SNIPPET_ITEM_PATH.match(self.path)
+            if snippet_match:
+                self._handle_snippet_write(snippet_match.group("snippet_id"))
+                return
+
             self._send_json(404, {"error": "not found"})
 
         def do_DELETE(self) -> None:  # noqa: N802
@@ -774,6 +878,11 @@ def _make_handler(
             prompt_match = PROMPT_ITEM_PATH.match(self.path)
             if prompt_match:
                 self._handle_reset_prompt(prompt_match.group("key"))
+                return
+
+            snippet_match = SNIPPET_ITEM_PATH.match(self.path)
+            if snippet_match:
+                self._handle_delete_snippet(snippet_match.group("snippet_id"))
                 return
 
             inbox_item_match = INBOX_ITEM_PATH.match(self.path)
@@ -837,6 +946,77 @@ def _make_handler(
                 return
             self._send_json(200, describe_prompt(spec, load_overrides_safe()))
 
+        def _read_snippet_payload(self) -> dict | None:
+            """定型文APIのJSONボディを読む。不正なら400/413を返してNone。"""
+            if int(self.headers.get("Content-Length", 0)) > MAX_SNIPPET_BODY_BYTES:
+                self._send_json(413, {"error": "リクエストが大きすぎます"})
+                return None
+            try:
+                body = self._read_json_body()
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+                return None
+            if not isinstance(body, dict):
+                self._send_json(
+                    400, {"error": "リクエストボディはJSONオブジェクトである必要があります"}
+                )
+                return None
+            return body
+
+        def _handle_snippet_write(self, snippet_id: str | None) -> None:
+            """issue #323: 定型文の追加（`snippet_id`がNone）・更新。"""
+            body = self._read_snippet_payload()
+            if body is None:
+                return
+            try:
+                if snippet_id is None:
+                    snippet = create_snippet(body.get("title"), body.get("body"))
+                else:
+                    snippet = update_snippet(snippet_id, body.get("title"), body.get("body"))
+            except SnippetValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetNotFoundError:
+                self._send_json(404, {"error": "定型文が見つかりません"})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の保存に失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(201 if snippet_id is None else 200, snippet)
+
+        def _handle_delete_snippet(self, snippet_id: str) -> None:
+            """issue #323: 定型文を削除する。"""
+            try:
+                remaining = delete_snippet(snippet_id)
+            except SnippetNotFoundError:
+                self._send_json(404, {"error": "定型文が見つかりません"})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の削除に失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, {"snippets": remaining})
+
+        def _handle_reorder_snippets(self) -> None:
+            """issue #323: 定型文を`ids`の順に並べ替える。"""
+            body = self._read_snippet_payload()
+            if body is None:
+                return
+            try:
+                snippets = reorder_snippets(body.get("ids"))
+            except SnippetOrderConflictError as e:
+                self._send_json(409, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetValidationError as e:
+                self._send_json(400, {"error": str(e), "errors": e.errors})
+                return
+            except SnippetStorageError as e:
+                logger.warning("定型文の並び替えに失敗しました: %s", e)
+                self._send_json(500, {"error": str(e)})
+                return
+            self._send_json(200, {"snippets": snippets})
+
         def _handle_update_project_settings(self, repo: str) -> None:
             """issue #176: プロジェクトごとの実行手段デフォルト設定を更新する。
 
@@ -886,10 +1066,14 @@ def _make_handler(
                 return
 
             progress_id: str | None = None
+            saved: list[SavedAttachment] = []
+            dispatched = False
             try:
                 try:
                     try:
-                        payload = self._read_json_body()
+                        payload = self._read_attach_body()
+                        if payload is None:
+                            return
                         progress_id = payload.get("progressId")
                         on_stage = (
                             (lambda stage: progress_store.set(progress_id, stage))
@@ -901,6 +1085,11 @@ def _make_handler(
                             not isinstance(pr_number, int) or isinstance(pr_number, bool)
                         ):
                             raise ValueError("prNumberは整数で指定してください")
+                        saved = self._save_attachments(
+                            repo, str(issue_number), payload.get("attachments")
+                        )
+                        if saved:
+                            on_stage("attach")
                         result = handle_instruct(
                             repo,
                             issue_number,
@@ -920,7 +1109,10 @@ def _make_handler(
                             sync_worktree=sync_worktree,
                             on_stage=on_stage,
                             pr_number=pr_number,
+                            attachments=saved,
+                            post_comment_with_attachments=post_comment_with_attachments,
                         )
+                        dispatched = result.dispatched
                     except (KeyError, ValueError) as e:
                         self._send_json(400, {"error": str(e)})
                         return
@@ -944,6 +1136,10 @@ def _make_handler(
                         return
                 finally:
                     instruct_locks.release(repo, issue_number)
+                    # ディスパッチしなかった（失敗した）場合、一時ファイルはAgent Runnerに
+                    # 渡らないためここで消す。ディスパッチした場合は実行終了後に消す。
+                    if saved and not dispatched:
+                        remove_saved([a.path for a in saved], base_dir=uploads_base_dir)
 
                 self._refresh_store()
                 self._send_json(200, dataclasses.asdict(result))
@@ -1087,6 +1283,50 @@ def _make_handler(
 
                 self._refresh_store()
                 self._send_json(200, {"label": STATUS_IN_REVIEW})
+            finally:
+                if progress_id:
+                    progress_store.clear(progress_id)
+
+        def _handle_cancel_limit_wait(self, repo: str, issue_number: int) -> None:
+            if repo not in known_repos:
+                self._send_json(404, {"error": f"未登録のリポジトリです: {repo}"})
+                return
+
+            if not instruct_locks.try_acquire(repo, issue_number):
+                message = f"{repo}#{issue_number} は他の操作を処理中です。しばらくお待ちください"
+                self._send_json(409, {"error": message})
+                return
+
+            progress_id: str | None = None
+            try:
+                try:
+                    payload = self._read_json_body()
+                    progress_id = payload.get("progressId") if isinstance(payload, dict) else None
+                    if not isinstance(progress_id, str):
+                        progress_id = None
+                except ValueError:
+                    progress_id = None
+                on_stage = (
+                    (lambda stage: progress_store.set(progress_id, stage))
+                    if progress_id
+                    else (lambda _stage: None)
+                )
+                try:
+                    issue = self._fetch_issue(repo, issue_number)
+                    if issue is None:
+                        return
+                    handle_cancel_limit_wait(issue, post_comment=post_comment, on_stage=on_stage)
+                except NoLimitWaitError as e:
+                    self._send_json(409, {"error": str(e)})
+                    return
+                except subprocess.CalledProcessError as e:
+                    self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
+                    return
+                finally:
+                    instruct_locks.release(repo, issue_number)
+
+                self._refresh_store()
+                self._send_json(200, {"cancelled": True})
             finally:
                 if progress_id:
                     progress_store.clear(progress_id)
@@ -1355,9 +1595,13 @@ def _make_handler(
                 return
 
             progress_id: str | None = None
+            saved: list[SavedAttachment] = []
+            dispatched = False
             try:
                 try:
-                    payload = self._read_json_body()
+                    payload = self._read_attach_body()
+                    if payload is None:
+                        return
                     progress_id = payload.get("progressId")
                     on_stage = (
                         (lambda stage: progress_store.set(progress_id, stage))
@@ -1369,6 +1613,15 @@ def _make_handler(
                         isinstance(existing, bool) or not isinstance(existing, int)
                     ):
                         raise ValueError("issueNumberは整数で指定してください")
+                    # issue番号は作成後に決まるため、新規作成はリクエストごとに`new-<uuid>`へ
+                    # 保存する（同時に届いた別リクエストの後片付けで消されないように分ける）。
+                    saved = self._save_attachments(
+                        repo,
+                        str(existing) if existing is not None else f"new-{uuid.uuid4().hex}",
+                        payload.get("attachments"),
+                    )
+                    if saved:
+                        on_stage("attach")
                     result = handle_create_issue(
                         repo,
                         payload["title"],
@@ -1382,13 +1635,21 @@ def _make_handler(
                         remove_label=remove_label,
                         dispatch_queue=dispatch_queue,
                         on_stage=on_stage,
+                        attachments=saved,
+                        create_issue_with_attachments=create_issue_with_attachments,
+                        post_comment_with_attachments=post_comment_with_attachments,
                     )
+                    dispatched = result.dispatched
                 except (KeyError, ValueError) as e:
                     self._send_json(400, {"error": str(e)})
                     return
                 except subprocess.CalledProcessError as e:
                     self._send_json(502, {"error": f"ghコマンドが失敗しました: {e}"})
                     return
+                finally:
+                    # 「あとで着手」・失敗時はAgent Runnerに渡らないため、ここで消す。
+                    if saved and not dispatched:
+                        remove_saved([a.path for a in saved], base_dir=uploads_base_dir)
 
                 self._refresh_store()
                 self._send_json(201, dataclasses.asdict(result))
@@ -1440,6 +1701,14 @@ def make_server(
     update_issue: UpdateIssueFn = gh_update_issue,
     close_issue_not_planned: CloseNotPlannedFn = gh_close_issue_not_planned,
     ensure_inbox_labels: EnsureLabelsFn | None = None,
+    post_comment_with_attachments: PostCommentWithAttachmentsFn = (
+        gh_post_comment_with_attachments
+    ),
+    create_issue_with_attachments: CreateIssueWithAttachmentsFn | None = (
+        gh_create_issue_with_attachments
+    ),
+    attach_supported: bool | None = None,
+    uploads_base_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
     known_repos = {project.repo for project in projects}
     handler = _make_handler(
@@ -1475,6 +1744,10 @@ def make_server(
         update_issue=update_issue,
         close_issue_not_planned=close_issue_not_planned,
         ensure_inbox_labels=ensure_inbox_labels,
+        post_comment_with_attachments=post_comment_with_attachments,
+        create_issue_with_attachments=create_issue_with_attachments,
+        attach_supported=attach_supported,
+        uploads_base_dir=uploads_base_dir,
         polling_health=polling_health,
         polling_interval_seconds=polling_interval_seconds,
         dashboard_settings=(

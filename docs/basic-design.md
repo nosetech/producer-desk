@@ -107,7 +107,7 @@ Agent Runnerのセッション（`--session-id`/`--resume`）はプロジェク�
     - **「作業中」件数とキューの整合（issue #272）**: 「作業中」件数はGitHubのラベル由来、キューはオーケストレータのメモリ上の状態で、意味・鮮度が異なる。件数は**ラベル基準のまま**とし、キューが空でも矛盾して見えないよう、`/api/state`の各`project_status`に`in_progress_breakdown`（`{"ci_waiting": n, "orphaned": n}`）を**リクエスト時点**で付与する（`ci_watcher.build_in_progress_breakdown`）。OPENの`status:in-progress`issueのうち`DispatchQueue.is_active`が偽のものを、最新コメントがCI待機マーカー付き（issue #152/#173）なら`ci_waiting`（正常な待機）、それ以外は`orphaned`（孤立）に数える。キュー上のissueはどちらにも数えない。ダッシュボードは`ProjectStatusRow`の「作業中」セルの右に補足ピル（「CI待ち」＝中立色、「実行なし」＝警告色、複数件は「CI待ち 2」、ホバーで理由の説明、Claude Designの`WORK_NOTE`）を表示する。
   - **同一ポーリングサイクル内のラベル遷移の即時反映**: `poll_once`が`on_issues_fetched`（`comment_watcher.py`の`process_new_comments`・`close_watcher.py`の`close_finished_issues`、いずれもGitHub issueへの直接コメント経由の指示検知・issueクローズ検知）を呼び出す際、これらの内部で`transition_label`によりGitHub側のラベルが書き換わることがある。この変更は`on_issues_fetched`呼び出し前に取得済みの`issues_by_repo`スナップショットには反映されないため、そのまま`aggregate()`に渡すと同一サイクルのプロジェクト状況に遷移前の古いラベルとして反映され、次回ポーリング（既定では最大5分後）まで意図した新しい状態が表示されない不具合があった（issue #97）。そのため`poll_once`は`on_issues_fetched`呼び出し後に`issues_by_repo`を`list_issues`で再取得し直し（`status:in-review`のPR番号解決も再実行）、`aggregate()`にはこの最新スナップショットを渡す。これによりポーリング1サイクルあたりのGitHub API呼び出し回数が増える（issue一覧取得が最大2回）が、ダッシュボードの操作反映と同水準の即時性を得るためのトレードオフとして許容する。`on_issues_fetched`を渡さない呼び出し（`server._refresh_store`等、オーケストレータ自身によるラベル遷移が起きない経路）ではこの再取得は行わない。なお、ユーザーがGitHub UI/`gh`コマンドで直接ラベルを編集した場合は、オーケストレータがその変更を能動的に把握できないため、従来通り次回ポーリングでの検知に委ねる（[issue #50](https://github.com/nosetech/producer-desk/issues/50)の設計と同様）。
   - **利用量・リミットモニター**（[要件定義書 3-4](./requirements.md#3-4-コスト制約)参照）: Agent Runnerの実行結果（`claude -p ... --output-format stream-json --verbose`のNDJSON出力から取り出した最後の`"type":"result"`イベント。[3-1](#3-1-起動パラメータ)参照）から`total_cost_usd`・`usage.*`・`modelUsage.*`（モデルごとのinput/outputトークン数・コスト）を取得し、`orchestrator/orchestrator/usage_store.py`でSQLite（`config/usage.db`、.gitignore対象）に記録する。Anthropicアカウント側が内部管理するセッション5時間枠・週間上限に対する正確な消費率(%)はこの経路では取得できないため、過去7日分の「日単位・モデル別の使用量」を集計して表示する方式に転換した（issue #60）。リミット到達時（`is_error: true`かつ`api_error_status: 429`）は、`result`の自由文から解除予定時刻の記述を正規表現で抽出し、パース失敗時は生の文字列をそのまま保持するフォールバックを用意した。集計結果とリミット到達状況は内部API `GET /api/usage`（[2-2](#2-2-データ取得仕様ポーリング)直下、`/api/state`と同じサーバー）で提供する。issue #59（タスク種別に応じたローカルLLM併用）を見据え、記録スキーマは`model`をモデル名の文字列として保持しており、ローカルLLM分の実データもそのまま同じ経路で記録できる。ダッシュボード側のUI（折れ線グラフ等の表示）実装は別issue（#64）に切り出した。**「日単位」の集計はJST（Asia/Tokyo）基準の日付で行う。** `usage_records.recorded_at`自体はUTCで保存するが（絶対時刻として一意に扱うため変更しない）、`daily_model_usage()`の「本日」判定・日付グルーピングはJSTへ変換してから行う。ダッシュボード側の「本日の使用量」カードが表示する日付も、集計結果の末尾要素に依存せずクライアント側でJST基準の実日付を独立に算出する（`todayJst()`、`Intl.DateTimeFormat`の`Asia/Tokyo`タイムゾーン指定を使用）。UTC基準のままだとJSTで日付が変わってから午前9時になるまでの間、「本日の使用量」が前日のまま表示され続ける不具合があった（issue #71）
-- **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "reviews": [...], "project_status": [...], "status_counts": {...}, "last_polled_at": "..."}` 形式のJSONで返す。`last_polled_at`はオーケストレータが全プロジェクトを最後にポーリングした時刻、`project_status[].fetched_at`は各リポジトリを実際にGitHubから取得した時刻（いずれもISO 8601・UTC、未取得は`null`。issue #197）で、ダッシュボードの「N分前」表示の元になる（ブラウザ側で`GET /api/state`に成功した時刻ではない）。`StateStore`は集約の元になったリポジトリ別issue一覧も内部的に保持するが、APIレスポンスには含めない。`project_status[].queue`（issue #233）は、そのプロジェクトのディスパッチキューの状態`{"running": {"number", "title", "label"} | null, "waiting": [{"number", "title", "label"}, ...]}`（待機はFIFO順、同一issueが重複して並びうる）で、ポーリング周期より速く変化するため集計時ではなく**リクエスト時点**の`DispatchQueue.snapshot(repo)`に、`StateStore`が保持するissue一覧から番号で引いたタイトル・状態ラベルを付与して返す（`aggregation.build_project_queue`）。issueが一覧に無い（クローズ済み・取得失敗）場合は`title`・`label`とも`null`（番号のみ）、状態ラベル未付与のissueは`label`のみ`null`。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
+- **ダッシュボードへのデータ提供方式**: オーケストレータが最小限のHTTPサーバー（`http.server.ThreadingHTTPServer`、デフォルト `http://127.0.0.1:8787`）で `GET /api/state` を提供する。ポーリングスレッドが集約するたびに最新状態を更新し、リクエスト時点の最新値を `{"decisions": [...], "reviews": [...], "project_status": [...], "status_counts": {...}, "last_polled_at": "..."}` 形式のJSONで返す。`last_polled_at`はオーケストレータが全プロジェクトを最後にポーリングした時刻、`project_status[].fetched_at`は各リポジトリを実際にGitHubから取得した時刻（いずれもISO 8601・UTC、未取得は`null`。issue #197）で、ダッシュボードの「N分前」表示の元になる（ブラウザ側で`GET /api/state`に成功した時刻ではない）。`StateStore`は集約の元になったリポジトリ別issue一覧も内部的に保持するが、APIレスポンスには含めない。`project_status[].queue`（issue #233）は、そのプロジェクトのディスパッチキューの状態`{"running": {"number", "title", "label"} | null, "waiting": [{"number", "title", "label"}, ...]}`（待機はFIFO順、同一issueが重複して並びうる）で、ポーリング周期より速く変化するため集計時ではなく**リクエスト時点**の`DispatchQueue.snapshot(repo)`に、`StateStore`が保持するissue一覧から番号で引いたタイトル・状態ラベルを付与して返す（`aggregation.build_project_queue`）。issueが一覧に無い（クローズ済み・取得失敗）場合は`title`・`label`とも`null`（番号のみ）、状態ラベル未付与のissueは`label`のみ`null`。各エントリはさらに`kind`（`"issue"`＝自走タスク / `"plan"`＝AI計画ジョブ）・`plan_job_id`・`inbox_issue_number`・`plan_revising`を持つ（issue #335）。キューは`DispatchQueue.snapshot(repo, include_plans=True)`から組み立て、計画ジョブも実際のFIFO順で`running`/`waiting`に含める。計画ジョブのエントリは`number`が負の内部番号（表示には使わない）、`title`が依頼文の1行目、`label`が`null`、`inbox_issue_number`がinbox由来なら元のinbox番号（新規タスク由来は`null`）、`plan_revising`が既に計画（直前の結果）を持つ修正指示のジョブなら真（ダッシュボードはinbox由来でこれが真のときだけ、ピン留めしたツールチップに「計画を開く」を出す）。キュー待ち中に破棄された（`PlanJobStore`に無い）計画ジョブは実行されずに捨てられるため`waiting`から除き、実行中に解決できない場合は空き枠にならないよう`kind: "plan"`・`title: null`のエントリとして返す。[2-3](#2-3-指示出しapi内部api)の指示出し（POST）も同じサーバーに追加する想定
 - **指示出し操作直後の同期更新**: [2-3](#2-3-指示出しapi内部api)の`POST /api/projects/{repo}/issues/{issue_number}/instruct`・`POST /api/projects/{repo}/issues`がGitHub側の変更（ラベル・コメント・PRマージ等）に成功した直後、レスポンスを返す前に本節のポーリング1回分（`orchestrator/orchestrator/polling.py`の`poll_once`）を同期的に実行し、その結果でこのキャッシュを更新する。上記5分間隔の背景ポーリングだけに頼ると、ダッシュボードが操作直後に`GET /api/state`を再取得しても最大5分間は古いスナップショットが返り続け、操作対象のissueがまだ一覧に残っているように見えて二重操作できてしまう不具合があった（issue #70）。この同期更新自体が失敗しても、既に成功している指示操作のレスポンスは成功のまま返し、最新化は次回の背景ポーリングに委ねる。
 
 - **プロジェクト別issue一覧の取得（issue #116）**: `GET /api/projects/{repo}/issues`（`/api/state`と同じサーバー、新規issue作成の`POST`と同一パス・別メソッド）。ダッシュボードのissue一覧画面（`/projects/{owner}/{name}`）向けに、対象リポジトリのissue（`gh issue list --state all`、最大100件）を`{"repo": ..., "issues": [{"number", "title", "label", "state", "comments_count", "updated_at", "is_orphaned", "milestone", "tags"}]}`で更新が新しい順に返す（issue #303: `milestone`はマイルストーンのタイトルで未設定は`null`、`tags`は状態ラベル5種を除いたその他のラベル名の配列。`gh issue list`の`--json`に`milestone`を追加して取得する。ダッシュボードはこれらを行・カードに表示し、マイルストーン/タグによるフィルタ（複数選択、OR/ANDトグル。ANDでは選択条件をすべて満たすissueのみ）を提供する）。レスポンスには`open_milestones`（オープン中マイルストーンのタイトル配列、issue #308）と`labels`（変更UIの選択肢となるラベル名の配列。状態ラベル5種を除く。`gh label list`で取得、issue #305）も含める。`gh issue list`の`milestone`は状態（open/closed）を持たないため`gh api repos/{repo}/milestones?state=open --paginate`で別途取得する。フィルタのマイルストーン選択肢は`open_milestones`に含まれるものだけにする（クローズ済みマイルストーンは選択肢に出さない。行・カードのマイルストーンチップは従来どおりissueに付いた名前をそのまま表示する）。この取得に失敗した場合はissue一覧を502にせず`open_milestones: null`（`labels`の取得失敗時は`labels: null`。その場合ダッシュボードはマイルストーン・ラベルの変更UIを無効にする）を返し、ダッシュボードは絞り込まず従来どおり全マイルストーンを選択肢にする。プロジェクト単位の再取得（`POST /api/projects/{repo}/refresh`）のレスポンスにも同じ`open_milestones`・`labels`を含める。詳細画面を開く操作は低頻度のため`StateStore`にはキャッシュせず、リクエスト都度`list_issues`を呼ぶ。`label`は表示に採用する状態ラベル（OPENで状態ラベル無しは`null`＝タグなし、クローズ済みで状態ラベル無しは`status:closed`）。`is_orphaned`は`/api/state`の`project_status`と同じ孤立in-progress判定（`aggregation._is_orphaned_in_progress`）をissue単位で適用した結果。未登録リポジトリは404、`gh`の失敗は502。
@@ -130,11 +130,14 @@ Content-Type: application/json
 
 {
   "action": "approve" | "instruct",
-  "message": "string（省略時はaction種別に応じた定型文を使用）"
+  "message": "string（省略時はaction種別に応じた定型文を使用）",
+  "attachments": [{"name": "string", "mimeType": "string", "dataBase64": "string"}]
 }
 ```
 
-- `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。
+- `attachments`（任意、`instruct`のみ、issue #301）: 画像・動画の添付。指定すると`gh issue comment --attach`で添付付きのコメントとして投稿し、添付が1件以上あれば`message`は空でもよい。形式・上限・Agent Runnerへの受け渡しは[2-4の「ダッシュボードからの画像・動画添付」](#ダッシュボードからの画像動画添付issue-301)を参照。
+
+- `approve`: 定型文「承認します。進めてください。」をissueにコメント投稿する。想定対象は `needs-human-decision` のissue。ただしダッシュボードの判断待ちカードからは「承認」ボタンを削除したため（issue #325、運用上使われていなかった）、UIからこの経路で呼ばれることはない。APIとしては互換性のため存続し、主な利用者は下記のレビュー待ち（`status:in-review`）の承認（PRマージ）である。
 - `approve`（対象issueが`status:in-review`の場合）: 上記のコメント投稿・ディスパッチの経路には乗らず、紐づくPRのsquash merge（`gh pr merge --squash`）のみを行う特別処理となる（issue #58、`orchestrator/orchestrator/instruct.py`の`handle_instruct`）。マージ成功後は`gh issue close`でissueを明示的にクローズする（PR本文の`Closes #`によるGitHubの自動クローズは、そのPRがリポジトリの**デフォルトブランチ**にマージされた場合のみ発動する仕様であり、本プロジェクトのワークフロー（[開発ワークフロー](../CLAUDE.md)、PRは`develop`にマージ）では発動しないため、明示的なクローズを行わないとissueが開いたまま残る不具合が実際に発生した）。issueクローズに続けて、ラベルも`status:in-review`から`status:closed`へ即時遷移させる（`transition_label`）。これを省き背景ポーリング（`close_watcher.py`、5分間隔）でのラベル更新のみに委ねると、承認直後の[2-2「指示出し操作直後の同期更新」](#2-2-データ取得仕様ポーリング)時点ではまだ`status:in-review`のままのため、レビュー待ち一覧の判定（ラベルのみを見る）からカードが即座には消えない不具合になる（issue #70フォローアップ）。ラベル遷移に続けて、マージ済みPRのheadブランチ（`feature/*`）も`gh api -X DELETE repos/{repo}/git/refs/heads/{branch}`で削除する（issue #72）。ブランチ削除はマージ・issueクローズ成功後の後始末に過ぎないため、`gh pr merge --squash --delete-branch`のようにマージと同一コマンドには含めず分離したステップとし、削除の失敗（保護ブランチ設定・既に削除済み等）は握りつぶしてログ出力のみに留める（マージ・issueクローズが既に成功している以上、承認レスポンスとしては成功を返す。`--delete-branch`を同一コマンドに含めた場合、ブランチ削除だけの失敗でコマンド全体が非0終了扱いとなり後続の`close_issue`が実行されなくなる、というissue #58と同種の不具合を再発させるリスクがあるため）。
   - **対応PRの解決方法（issue #206）**: 対象リポジトリのOPEN PR一覧（`gh pr list --repo {repo} --state open --json number,title,url,isDraft,headRefName,baseRefName,body,closingIssuesReferences`）から、**issueをcloseする意図の「対応PR」だけ**を候補とする（`github_client.list_linked_prs`）。対応PRの判定条件は、(a) GraphQLの`closingIssuesReferences`に当該issueが含まれる、または (b) PR本文に`Closes|Fixes|Resolves #<issue番号>`（直後が数字でない。`#770`等の誤マッチ回避。大文字小文字不問）が含まれる、のいずれか。(b)の本文検索は、issue番号の直後に日本語が続く記法（`#77で`等）でGitHub側の参照解析が効かないCJK境界問題（issue #82）の補完を兼ねる。`Closes`等を伴わない単なる`#<issue番号>`への言及（`Refs #N`・後続の修正PR・フォローアップPR）のみのPR、およびマージ済み・クローズ済みPRは候補に含めない（従来の「timelineの`cross-referenced`の最後の1件を採用」「`updatedAt`最新を採用」は廃止）。
     - **候補数ごとの挙動**: 候補が**ちょうど1件**ならそのPRを自動で対象とする（`IssueSummary.pr_number`にセット、`github_client.resolve_pr_number`も同条件）。**0件**なら承認は`ReviewMergeError`（502、「対応PRが見つかりません」）。**2件以上**なら自動マージせず、承認リクエストは409・`code: "pr_selection_required"`・`pr_candidates`（候補一覧）を返し、ユーザーにマージするPRを選択させる。ダッシュボードのレビュー待ちカードのPRリンクチップ（[2-4](#2-4-ダッシュボードの画面設計)）は`pr_number`が特定できた場合のみ表示する。`IssueSummary.pr_candidates`（`number`/`title`/`url`/`is_draft`/`head_ref_name`/`base_ref_name`）は`status:in-review`のissueについて常に候補一覧を保持する。また、`needs-human-decision`（判断待ち）のissueについても同じ`list_linked_prs`で候補を解決し、判断待ちカードにPRリンク（候補1件）・「PR候補 N件」チップ（複数）を表示する（issue #270）。判断待ちではPR未作成が通常のため、候補0件のときは「PR未特定」も含め何も表示しない。判断待ちカードにはマージ操作は無く、リンク表示のみ。候補が1件でもDraftの場合の自動マージ可否は設けない（`gh pr merge`自体がDraft PRのマージを拒否し、その場合は502になるため）。
@@ -144,7 +147,7 @@ Content-Type: application/json
   - **ローカルworktreeの同期**: 上記のブランチ削除はGitHub側（リモート）のみに対する操作であり、そのままではAgent Runner実行用のローカルgit worktree（[2-1](#2-1-対象リポジトリ一覧の管理)の`worktree_path`）が削除済みブランチをチェックアウトしたまま残ってしまう（issue #80）。そのためブランチ削除が成功した場合に限り、`orchestrator/orchestrator/worktree.py`の`sync_worktree_after_branch_delete`を呼び出し、対象worktreeを`git fetch origin develop` → `git checkout --detach origin/develop`（**ブランチ名`develop`ではなくdetached HEAD**で最新の内容に合わせる） → 削除済みブランチの`git branch -D`の順に同期する。detached HEADにしているのは、Agent Runner用worktreeとオーケストレータ自身のソースディレクトリが同一リポジトリのlinked worktreeであり、オーケストレータ側が常時`develop`ブランチをチェックアウト済みのため、Agent Runner用worktree側で`develop`という**ブランチ名**をチェックアウトしようとするとgitの「同じブランチを複数worktreeで同時チェックアウトできない」制約に必ず抵触して失敗するためである（issue #88、当初`git checkout develop`としていたところ本番環境で常に失敗することが判明し修正）。`fetch`・`checkout`が失敗する場合（ネットワーク不調・未コミットの変更が残っている等）はそれ以降の処理を行わずログ警告のみに留め、この処理自体の失敗は承認レスポンスの成功に影響しない（ブランチ削除失敗時と同様の握りつぶし方針）。また、[2-3「プロジェクト単位のディスパッチキュー」](#プロジェクト単位のディスパッチキュー)の`DispatchQueue.is_running(repo)`が真の間（＝同一プロジェクトの別issueでAgent Runnerが実行中の間）は、実行中セッションの作業ディレクトリを横から書き換えないようこの同期処理自体をスキップする。
 - `instruct`: ダッシュボードのテキストボックスから入力した**自由記述のメッセージ**をコメント投稿する。issueの状態を問わず送信可能（作業中issueへの割り込み指示を含む）。
 - `approve`/`instruct` はいずれも、[1章「自由記述指示によるラベル遷移ルール」](#自由記述指示によるラベル遷移ルール)に従ってラベルを更新した上で、[3章](#3-agent-runner連携設計)のAgent Runnerディスパッチを行う（対象プロジェクトが実行中でなければ即時、実行中ならプロジェクト単位のキューに追加し実行完了後に処理）。上記の`status:in-review`での`approve`はこの限りではない。
-- 却下（差し戻し）操作は設けない。判断待ちのissueに対して人間が取れる操作は「承認」と「自由記述での指示」のみとする。方針を変えたい場合も、却下という専用アクションではなく自由記述（`instruct`）でその旨を伝える（issue #55の設計検討で、`reject`は`instruct`と同様コメント投稿する点は同じで、ディスパッチせずAgent Runnerを起こさないだけの違いしかなく、UI上の区別も誤操作の元になるため廃止）。
+- 却下（差し戻し）操作は設けない。判断待ちのissueに対して人間が取れる操作は「自由記述での指示」（返信）のみとする（API上は`approve`も受け付けるが、ダッシュボードの判断待ちカードからは呼ばない。issue #325）。方針を変えたい場合も、却下という専用アクションではなく自由記述（`instruct`）でその旨を伝える（issue #55の設計検討で、`reject`は`instruct`と同様コメント投稿する点は同じで、ディスパッチせずAgent Runnerを起こさないだけの違いしかなく、UI上の区別も誤操作の元になるため廃止）。
 
 #### 新規タスク（新規issue）の作成
 
@@ -155,9 +158,12 @@ Content-Type: application/json
 {
   "title": "string",
   "prompt": "string",
-  "dispatch": "immediate" | "queued"
+  "dispatch": "immediate" | "queued",
+  "attachments": [{"name": "string", "mimeType": "string", "dataBase64": "string"}]
 }
 ```
+
+- `attachments`（任意、issue #301）: 画像・動画の添付。`gh issue create --attach`でissue本文に直接添付する（`gh issue create`が`--attach`に対応していない場合と、inbox項目の昇格（`issueNumber`指定）では、issueの作成・更新後、ディスパッチの前に添付付きのコメントを1件投稿する）。詳細は[2-4の「ダッシュボードからの画像・動画添付」](#ダッシュボードからの画像動画添付issue-301)を参照。
 
 - `gh issue create` 相当のAPIでissueを作成し、`status:todo` ラベルを付与する。issue本文には `prompt` をそのまま格納する。
 - `dispatch: "immediate"`: 作成直後に上記「既存issueへの指示」の `instruct` と同じ扱いで即時ディスパッチ（またはプロジェクトが実行中ならキュー）する。
@@ -183,7 +189,7 @@ Content-Type: application/json
   - 失敗種別（`error.code`）: `parse`（出力からタイトル・本文を取り出せない）/ `timeout`（600秒）/ `limit`（利用リミット）/ `failed`（その他）/ `interrupted`（再起動による中断）。
 - Slack通知: ジョブが`succeeded`または`failed`になった時点（修正指示による再生成も同様）で1回だけ通知する（`slack_notifier.PlanNotifier`。プロジェクト名・依頼内容の要約・結果（失敗は種別つき）・ダッシュボードへの導線（環境変数`DASHBOARD_URL`があればそのURL）を含む）。Webhook未設定・送信失敗は計画の結果に影響させない。読み取り専用モードでは通知しない。
 - 実行: `claude -p --output-format json --permission-mode plan`を、プロジェクトのworktreeを`cwd`にワンショット実行する。`--dangerously-skip-permissions`は使わず、`--disallowedTools Edit Write NotebookEdit Bash`で変更系ツールを禁止する（コード変更・ラベル操作・コメント投稿は行わせない）。実行前にworktreeを`origin/develop`最新のdetached HEADへ合わせる（未コミットの変更がある場合・fetch失敗時は触らずに続行）。
-- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す。`issue_plan.PlanRunner`はキューに積むだけで呼び出し元を待たせず、キューのワーカーが`run_job`で実行して結果を`PlanJobStore`へ書き込む。キュー待ち中に破棄されたジョブは実行しない。将来worktreeを動的に作成して並行化する際はここを差し替える。
+- キュー: 計画生成も[プロジェクト単位のディスパッチキュー](#プロジェクト単位のディスパッチキュー)に積み、自走タスクと順番に処理する（同一プロジェクトへの同時実行はしない）。ジョブは負のissue番号でキューに積まれ、`DispatchQueue.snapshot()`の既定の呼び出しでは`running`/`waiting`（実issueのみ）には含めず、`planning` / `plan_waiting`で件数を返す（処理状態チェック・`queuePosition`等の既存の利用箇所はこの既定動作のまま）。`GET /api/state`の`project_status[].queue`だけは`include_plans=True`で計画ジョブも含めて組み立て、`PlanRunner.job_id_for(job_number)`でジョブ番号から計画ジョブを引いて表示用のエントリにする（issue #335、[2-2](#2-2-データ取得仕様ポーリング)）。`issue_plan.PlanRunner`はキューに積むだけで呼び出し元を待たせず、キューのワーカーが`run_job`で実行して結果を`PlanJobStore`へ書き込む。キュー待ち中に破棄されたジョブは実行しない。将来worktreeを動的に作成して並行化する際はここを差し替える。
 - 進捗: ダッシュボードはジョブ一覧（`GET .../issue-plans`）のポーリングで、`status`と`queuePosition`から「キュー待ち（◯番目）」「計画中」「確認待ち」「失敗」を表示する（`/api/progress`は使わない）。
 - プロンプト: 出力形式（`{"title","body"}`のJSONをコードブロックで1つ）と調査の指示はプロンプト設定の`plan_issue_instruction`（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)）で編集・リセットできる。必須トークンは`"title"` / `"body"`、使えるプレースホルダは`{repo}` / `{user_name}`（`{issue_number}`は未作成のため不可）。修正指示時も同じプロンプトを使い、現在の計画と修正指示をユーザーメッセージとして渡す。
 - 画面: 新規タスク作成パネルの「自分で書く / AIに計画してもらう」切替、計画確認（タイトル・本文の直接編集、AIへの修正指示、「承認して登録」「やり直す」「キャンセル」）。依頼後はパネルを閉じてよく、inbox一覧の各項目に計画の状態バッジ（キュー待ち/計画中/確認待ち/失敗）と、確認待ち・失敗の計画を開く導線を持つ。新規タスク由来の未承認計画は、新規作成パネルを開いたときに一覧で復元する。デザインは[design-prompt-dashboard-diff-plan-issue.md](./design-prompt-dashboard-diff-plan-issue.md)（#287）と[design-prompt-dashboard-diff-plan-background.md](./design-prompt-dashboard-diff-plan-background.md)（#299）参照。
@@ -202,7 +208,7 @@ Content-Type: application/json
 - `instruct`（`approve`含む）または `dispatch: "immediate"` の新規issue作成のリクエストが届いた際、対象プロジェクトが実行中でなければ[3章](#3-agent-runner連携設計)のディスパッチを即座に行う。
 - 実行中であれば、そのメッセージ（issue番号・コメント本文）をプロジェクトごとのFIFOキューに追加する。実行中の `claude -p` プロセスが終了次第、キューの先頭のメッセージで次のディスパッチを `--resume` 付きで行う。複数メッセージが溜まっている場合は1つずつ順に処理する。
 - `DispatchQueue.is_running(repo)`（プロジェクト単位の実行中判定）に加え、`DispatchQueue.is_active(repo, issue_number)`でissue単位の実行中・待機中判定ができる（[2-2「孤立したin-progress検知」](#2-2-データ取得仕様ポーリング)、issue #50）。
-- `DispatchQueue.snapshot(repo)`（issue #233）は、ロック配下で実行中のissue番号（`running`、無ければ`None`）と待機中のissue番号リスト（`waiting`、FIFO順・同一issueの重複あり）を`QueueSnapshot`として返す。メッセージ本文は含めない。`GET /api/state`の`project_status[].queue`（[2-2](#2-2-データ取得仕様ポーリング)）とダッシュボードのプロジェクトチップのキュー表示（`ProjectQueue`）の元データになる。
+- `DispatchQueue.snapshot(repo)`（issue #233）は、ロック配下で実行中のissue番号（`running`、無ければ`None`）と待機中のissue番号リスト（`waiting`、FIFO順・同一issueの重複あり）を`QueueSnapshot`として返す。メッセージ本文は含めない。既定では計画生成ジョブ（負の番号）を除き、`include_plans=True`のときは計画生成ジョブも含めた実際のFIFO順で返す（issue #335。`project_status[].queue`のみがこちらを使う）。`GET /api/state`の`project_status[].queue`（[2-2](#2-2-データ取得仕様ポーリング)）とダッシュボードのプロジェクトチップのキュー表示（`ProjectQueue`）の元データになる。
 
 #### 処理状態チェック・再実行API（issue #215）
 
@@ -232,6 +238,11 @@ Content-Type: application/json
 - 現在のラベルが`needs-human-decision`でない場合は409。未登録リポジトリは404。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では他の書き込み系APIと同様に403。
 - ダッシュボードの判断待ちカードの「レビュー待ちに変更」ボタン（確認ダイアログ付き）から呼ばれる。デザインは[design-prompt-dashboard-diff-relabel.md](./design-prompt-dashboard-diff-relabel.md)参照。
 
+**`POST /api/projects/{repo}/issues/{issue_number}/limit-wait/cancel`（利用リミット待ちの自動再開の取り消し、issue #331）**
+
+- 最新コメントが利用リミット待ちマーカー付きの判断待ちissueに、取り消しコメント（`<!-- producer-desk:limit-wait-cancel -->`、`BOT_COMMENT_MARKER`付きのためcomment_watcherの再ディスパッチ対象にならない）を投稿する。ラベルは変えず、ディスパッチもしない。最新コメントがマーカーでなくなるため、`limit_watcher`の自動再開対象から外れる（[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)）。
+- リクエストボディは任意（`progressId`のみ。`on_stage`は`comment`）。応答は`200 {"cancelled": true}`。利用リミット待ちでない（マーカーの後にコメントがある・判断待ちでない・クローズ済み）場合は409。未登録リポジトリは404、対象issueが見つからない場合は404、`gh`の失敗は502。issue単位の`InstructInFlightLocks`を`instruct`と共有し、処理中は409。`ORCHESTRATOR_READ_ONLY=1`では403。
+
 **inbox API（issue #288）**
 
 - `POST /api/projects/{repo}/inbox`: inbox項目を作成する。ボディは`{"title"（必須）, "body"（任意）, "kind"（`bug`/`enhancement`/`other`、必須）}`。`create_issue`＋`inbox`ラベル＋種別ラベル1つを付与し、状態ラベルは付けずディスパッチもしない。種別が3つ以外・titleが空は400、対象リポジトリに`inbox`/種別ラベルが無い場合は作成前に`gh label create`で補う（`github_client.ensure_labels`）。応答は`201 {"issue_number": n}`。
@@ -245,7 +256,25 @@ Content-Type: application/json
 
 視覚的な画面設計（レイアウト、ワイヤーフレーム、スタイル）は本書では扱わず、Claudeのチャットへの指示プロンプトとして[design-prompt-dashboard.md](./design-prompt-dashboard.md)にまとめている。画面はダッシュボードとプロジェクト別issue一覧の2つで、サイドバー（モバイルはボトムナビ）で切り替える（issue #116、[design-prompt-dashboard-diff-issues-page.md](./design-prompt-dashboard-diff-issues-page.md)）。表示すべきデータ項目・操作は[2-2](#2-2-データ取得仕様ポーリング)・[2-3](#2-3-指示出しapi内部api)の仕様に準拠する。
 
-- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。
+- **inbox（issue #288）**: プロジェクト別issue一覧の上部に、破線枠の「inbox」セクション（件数バッジ・折りたたみ可）を置く。1行の登録フォーム（種別3択＋一言メモ＋任意の補足＋追加）、登録日時の新しい順の項目一覧（種別バッジ・タイトル・issue番号・登録日時）、項目ごとの「計画する」（新規タスク作成の「AIに計画してもらう」をその項目を入力元にして開く。承認すると新規作成ではなく昇格）・「編集」（インライン）・「削除」（確認ダイアログ付き、`not planned`でクローズ）、空状態・処理中・エラー表示を持つ。デザインは[design-prompt-dashboard-diff-inbox.md](./design-prompt-dashboard-diff-inbox.md)参照。展開中のinbox項目はキーボードのカーソル移動（`j` / `k`）の対象に含まれ、`Enter`で「計画する」を押せる（issue #339、[issue一覧画面のキーボードショートカット](#issue一覧画面のキーボードショートカットissue-322)参照）。
+
+#### issue一覧画面のキーボードショートカット（issue #322）
+
+画面遷移ショートカット`d` / `i` / `p` / `s`（issue #251、全画面共通）に加え、プロジェクト別issue一覧画面の中では次のキーで操作できる。キーの対応表は`ISSUE_LIST_SHORTCUTS`（`dashboard/src/lib/shortcuts.ts`）に1か所で定義し、画面下部のショートカットガイドもこの表から作る。
+
+| 対象 | キー | 動作 |
+|---|---|---|
+| プロジェクト（上部のタブ） | `h` / `l` | 左／右のプロジェクトへ切り替える（`/projects/<repo>`へ遷移。端で止まり、反対側へ回り込まない） |
+| inbox・issue一覧 | `j` / `k` | カーソル（フォーカス行）を1つ下／上へ移す。押しっぱなしで連続移動する。未選択のときは`j`で先頭、`k`で末尾から始まり、端で止まる。inbox項目（展開中のみ。折りたたみ中は除く）→ issue一覧の行を1本の並びとして移動する（issue #339） |
+| inbox・issue一覧 | `Enter` | カーソル行の主な操作を実行する（issue #339）。issueの行は「返信する」（引用の取得中は何もしない）、inbox項目は「計画する」。inbox項目が計画を依頼中・計画ジョブあり（「計画を開く」等）・編集中のときは何もしない |
+| issue一覧 | `x` | カーソル行の行頭チェックボックスの選択（一括変更用、issue #305）を切り替える |
+| issue一覧 | `Esc` | issueの選択をすべて解除する（一括変更バーの「解除」と同じ） |
+| 状態フィルタ | `Shift`+`h` / `Shift`+`l` | 表示中のフィルタボタンの並びで左／右のフィルタを選ぶ（端で止まる） |
+
+- **カーソルとチェックボックスの選択は別物**として扱う。カーソルはissue番号で持ち（inboxとissueは同じリポジトリのissue番号なので重複しない）、移動順は`cursorOrder`（inbox項目を`sortInbox`の順 → issue一覧の表示順、inbox折りたたみ中はissue一覧のみ）で作る。再取得・絞り込み・inboxの折りたたみで行が表示から消えたときは、直前の表示順で後ろにあった最も近い行（無ければ前の行）へ寄せ、どちらも無ければ未選択に戻す。カーソル行が画面外なら`scrollIntoView({ block: "nearest" })`で見える位置までスクロールする。プロジェクト切替でページがマウントし直されるため、カーソル・選択・フィルタは初期化される。
+- **無効になる条件**: 文字入力中（INPUT/TEXTAREA/SELECT/contentEditable）、IME変換中、Ctrl/Meta/Alt付き、処理済みイベント、モーダル・ポップオーバー（`role="dialog"` / `aria-modal="true"`。個別編集・一括変更・MetaFilterのドロップダウンを含む）表示中、返信・新規作成のバー（ComposerBar）表示中。`Enter`は、これらに加えてボタン・リンク等の操作できる要素（`BUTTON` / `A` / `SUMMARY`・`role="button"`等）にフォーカスがあるときも反応せず、ブラウザ本来の動作（フォーカス中の要素を押す）を優先する。押しっぱなし（repeat）・Shift付きの`Enter`も反応しない。`Esc`はこれらが開いているとき、選択解除ではなくそちらの「閉じる」を優先する。`H` / `L`以外はShift付きでは反応しない（Shift付きのキーは画面遷移ショートカット側では無視されるため衝突しない）。
+- **`Enter`の実装**: 押せる主操作ボタン（issue行の「返信する」、inbox行の「計画する」）に`data-shortcut-enter`を付け、カーソル行（`data-cursor-target`）の中で表示中かつ無効でない目印付きボタンを`click()`する。表示条件・無効状態の判定はボタン側だけに持ち、ショートカット側で二重に持たない。
+- **表示**: カーソル行（PCの行・モバイルのカード・inbox行）を強調表示し`aria-current`を付ける。タブ・フィルタボタンには`aria-keyshortcuts`を付ける。PC表示では画面下部にショートカットガイドを`kbd`で表示し、モバイル表示（ボトムナビ表示幅）では表示しない。デザインは[design-prompt-dashboard-diff-keyboard-shortcuts.md](./design-prompt-dashboard-diff-keyboard-shortcuts.md)・[design-prompt-dashboard-diff-inbox-shortcuts.md](./design-prompt-dashboard-diff-inbox-shortcuts.md)（inbox・`Enter`、issue #339）参照。
 
 #### コメント添付ファイル（画像・動画）の表示（issue #218）
 
@@ -258,6 +287,38 @@ UI変更のレビュー用に、Agent Runnerは`gh issue comment <n> --attach <f
   - **SSRF対策**: プロキシ対象は`https://github.com/user-attachments/(assets/<uuid>|files/<id>/<name>)`の形式に限定し、リダイレクト先も`githubusercontent.com`/`amazonaws.com`/`github.com`配下のhttpsに限定する。
   - 取得失敗時はGitHubのステータス（権限が無い・存在しない場合は404）をそのまま返す。
 - **実行ホストの前提**: `gh`がv2.99.0以上であること。満たさない場合、オーケストレータは起動時にログへ警告する。
+
+#### ダッシュボードからの画像・動画添付（issue #301）
+
+返信欄（`instruct`）と新規タスク作成の手動入力（`POST /api/projects/{repo}/issues`）から、画像・動画を添付して送れる。添付はGitHubの`user-attachments`として残るため、投稿後は上記の`CommentBody`・ライトボックスでそのまま表示される。
+
+- **対応形式**: 画像 png/jpg/jpeg/gif、動画 mp4/mov/webm。いずれも`gh --attach`で付けられる形式である。svgも`gh`では付けられるが、スクリプトを埋め込める（XSS）ため除外する。pdf/txt/zip等は、GitHubに`user-attachments`へアップロードする公開APIが無いため扱わない。
+- **上限**: 1ファイル10MB（画像・動画とも。無料プランの動画上限に合わせる）、1回10ファイル、合計50MB。値は`orchestrator/orchestrator/media_uploads.py`と`dashboard/src/lib/mediaAttach.ts`の定数にまとめ、両者を一致させる。
+- **ダッシュボード**: 添付ボタン（複数選択）・テキストエリアへのドラッグ&ドロップ・クリップボードからの貼り付け（スクリーンショット）で選ぶ。形式 → 1ファイルのサイズ → 件数 → 合計の順にクライアント側でも検証し、弾いたファイルは理由を表示してトレイに入れない。添付が1件以上あれば、返信は本文が空でも送信できる（新規作成はタイトル・指示内容が従来どおり必須）。計画モードには添付を付けない。デザインは[design-prompt-dashboard-diff-media-attach.md](./design-prompt-dashboard-diff-media-attach.md)。
+- **送信方式**: オーケストレータは標準ライブラリの`http.server`で動きmultipartのパーサを持たないため、添付はbase64にしてJSONの`attachments: [{name, mimeType, dataBase64}]`として既存のAPIに載せる。Next.jsのroute（App Router）は本文を`request.text()`でそのまま中継し、ボディサイズの上限は無い。送信は他の操作と同じくバックグラウンドのジョブとして行い、ジョブの段階の先頭に「添付をアップロード」が加わる（オーケストレータが添付を受信・保存した時点で`attach`を通知する）。失敗時の「再試行」は同じ添付をそのまま再送する。
+- **検証（オーケストレータ）**: 形式は拡張子とマジックバイトの両方で確かめ、対応形式でないもの・中身が拡張子と一致しないもの・base64として不正なもの・上限を超えるものは400で拒否する。リクエスト全体は`Content-Length`で判定し、添付付きリクエスト用の上限（合計上限のbase64換算＋1MB）を超えたら413を返す。`gh`がv2.99.0未満（起動時の`gh --version`で判定）の場合、添付付きのリクエストは400で拒否する（テキストだけの送信は従来どおり動く）。読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では他の書き込み系APIと同様に403。
+- **一時保存**: `gh --attach`に渡し、Agent Runnerに読ませるため、worktreeの外の`config/media_uploads/<owner>__<name>/<issue番号>/<uuid>.<ext>`（`.gitignore`対象。環境変数`MEDIA_UPLOADS_DIR`で変更可、新規作成はissue番号確定前のためリクエストごとの`new-<uuid>/`）に保存する。ファイル名はサーバ側で採番し、クライアントのファイル名はパスに使わない。
+- **GitHubへの投稿**: 返信は`gh issue comment <n> --repo <repo> --body-file - --attach <file>...`で投稿し、本文には`post_comment`と同じく`BOT_COMMENT_MARKER`を付ける（comment_watcherの二重検知防止）。新規作成は`gh issue create --attach`でissue本文に直接添付する（一部の添付だけ失敗した場合もissueは作成済みのため、二重作成を避けてそのissueを使う）。
+- **Agent Runnerへの受け渡し**: Privateリポジトリの`user-attachments`のURLは認証が無いと取得できないため、ディスパッチキューに渡すメッセージの末尾にだけ「添付ファイル（Readツールで確認できます）:」と`- <元ファイル名> → <絶対パス>`の一覧を追記し、AIにローカルのファイルを読ませる。GitHubのコメント本文には入れない。
+- **後片付け**: 正本はGitHubの`user-attachments`にあるため、ローカルのファイルは一時ファイルとして扱う。ディスパッチした場合はAgent Runnerの実行が終わったら（成否を問わず）メッセージに追記したパスを削除する。ディスパッチしなかった場合（「あとで着手」・投稿の失敗）はリクエストの処理後すぐに削除する。異常終了などで残ったファイルは、オーケストレータの起動時に7日を過ぎたものだけ削除する。
+  - 「あとで着手（todo）」で登録したissueは、後から着手させる時点ではローカルのファイルが残っていない。AIはissue本文の`user-attachments`のURLしか参照できないため、Privateリポジトリでは画像を確認できない（既知の制約）。
+
+### 2-5. 返信欄の定型文管理（issue #323）
+
+既存issueへの返信（`ComposerBar`の返信モード）で、よく使う指示文を定型文として登録し、選んでカーソル位置に挿入できるようにする。定型文は全プロジェクト共通の固定文で、プレースホルダ（`{repo}`等）は扱わない（必要になれば別issue）。新規タスク作成の指示欄は対象外。
+
+- **保存形式**: `config/snippets.yaml`（`.gitignore`対象）。`snippets:`配下に`{id, title, body}`の配列を保持し、配列順を表示順とする。`id`はオーケストレータが採番する（12桁の16進数）。パスは環境変数`ORCHESTRATOR_SNIPPETS_PATH`で上書きでき、`bin/dev_instance.sh`は`.dev-run/snippets.yaml`を使う。独自DBは新設しない（[3-6](#3-6-agent-runnerプロンプト設定管理issue-149)と同様、アプリケーション設定にあたる）。
+- **検証**: タイトルは空不可・改行不可・50文字以内（文字数は入力どおりに数え、保存時に前後の空白を除去する）、本文は空不可・2000文字以内、登録は50件まで（文字数はサロゲートペアを1文字と数える）。違反は400（`error`・`errors`）。ダッシュボードも同じ上限で入力中に検証し、保存ボタンを無効化する（`dashboard/src/lib/snippets.ts`）。
+- **書き込みの安全性**: `orchestrator/orchestrator/snippets.py`が`threading.Lock`で読み書きを直列化し、一時ファイル＋`os.replace`で原子的に差し替える。YAMLが壊れている場合、一覧取得は空配列で応答し（オーケストレータは落ちない）、追加・更新・削除・並び替えの際は`snippets.yaml.broken-<時刻>`へ退避して空から書き直す。書き込み失敗は500。
+- **内部API**（`server.py`。ダッシュボードの`/api/snippets`以下はオーケストレータへそのままプロキシする）:
+  - `GET /api/snippets` — `{"snippets": [{id, title, body}, ...]}`
+  - `POST /api/snippets` — `{"title", "body"}`で末尾に追加（201、追加した定型文を返す）
+  - `PUT /api/snippets/{id}` — タイトル・本文を更新（並び順は変えない）。存在しない`id`は404
+  - `DELETE /api/snippets/{id}` — 削除し、削除後の一覧を返す。存在しない`id`は404
+  - `PUT /api/snippets/order` — `{"ids": [...]}`の順に並べ替える。`ids`が現在の全idと過不足・重複なく一致しない場合（別画面での追加・削除後の古い一覧等）は409、`ids`が文字列の配列でない場合は400。ダッシュボードは409・404を受けたら一覧を取得し直す
+  - リクエストボディは64KiBまで（超過は413）。書き込み系は読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では403を返し、ダッシュボードはエラーを表示する。
+- **返信欄での挿入**: 返信モードの「使用するモデル」セレクトの下に「定型文」セレクトを置く。返信欄を開くたびに一覧を取得し直す。選ぶと、textareaの`selectionStart`〜`selectionEnd`を本文で置き換え（範囲選択が無ければカーソル位置に挿入）、カーソルを挿入文の末尾へ移してtextareaにフォーカスを戻す（純関数`insertAtCursor`）。挿入後はセレクトを「定型文を選択…」へ戻し、同じ定型文を続けて挿入できる。`/model`ディレクティブ（`applyModelDirective`）は本文先頭の行だけを扱うため、挿入と独立して動作する。0件・取得失敗時はセレクトを無効にして管理画面へのリンクを表示し、返信の送信は妨げない。返信先未選択・送信中（`replyBusy`）は無効。
+- **ダッシュボード**: サイドバー・モバイルのボトムナビの「定型文」、またはショートカット`s`で`/snippets`を開く。一覧（並び替えは上へ／下へ）と編集フォームの2ペインで、新規追加・編集・削除（確認ダイアログ付き）を行う。画面デザインは[design-prompt-dashboard-diff-snippets.md](./design-prompt-dashboard-diff-snippets.md)の依頼に基づく。
 
 ## 3. Agent Runner連携設計
 
@@ -293,6 +354,7 @@ echo "<指示内容>" | claude -p \
 
 - **ヘルスチェック**: ワンショット実行のため常時稼働のプロセス監視（ヘルスチェックエンドポイント等）は設けない。プロセスの終了コード（0=正常終了、非0=異常終了）を確認する。異常終了時はissueにコメントを投稿し、`needs-human-decision` ラベルに遷移させて人間の確認を促す（正常終了時のラベル遷移は、Agent Runner自身が実行中に `gh` コマンドで行う自己付与を第一とする。[1章](#1-データモデル状態遷移設計)参照）。**実行中の進捗確認は、プロセス監視ではなく後述のログ収集（`tail -f`によるリアルタイム追跡）で行う（issue #49）。**
   - **異常終了時のコメント文面**: 異常終了は大抵の場合APIリミット到達（429）が原因であり、その場合は終了コード・ログパスを提示しても人間が読むべき情報にならない（issue #146）。`run_agent_runner`はNDJSON出力の最後の`"type":"result"`イベント（`_parse_result_payload`、利用量記録用の`_extract_usage_records`と共通の抽出処理`_classify_run_error`（issue #60）を経由）から`is_error`/`api_error_status`を参照し、`api_error_status == 429`かつ`usage_store.parse_limit_reset_text()`で`result`の自由文から解除予定時刻（例: `resets 1pm (Asia/Tokyo)`）を抜き出せた場合に限り、「Claude CodeのAPI利用リミットに達したため停止しました」という趣旨のメッセージ（解除予定時刻付き）に切り替える（`agent_runner.py`の`_build_failure_comment`）。**429到達時でも`result`が空・非文字列で解除予定時刻等の情報が一切得られない場合は、情報量ゼロのメッセージにするより従来通り終了コード・ログパスを含むメッセージにフォールバックする**（予期しない例外等も同様）。**429以外の異常終了では、`result`が非空の文字列として得られていればコメント本文に「エラー内容: <result>」として含め（2000文字を超える場合は切り詰めて「…（省略、詳細はログを参照）」を付す）、ログパスも詳細調査用に併記する。`payload`が`None`（NDJSON出力が壊れている・`result`イベントが無い）または`result`が空/非文字列の場合は従来通りログパスのみのメッセージにフォールバックする（issue #190）**。いずれの場合も`needs-human-decision`へのラベル遷移自体は変わらない。
+    - **利用リミット待ちマーカー（issue #331）**: 429到達時に、解除予定時刻の記述を`usage_store.parse_limit_reset_at()`で絶対時刻に変換できた場合は、コメント本文に「解除予定の<M/D HH:MM>（JST）を過ぎたら同じセッションで自動的に再開する。別モデルで今すぐ再開・自動再開の取り消しはダッシュボードの判断待ちカードから行う」旨を加え、機械可読マーカー`<!-- producer-desk:limit-wait {"reset_at": "<ISO 8601>", "attempt": <連続回数>} -->`（`limit_wait.LIMIT_WAIT_MARKER_PREFIX`）を埋め込む。変換できない場合・プロジェクト設定`limit_auto_resume: false`・(B) LiteLLM Proxy経由での実行時はマーカーを付けず従来どおりの文面にする。連続の自動再開が上限（`limit_auto_resume_max_attempts`、既定3回）に達した場合もマーカーを付けず、その旨を本文に書く。遷移先はいずれも`needs-human-decision`（[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)参照）。
 - **正常終了時の決定的フォールバック**: プロセスが正常終了（exit 0）しても、Agent Runnerが上記の自己申告ラベル遷移（`AGENT_RUNNER_LABEL_INSTRUCTION`）を実行し忘れることがある（issue #70）。正常終了時、issueは必ず「PR作成済み（`status:in-review`）」「人間への確認が必要（`needs-human-decision`）」のいずれかに到達している設計であるため、オーケストレータは`run_agent_runner`の成功分岐でissueコメント投稿後に現在のラベルを再取得し、`status:in-progress`のまま変化していなければ（＝`needs-human-decision`・`status:in-review`いずれにも自己遷移していなければ）常に異常とみなし、`needs-human-decision`へ強制的に遷移させる（`result`テキストの自然文判定は行わない。既存の「異常終了時は`needs-human-decision`に強制遷移」ロジックと対称的な構造。issue #78）。Agent Runnerが既に自己遷移済みの場合、`transition_label`の冪等性によりこのフォールバックは何も行わない。
   - **遷移先の判定（issue #274）**: `status:in-progress`のまま正常終了した場合、作業ブランチ（worktreeのカレントブランチ）をheadとするオープンPRがあれば、既存PRへの追加pushだけで終えて自己遷移を怠ったケースとみなして`status:in-review`へ遷移させる（あわせてPR本文へのissue参照補完を行う）。オープンPRが無い（または判定に失敗した）場合のみ従来どおり`needs-human-decision`へ遷移させる。CI待ちマーカーがある場合は従来どおりスキップする。また`AGENT_RUNNER_LABEL_INSTRUCTION`に「既存PRへの追加pushで終える場合も最終的に`status:in-review`へ遷移させる」旨を明記している。
   - **CI完了待ちとの区別（issue #173）**: 上記フォールバックは当初「`status:in-progress`のまま正常終了＝常にラベル遷移漏れ」と一律に扱っており、CI完了待ちのため意図的に（`AGENT_RUNNER_LABEL_INSTRUCTION`の指示通りに）ターンを終了したケースも区別できずに`needs-human-decision`へ落としてしまっていた。`run_agent_runner`は現在、最終応答（`result`）から`agent_runner.extract_ci_wait_marker`でCI待機マーカーの有無を確認し、マーカーが検出された場合のみこのフォールバックをスキップして`status:in-progress`を維持する。CI完了の検知・後続処理の自動再開は3-5節の`orchestrator.ci_watcher`が担う。
@@ -332,12 +394,28 @@ issue #152/#153は「Agent Runnerが能動的にCI待ちを`needs-human-decision
   - 既にディスパッチ中（前回ポーリングでのresumeが進行中等）のissueは`DispatchQueue.is_active`で判定しスキップし、二重ディスパッチを避ける。
 - **無限待機の防止**: `CiWaitTracker`がissueごとにCI待機マーカーを最初に検出した時刻を記録し、`CI_WAIT_TIMEOUT`（既定6時間、`config/projects.yaml`の`ci_wait_timeout_hours`で変更可）を超えてもCIが完了しない場合は、オーケストレータが直接`needs-human-decision`へ遷移させ、その旨をissueコメントで通知するフェイルセーフを備える。
 
+### 3-5-1. 利用リミット解除時の自動再開（issue #331）
+
+[要件定義書 3-4](./requirements.md#3-4-コスト制約)の「(A)選択時は利用リミット到達時にリセットまで待機する」を、3-5節のCI待ちと同じ「マーカー＋オーケストレータのポーリング」方式で実現する。
+
+- **解除予定時刻の絶対時刻化**: `usage_store.parse_limit_reset_at(text, recorded_at)`が、`parse_limit_reset_text`で抜き出した記述（実ログで確認済みの`resets 1pm (Asia/Tokyo)` / `resets 6:30pm (Asia/Tokyo)`のほか、日付付きの`resets Nov 28, 3pm (...)`・`resets Nov 28 at 3pm`、24時間表記の`resets 13:00`）を、記録時刻を基準にタイムゾーン付きの絶対時刻へ変換する。時刻のみなら記録時刻以降で最初にその時刻になる日時、日付付きなら記録時刻の年（1日以上過去になる場合は翌年）とする。括弧内のタイムゾーン名は`zoneinfo`で解決し、無いときはJSTとみなす。書式不明・解決できないタイムゾーン名・am/pmも分も無い時刻（12/24時間表記が判別できない）は`None`を返し、推測で補わない。
+- **Agent Runner異常終了時**: 3-2節のとおり、変換できた場合に限り失敗コメントへ利用リミット待ちマーカーを付け、`needs-human-decision`へ遷移させる（判断待ち一覧に出して人間が選べるようにするため、`status:in-progress`には残さない）。プロジェクト設定（`config/projects.yaml`の`Project`）の`limit_auto_resume`（既定`true`）が`false`なら付けない。
+- **オーケストレータ側（`orchestrator/orchestrator/limit_watcher.py`）**: `main.py`の`on_issues_fetched`から、`ci_watcher`の後にポーリングのたびに`process_limit_waiting_issues`を呼ぶ。対象は、OPENかつ`needs-human-decision`で、**最新コメント**が利用リミット待ちマーカー付きのBot投稿（`BOT_COMMENT_MARKER`付き）のissue。
+  - 現在時刻が解除予定時刻＋余裕（`LIMIT_RESUME_GRACE`、3分）以降になったら、`status:in-progress`へ冪等に遷移させ（`transition_label`）、`DispatchQueue.enqueue`で既存セッションを`--resume`する。再開メッセージは「解除予定時刻を過ぎたため自動で再開した。中断した作業の続きを進める」趣旨で、連続回数のマーカー`<!-- producer-desk:limit-resume {"attempt": n} -->`を含む。
+  - 既にディスパッチ中（`DispatchQueue.is_active`）のissueはスキップする。`gh`の失敗はポーリングループへ伝えず警告ログを出し、次回に再試行する。読み取り専用モード（`ORCHESTRATOR_READ_ONLY=1`）では`on_issues_fetched`自体が何もしないため自動再開しない。
+  - マーカーの後に人間のコメント（返信・`/model`指定）や取り消しコメントが付けば、最新コメントではなくなるので自然に対象外になる。待機状態はコメントから毎回導けるため、オーケストレータを再起動しても待機は失われない（追加の永続化ファイルは持たない）。
+- **無限ループ防止**: 自動再開後にまた429になった場合、`run_agent_runner`は再開メッセージの連続回数を引き継いで`attempt + 1`のマーカーを付ける。上限（`limit_auto_resume_max_attempts`、既定3）を超える場合はマーカーを付けずに判断待ちで止め、その旨をコメントする。人間の指示で再開した場合は回数が0から数え直しになる。
+- **人間の選択肢（ダッシュボードの判断待ちカード）**: 集計API（`GET /api/state`）は判断待ちissueに`limit_wait: {"reset_at", "attempt"}`（自動再開予定のときのみ、それ以外は`null`）を付けて返す。カードは「利用リミット待ち」と自動再開予定時刻・残り時間を表示し、次の操作を提供する。
+  - **別モデルで今すぐ再開**: LiteLLMのモデルエイリアス（プロジェクト設定API`GET /api/projects/{repo}/settings`の`available_models`）を選び、既存の`instruct`で`/model litellm:<alias>`行＋再開メッセージをissueコメントとして投稿する（[4章](#実行手段の選択自走タスク本体issue-174)の都度指示）。この指定は`execution_overrides.json`に保存され以降も使われるため、UIでその旨と`/model claude_code`で戻せることを示す。
+  - **自動再開を取り消す**: `POST /api/projects/{repo}/issues/{issue_number}/limit-wait/cancel`（[2-3](#2-3-指示出しapi内部api)）で取り消しコメントを投稿する。判断待ちのまま、返信での指示を待つ。
+- **対象外**: AI計画ジョブ（`issue_plan.py`の`limit`失敗）の自動再試行、(B) LiteLLM Proxy経由のプロバイダ側レート制限（429）。
+
 ### 3-6. Agent Runnerプロンプト設定管理（issue #149）
 
-Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の6定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
+Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runner.py`の7定数）。これらとは別に、計画生成用の`plan_issue_instruction`（`issue_plan.py`）も同じ仕組みで編集できると、承認時の定型コメント（`instruct.APPROVE_DEFAULT_MESSAGE`）は、ダッシュボードから閲覧・編集できる。
 
 - **保存形式**: `config/prompts.yaml`（`.gitignore`対象、`config/projects.yaml`と同様にオーケストレータのみが読む設定ファイル）。キー→本文の**上書き分のみ**を`prompts:`配下に保持し、キーが無ければコード内蔵のデフォルト値を使う。デフォルトと同一の本文を保存した場合・リセットした場合は上書きを削除する。パスは環境変数`ORCHESTRATOR_PROMPTS_PATH`で上書きできる。独自DBは新設しない（issueの状態管理を正とする方針はissue状態に関するもので、本設定はアプリケーション設定にあたる）。
-- **編集対象**: AIの動作に影響する以下9種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
+- **編集対象**: AIの動作に影響する以下10種をすべて編集可能とする（使ってみて不要なものは対象から外していく）。
 
   | キー | 内容 | 必須トークン |
   | --- | --- | --- |
@@ -345,6 +423,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   | `comment_marker_instruction` | コメントマーカー付与・最終応答の扱い | `<!-- producer-desk:bot-comment -->` |
   | `pr_instruction` | PR作成時の指示（現状はPR本文の`Closes #<issue番号>`記法） | なし |
   | `final_message_instruction` | 最終応答（人間向けissueコメント）の書き方 | なし |
+  | `language_instruction` | 最終応答（「Agent Runner実行結果:」コメント）・issueコメント・PR本文を日本語で書かせる指示。グローバルCLAUDE.mdが適用されず、対象プロジェクトのCLAUDE.mdに言語指定が無いと途中から英語になる事象（focara#203）への対策 | なし |
   | `attachment_instruction` | UI変更のレビュー用の画像・動画添付（`gh issue comment --attach`、静止画優先、`.webm`録画）の指示 | なし |
   | `dev_instance_instruction` | 動作確認用のorchestrator・dashboardを`bin/dev_instance.sh`経由で起動・停止させ、名前・ポート指定のkill（`pkill`等）の禁止、`NODE_ENV`の除去、読み取り専用モード、見た目を確認できなかった場合の原因明記の指示（issue #238・#241） | なし |
   | `plan_issue_instruction` | 新規タスク作成の「AIに計画してもらう」で、やりたいことからissueのタイトル・本文を作成させる指示（出力JSON形式、読み取り専用の制約。issue #287） | `"title"` / `"body"` |
@@ -366,7 +445,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - `PUT /api/prompts/{key}` — `{"text": "..."}`で本文を保存。ボディがJSONオブジェクトでない・`text`が文字列でない・検証エラーは400（`error`・`errors`）、未知のキーは404、256KiB超は413、書き込み失敗は500
   - `DELETE /api/prompts/{key}` — 上書きを削除しデフォルトへ戻す
 - **ダッシュボード**: サイドバーの「プロンプト設定」から`/prompts`を開く。画面デザインは[design-prompt-dashboard-diff-prompt-settings.md](./design-prompt-dashboard-diff-prompt-settings.md)の依頼に基づく。
-- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints`）が返信UIの引用領域でパースして番号付きで列挙する。
+- **判断事項セクションの書式仕様（issue #234、唯一の定義）**: `needs-human-decision`を付与する最終応答には、プロデューサーが答えるべき判断事項を機械的に抽出できるよう、次の書式のセクションを含める。判断が不要な場合はセクションを出さない。`status:in-review`へ遷移する最終応答でも、承認前に判断してほしい事項があれば同じ書式で併記してよい（issue #324）。`final_message_instruction`（`agent_runner.AGENT_RUNNER_FINAL_MESSAGE_INSTRUCTION`）がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`DECISION_POINTS_HEADING` / `extractDecisionPoints` / `cardDecisions`）が返信UIの引用領域、判断待ちカード（`DecisionCard`、issue #325）、レビュー待ちカード（`ReviewCard`、issue #324）でパースして番号付きで列挙する。カードでは、セクションが無い・書式に従っていない場合は従来の1行要約へフォールバックする（レビュー待ちカードでは後述の作業結果セクションも無い場合に限る）。
   ```
   **判断が必要な事項**
   1. 〇〇をA案／B案のどちらで進めるか
@@ -378,6 +457,19 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
   - 判断事項は行頭の`1.`形式の番号付きリスト、選択肢はその下にインデントした`-`箇条書き。セクションは、次の見出し行・番号付きでも箇条書きでもないインデント無しの行で終わる。コードブロック内の同名見出しは対象外。
   - セクションが無い・リストが空・書式に従っていないコメント（過去の最終応答を含む）、およびissue本文は抽出せず、従来どおりの引用表示にフォールバックする（判断事項を推測で補わない）。
   - 画面デザインは[design-prompt-dashboard-diff-decision-points.md](./design-prompt-dashboard-diff-decision-points.md)の依頼に基づく。
+- **作業結果セクションの書式仕様（issue #324、唯一の定義）**: `status:in-review`へ遷移して終える最終応答には、CI・コードレビューの結果を機械的に抽出できるよう、次の書式のセクションを必ず含める。`final_message_instruction`がAIへこの書式を指示し、ダッシュボードの`dashboard/src/lib/comment.ts`（`WORK_REPORT_HEADING` / `extractWorkReport`）がレビュー待ちカード（`ReviewCard`）でパースして表示する。判断事項がある場合は、上記の判断事項セクションを併記してよい。
+  ```
+  **作業結果**
+  - CI: 完了
+  - レビュー: 指摘3件（対応済2件・未対応1件）
+  ```
+  - 見出しは行全体を`**`で囲んだ固定文言`作業結果`（末尾の`:`/`：`、`##`等のMarkdown見出し記法は許容）。文言を変える場合は`agent_runner.py`・`comment.ts`・本節を同時に更新する。
+  - 各項目は見出し直後の`-`箇条書きで`<ラベル>: <値>`（全角コロン可、値のインラインコード記法は無視）。セクションは、項目の後の空行または箇条書きでない行で終わる。コードブロック内の同名見出しは対象外。
+  - `CI`の値は`完了`（CIが正常終了した）または`未設定`（CIワークフローが無いリポジトリ）。正常終了してから報告する運用のため、失敗・実行中は想定しない。
+  - `レビュー`の値は`未実施`、または`指摘X件（対応済X件・未対応X件）`（括弧は半角可、区切りは`・`/`、`等を許容。指摘0件の場合のみ`指摘0件`だけの省略形も可）。対応済＋未対応が指摘件数と一致しない場合は読めないものとして扱う。未対応の指摘がある場合、その理由は最終応答の本文に書き、カードでは件数だけを示す。
+  - 1項目でも読めない行は、その項目だけ表示しない。セクションが無い・CIとレビューのどちらも読めない場合は抽出せず、判断事項セクションも無ければ従来どおりの「AI」タグ付き要約にフォールバックする（推測で補わない）。
+  - オーケストレータが依存するトークンではないため、`required_tokens`には含めない（判断事項セクションと同じ扱い）。`config/prompts.yaml`で`final_message_instruction`を上書き済みの環境には新しいデフォルトが反映されないため、プロンプト設定画面でデフォルトに戻すか、上書き済みの本文へ上記の書式指示を手動で追記する。
+  - 画面デザインは[design-prompt-dashboard-diff-review-card.md](./design-prompt-dashboard-diff-review-card.md)の依頼に基づく。
 - **将来拡張**: issue #148（モデルルーティング層）でモデルごとにプロンプトを出し分ける場合は、`prompts.yaml`のキー体系を拡張する（例: `models.<alias>.<key>`）。現状の`PromptSpec`・解決処理はキー単位のため拡張を妨げない。
 
 ## 4. モデルルーター設定設計
@@ -392,6 +484,7 @@ Agent Runner起動時に`--append-system-prompt`で渡す指示文（`agent_runn
 - **issueコメントでの都度指示（構文確定、issue #176）**: ダッシュボードの自由記述指示（[2-3](#2-3-指示出しapi内部api)の`instruct`）またはGitHub issueへの直接コメントで、当該issueへの以降のディスパッチに限り実行手段をプロジェクトのデフォルトから一時的に変更できる。メッセージ本文中に独立した行として`/model claude_code`（(A)へ戻す）または`/model litellm:<LiteLLM Proxyのモデルエイリアス>`（(B)へ切り替える。例: `/model litellm:project-a-ollama-qwen`）を書く（`orchestrator/orchestrator/execution_mode.py`の`parse_override_directive`が`re.MULTILINE`で行頭一致を見るため、本文中の他の説明文とは干渉しない）。検出した都度上書き指定は`config/execution_overrides.json`（`.gitignore`対象、`session_store.py`の`config/sessions.json`と同様issue単位で保存する`execution_override_store.py`）に永続化され、以降のディスパッチ（`--resume`によるセッション再開を含む）でも同じ指定が使われ続ける。ディレクティブ行自体はAgent Runnerへ渡すプロンプト本文からは取り除く（`strip_override_directive`）。実行手段は「メッセージ中の都度指定 → issueに保存済みの都度上書き → プロジェクトのデフォルト設定」の優先順位で解決する（`resolve_execution_settings`）。
 - **環境変数への反映**: 上記いずれの経路で決定された実行手段も、`run_agent_runner`が最終的に[3-1](#3-1-起動パラメータ)の`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`設定有無（`orchestrator/orchestrator/litellm_proxy.py`の`build_env_overrides`）に変換し、サブプロセス起動時の環境変数に適用する。(B)選択時はあわせて`claude -p --model <litellm_model>`でモデルエイリアスを明示する（LiteLLM Proxy側の`model_list`がこのエイリアス名でどのプロバイダ・モデルへ中継するかを解決する）。
 - **LiteLLM Proxy疎通不能時のフォールバック（issue #176で確定）**: `run_agent_runner`はLiteLLM Proxyへディスパッチする前に軽量な死活確認（`GET /health/liveliness`、`litellm_proxy.is_healthy`）を行う。応答が無い場合は(A) Claude Code CLI直利用へ**自動フォールバック**し、その旨をissueコメントで通知したうえでそのまま実行を続行する（`needs-human-decision`へは倒さない）。LiteLLM Proxyは実行手段の選択肢の一つに過ぎずAgent Runnerの正しさを左右する要素ではないため、プロセスの一時的な不調で自走タスクの進行自体を止めない方針とする（CI完了待ちの自動再開・孤立in-progress検知等、インフラ的な不整合は極力自動復旧を優先する既存の設計思想を踏襲）。永続化済みの都度上書き・プロジェクト設定自体は変更しないため、次回ディスパッチでは改めてLiteLLM Proxyへの接続を試みる。
+- **利用リミット到達時（issue #331）**: (A) Claude Code直利用で利用リミットに達した場合は、解除予定時刻を過ぎたら同じセッションで自動再開する。判断待ちカードから、解除を待たずにLiteLLMのモデルを選んで今すぐ再開することもできる（上記の都度指示を使う）。詳細は[3-5-1](#3-5-1-利用リミット解除時の自動再開issue-331)参照。
 
 ### LiteLLM Proxyの利用量計測（`usage_store.py`統合、issue #174）
 
@@ -554,7 +647,7 @@ AI計画ジョブ（issue #299）が`succeeded`または`failed`になった時�
 
 **承認・自由記述（既存issueへの指示）**
 
-1. プロデューサーがダッシュボードで対象issueの「承認」ボタン（押下後Yes/No確認）、または自由記述の指示入力欄からメッセージを送信する。
+1. プロデューサーがダッシュボードで対象issueの「承認」ボタン（押下後Yes/No確認。判断待ちカードには無く、レビュー待ちカードのみ。issue #325）、または自由記述の指示入力欄からメッセージを送信する。
 2. ダッシュボードが[2-3](#2-3-指示出しapi内部api)の内部API（`action: "approve" | "instruct"`）にリクエストを送信する。
 3. オーケストレータが対象issueの現在のラベルを取得する（[1章](#1-データモデル状態遷移設計)の冪等フロー）。
 4. `gh api` 経由でissueに定型コメント（承認）または自由記述メッセージ（instruct）を投稿する。
@@ -620,8 +713,10 @@ git cloneに依存せず、必要なファイルだけを配布し好きなデ�
 ### 配布物の構成
 
 - **dashboard**: `next.config.ts`の`output: "standalone"`でビルドし、`.next/standalone`（`server.js`＋最小限のnode_modulesサブセット）に`.next/static`・`public/`を同梱する。配布先では`npm install`不要、`node server.js`のみで起動できる
-- **orchestrator**: `python -m build --wheel`で生成したwheelを配布する。依存が`PyYAML`のみのため、配布先では`pip install <wheel>`のみで済む
+- **orchestrator**: `python -m build --wheel`で生成したwheelを配布する。依存が`PyYAML`・`setproctitle`（issue #332）のみのため、配布先では`pip install <wheel>`のみで済む
 - リポジトリ直下の`dist/`ディレクトリに、配布レイアウト専用の`bin/start.sh`・`bin/stop.sh`・`config/projects.yaml.example`・`.env.example`（`SLACK_WEBHOOK_URL`・`ORCHESTRATOR_PORT`・`ORCHESTRATOR_URL`・`DASHBOARD_PORT`・`LAN_IP`。展開先ルートに`.env`を作成すると`bin/start.sh`が起動時に読み込む）・`scripts/`（`backup_usage_db.sh`・launchd plistサンプル）・`SETUP.md`（エンドユーザー向けセットアップ手順書）を用意する。開発用の`bin/start.sh`（git clone・`npm ci`・editable install前提、`orchestrator/.env`・`dashboard/.env`に分かれている）とは別物で、tarball展開後のディレクトリレイアウト（`dashboard/server.js`・`orchestrator/dist/*.whl`が展開先直下に並ぶ構成）に合わせて起動ロジックを書き換え、`.env`もルート直下の単一ファイルに統合している。dashboardのサーバーサイドAPIプロキシ（`dashboard/src/lib/orchestrator.ts`）が接続先として参照する`ORCHESTRATOR_URL`は、`.env`で明示指定しない限り両`bin/start.sh`が`ORCHESTRATOR_PORT`確定後に`http://127.0.0.1:${ORCHESTRATOR_PORT}`として自動導出・exportする（issue #137）
+- **個別起動・停止スクリプト（issue #326）**: thoth等、プロセスごとに起動・停止するアプリ管理ツールから操作できるよう、一括の`bin/start.sh`・`bin/stop.sh`とは別に`backend_start.sh`/`backend_stop.sh`（orchestrator）・`frontend_start.sh`/`frontend_stop.sh`（dashboard）を`bin/`（開発用）・`dist/bin/`（配布用）の双方に置く。一括の`start.sh`は`backend_start.sh`→`frontend_start.sh`の順、`stop.sh`は`frontend_stop.sh`→`backend_stop.sh`の順で個別スクリプトを呼び出すだけの構成とし（`stop.sh`は片方が失敗してももう片方の停止を試み、いずれか失敗で非0終了）、共通処理は新規の`proc.sh`（各`bin/`直下）にまとめた。起動スクリプトは一括と同じくバックグラウンドで起動して即終了する（フォアグラウンド常駐ではない）。PIDファイル（`logs/{orchestrator,dashboard}.pid`）・ログ・環境変数は一括と同一で、一括と個別を混在して停止できる。未起動時のstopは一括と同じく非0終了。開発版`frontend_start.sh`のみ`SKIP_BUILD=1`で`npm ci`・ビルドを省略できる。配布版はlaunchd（`service.sh`）登録中は`start.sh`と同様に併用不可。
+- **ps上のプロセス名（issue #332）**: 同一ホストの他のNext.jsアプリ（`next-server (v...)`）・Pythonプロセスと`ps`で判別できるよう、dashboardは環境変数`DASHBOARD_PROCESS_NAME`（既定`producer-desk-dashboard`）、orchestratorは`ORCHESTRATOR_PROCESS_NAME`（既定`producer-desk-orchestrator`）でプロセス名を指定できる（`dashboard/.env`・`orchestrator/.env`に記載可能。空文字なら上書きせず従来名のまま）。dashboardはNext.jsが起動後に`process.title`を固定値へ書き換えるため、開発用`bin/frontend_start.sh`が`NODE_OPTIONS="--require bin/set_process_title.cjs"`（既存の`NODE_OPTIONS`には追記）と`PROCESS_TITLE`を渡し、事前読み込みスクリプトが`process.title`を設定したうえでsetterを無効化して上書きを防ぐ（`NODE_OPTIONS`を継承するworker等の子プロセスも同名になる）。orchestratorは`main()`冒頭（`configure_logging()`直後）で`setproctitle`により設定し、未インストール時は警告ログのみで起動を継続する（`orchestrator/orchestrator/process_title.py`。Agent Runnerが起動する`claude -p`は対象外）。`bin/dev_instance.sh`の確認用インスタンスは末尾に`-dev`を付けて運用インスタンスと区別する。macOSではプロセス名を書き換えると`ps eww`からそのプロセスの環境変数が見えなくなるため、`dev_instance.sh`は本体をexecせずラッパープロセスの子として起動し、目印環境変数を確認する記録上のPID（=PGID）は名前を変えないラッパー側にしている。停止は従来どおりPIDファイル・記録したPGIDで行い、プロセス名では探さない。配布版（`dist/bin/`）はorchestratorのみ`main()`経由で反映され、dashboard（`node server.js`）は対象外
 - `docs/`・`CLAUDE.md`・`.claude/`・`tests/`・`.github/`はproducer-deskを**開発する**ための資材のため配布物に含めない
 
 ### `orchestrator`のインストール形態非依存化

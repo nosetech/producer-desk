@@ -27,6 +27,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - `project/ProducerDesk.logic.js`: スタイル・状態ロジック（**`.dc.html`と両方**を読むこと）
   - `project/ProducerDeskIcons.dc.html` / `project/SendingSpinner.dc.html` / `project/IconColorCheck.dc.html`: アイコン・送信中スピナー・アイコン配色確認
   - `project/feature/issue-<n>-*.dc.html` と対の `.logic.js`: issue単位の差分デザイン（マスターへ未マージのもの）
+    - `project/feature/issue-301-media-attach.dc.html` / `.logic.js` / `.attach.dc.html`: 返信欄・新規タスク作成（手動入力）での画像・動画の添付（issue #301）。`.logic.js`はルートのロジック一式（limit #331まで）を継承し、`_atView`内で添付ボタン・トレイ・エラー・アップロード進捗・ドロップ受付（`btn`・`tray`・`chip`・`errBox`・`upBox`・`dropOverlay`等）のスタイルを定義している。添付UIのマークアップは子コンポーネント`.attach.dc.html`、テキストエリアのドロップ受付は`.dc.html`にある
+  - `project/ProducerDesk.snippets.logic.js` / `project/ProducerDesk.queue.logic.js` / `project/ProducerDesk.decision.logic.js` / `project/ProducerDesk.keyboard.logic.js` / `project/ProducerDesk.inboxkeys.logic.js` / `project/ProducerDesk.review.logic.js` / `project/ProducerDesk.limit.logic.js`: マージ済みの定型文（issue #323）・キューの計画ジョブ（issue #335）・判断待ちカード（issue #325、`decBox`等）・キーボードショートカット（issue #322、`rowCur`・`cardCur`・`kbGuide`）・inboxへのキーボード操作拡張（issue #339、`kbEnterKbd`）・レビュー待ちカードの作業結果（issue #324、`resBox`等）・利用リミット待ち（issue #331、`limBox`・`lmDlg`等）のロジック。マスターの`.logic.js`が256KiBに近いため、本体を継承する拡張ファイルとしてルートに置かれ、ページが本体の後に meta → logic → snippets → queue → decision → keyboard → inboxkeys → review → limit の順で読み込む（後ろのファイルが前のComponentを継承する）
+  - `project/ProducerDesk.meta.logic.js` / `project/ProducerDeskDashboard.dc.html` / `project/ProducerDeskInbox.dc.html` / `project/ProducerDeskLightbox.dc.html`: マスターから分割された子コンポーネント・ロジック
   - `project/support.js`: 共通スクリプト
   - `artifact-type/` と `SKILL.md` は Artifact の仕組み側のファイルでデザインではない。読まない。
 

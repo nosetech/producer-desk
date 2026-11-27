@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from collections.abc import Callable, Iterable
@@ -531,3 +532,105 @@ def gh_supports_attach(*, run: RunFn = subprocess.run) -> bool | None:
     if match is None:
         return None
     return tuple(int(g) for g in match.groups()) >= GH_ATTACH_MIN_VERSION
+
+
+# issue #301: ダッシュボードから添付付きで投稿する場合の関数型。
+PostCommentWithAttachmentsFn = Callable[[str, int, str, list[str]], None]
+CreateIssueWithAttachmentsFn = Callable[[str, str, str, list[str]], int]
+_ISSUE_URL = re.compile(r"https://[^\s]+/issues/(\d+)")
+
+
+def _attach_args(paths: list[str]) -> list[str]:
+    # `--attach`は`<file>#<alt>`形式のため、パスに`#`があると代替テキストとして解釈される。
+    # 保存先はサーバ採番の`<uuid>.<ext>`で`#`を含まないが、念のため拒否する。
+    args: list[str] = []
+    for path in paths:
+        if "#" in path:
+            raise ValueError(f"添付のパスに#は使えません: {path}")
+        args += ["--attach", path]
+    return args
+
+
+def post_comment_with_attachments(
+    repo: str,
+    issue_number: int,
+    body: str,
+    paths: list[str],
+    *,
+    run: RunFn = subprocess.run,
+) -> None:
+    """画像・動画を添付したコメントを投稿する（`gh issue comment --attach`、gh v2.99.0以降）。
+
+    本文には`post_comment`と同じく`BOT_COMMENT_MARKER`を付ける（comment_watcherの二重検知防止）。
+    本文は標準入力（`--body-file -`）で渡す。
+    """
+    marked_body = f"{body}\n\n{BOT_COMMENT_MARKER}" if body else BOT_COMMENT_MARKER
+    run(
+        [
+            "gh",
+            "issue",
+            "comment",
+            str(issue_number),
+            "--repo",
+            repo,
+            "--body-file",
+            "-",
+            *_attach_args(paths),
+        ],
+        input=marked_body,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def create_issue_with_attachments(
+    repo: str,
+    title: str,
+    body: str,
+    paths: list[str],
+    *,
+    run: RunFn = subprocess.run,
+) -> int:
+    """画像・動画を本文に添付したissueを作成し、issue番号を返す（`gh issue create --attach`）。
+
+    一部の添付だけ失敗した場合、ghはissueを作成したうえで非0終了しURLを出力する。issueは
+    既にあるため、二重作成を避けてそのissue番号を返す（警告ログのみ）。URLが無ければ失敗とする。
+    """
+    result = run(
+        [
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+            *_attach_args(paths),
+        ],
+        input=body,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    match = _ISSUE_URL.search(result.stdout or "")
+    if match is None:
+        raise subprocess.CalledProcessError(
+            result.returncode or 1, result.args, result.stdout, result.stderr
+        )
+    if result.returncode != 0:
+        logging.getLogger(__name__).warning(
+            "%s のissue作成で一部の添付に失敗しました: %s", repo, (result.stderr or "").strip()
+        )
+    return int(match.group(1))
+
+
+def gh_issue_create_supports_attach(*, run: RunFn = subprocess.run) -> bool:
+    """`gh issue create`が`--attach`に対応しているか（`--help`に記載があるか）。"""
+    try:
+        result = run(["gh", "issue", "create", "--help"], capture_output=True, text=True)
+    except OSError:
+        return False
+    return "--attach" in (result.stdout or "") + (result.stderr or "")

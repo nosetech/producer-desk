@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   deleteIssuePlan,
   fetchProjectSettings,
+  fetchSnippets,
   postCreateIssue,
   postInstruct,
 } from "@/lib/api";
@@ -14,6 +16,7 @@ import {
   modelOptions,
 } from "@/lib/modelDirective";
 import { shortRepoName } from "@/lib/projectStatus";
+import { insertAtCursor } from "@/lib/snippets";
 import type { StageDef } from "@/lib/stageProgress";
 import { findIssueJob } from "@/lib/jobs";
 import { useEdgeResize } from "@/lib/useEdgeResize";
@@ -22,6 +25,7 @@ import {
   DECISION_POINTS_HEADING,
   commentSummary,
   extractDecisionPoints,
+  splitOptionTag,
   formatCommentTime,
 } from "@/lib/comment";
 import type {
@@ -29,12 +33,23 @@ import type {
   InboxItem,
   IssueComment,
   ProjectSettingsResponse,
+  Snippet,
 } from "@/lib/types";
 import { initialPlanState, planReducer } from "@/lib/planFlow";
 import CommentBody from "./CommentBody";
 import { useApp } from "./AppContext";
 import EdgeHandles from "./EdgeHandles";
+import MediaAttach, { AttachDropZone, useMediaAttach } from "./MediaAttach";
+import type { MediaAttachState } from "./MediaAttach";
+import {
+  ATTACH_PLACEHOLDER_SUFFIX,
+  formatSize,
+  totalSize,
+} from "@/lib/mediaAttach";
+import { AlertCircleIcon, PlusIcon, SnippetIcon } from "./Icons";
 import PlanComposer, { PlanModeToggle } from "./PlanComposer";
+import { SNIPPETS_NAV_HREF } from "./Sidebar";
+import InlineCode from "./InlineCode";
 import styles from "./ComposerBar.module.css";
 
 export interface IssueRef {
@@ -68,6 +83,20 @@ const CREATE_QUEUED_STAGES: StageDef[] = [
   { key: "issue", label: "issueを作成", note: "POST /issues" },
   { key: "label", label: "todoとして登録", note: "label" },
 ];
+
+/** 添付があるとき、ジョブの段階の先頭に「添付をアップロード」を加える（issue #301）。
+ * オーケストレータは添付を受信・保存した時点で`attach`を通知する。 */
+function withAttachStage(stages: StageDef[], attach: MediaAttachState) {
+  if (attach.items.length === 0) return stages;
+  return [
+    {
+      key: "attach",
+      label: "添付をアップロード",
+      note: `${attach.items.length}件 · ${formatSize(totalSize(attach.items))}`,
+    },
+    ...stages,
+  ];
+}
 
 function defaultModelHint(settings: ProjectSettingsResponse | undefined) {
   return `既定: ${
@@ -126,30 +155,96 @@ function ModelSelectRow({
   );
 }
 
-// 判断事項本文のインライン`code`をコード表示にする（Claude Designの_segsに合わせる）。
-function InlineCode({ text }: { text: string }) {
+// 返信欄の「定型文」セレクト（issue #323、デザイン feature/issue-323-snippets の`sn`）。
+// 選ぶとカーソル位置に挿入し、セレクトは常に「定型文を選択…」へ戻す（同じ定型文を続けて挿入できる）。
+function SnippetSelectRow({
+  snippets,
+  error,
+  disabled,
+  noTarget,
+  onSelect,
+  onManage,
+}: {
+  snippets: Snippet[] | null;
+  error: boolean;
+  /** 送信中（replyBusy）。 */
+  disabled: boolean;
+  noTarget: boolean;
+  onSelect: (id: string) => void;
+  onManage: () => void;
+}) {
+  // 取得完了前（null）は0件と区別し、登録リンクを出さない。
+  const loading = !error && snippets === null;
+  const empty = !error && snippets !== null && snippets.length === 0;
+  const off = error || loading || empty || disabled || noTarget;
+  const placeholder = error
+    ? "定型文を取得できません"
+    : loading
+      ? "定型文を読み込み中…"
+      : empty
+        ? "定型文はありません"
+        : "定型文を選択…";
+  const title = error
+    ? "定型文を取得できませんでした"
+    : loading
+      ? "定型文を読み込み中です"
+      : empty
+        ? "定型文が登録されていません"
+        : disabled
+          ? "送信中は選択できません"
+          : noTarget
+            ? "返信先を選ぶと選択できます"
+            : "選ぶとカーソル位置に挿入します";
   return (
-    <>
-      {text
-        .split(/(`[^`]+`)/)
-        .filter(Boolean)
-        .map((part, i) =>
-          part.length > 1 && part.startsWith("`") && part.endsWith("`") ? (
-            <code key={i} className={styles.decCode}>
-              {part.slice(1, -1)}
-            </code>
-          ) : (
-            <span key={i}>{part.replace(/\*\*/g, "")}</span>
-          ),
-        )}
-    </>
+    <div className={styles.modelRow}>
+      <span className={styles.modelLabel}>
+        <SnippetIcon size={13} />
+        定型文
+      </span>
+      <select
+        className={`${styles.modelSelect} ${off ? styles.snippetSelectOff : ""}`}
+        value=""
+        onChange={(e) => {
+          if (e.target.value) onSelect(e.target.value);
+        }}
+        disabled={off}
+        aria-label="定型文を挿入"
+        title={title}
+      >
+        <option value="">{placeholder}</option>
+        {(snippets ?? []).map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.title}
+          </option>
+        ))}
+      </select>
+      {empty && (
+        <Link
+          href={SNIPPETS_NAV_HREF}
+          className={styles.snippetLink}
+          onClick={onManage}
+        >
+          <PlusIcon size={13} strokeWidth={2.4} />
+          定型文を登録
+        </Link>
+      )}
+      {error && (
+        <>
+          <span role="status" className={styles.snippetError}>
+            <AlertCircleIcon size={13} />
+            定型文を取得できませんでした
+          </span>
+          <Link
+            href={SNIPPETS_NAV_HREF}
+            className={styles.snippetLink}
+            onClick={onManage}
+          >
+            管理画面へ
+          </Link>
+        </>
+      )}
+    </div>
   );
-}
-
-// 「Foo: 説明」形式の選択肢は、先頭（12文字以内）をタグとして分けて表示する。
-function splitOptionTag(option: string): { tag: string; text: string } | null {
-  const m = option.match(/^([^:：\s]{1,12})\s*[:：]\s*(.+)$/);
-  return m ? { tag: m[1], text: m[2] } : null;
 }
 
 function ReplyQuote({
@@ -332,7 +427,10 @@ function ReplyQuote({
                   <div className={styles.decMain}>
                     <span className={styles.decNum}>{i + 1}</span>
                     <span className={styles.decText}>
-                      <InlineCode text={d.text} />
+                      <InlineCode
+                        text={d.text}
+                        codeClassName={styles.decCode}
+                      />
                     </span>
                   </div>
                   {d.options.length > 0 && (
@@ -349,7 +447,10 @@ function ReplyQuote({
                               <span className={styles.decBullet}>•</span>
                             )}
                             <span className={styles.decOptionText}>
-                              <InlineCode text={tagged ? tagged.text : o} />
+                              <InlineCode
+                                text={tagged ? tagged.text : o}
+                                codeClassName={styles.decCode}
+                              />
                             </span>
                           </li>
                         );
@@ -503,6 +604,12 @@ export default function ComposerBar({
     [restorePanelRef, edgePanelRef],
   );
 
+  // 画像・動画の添付（issue #301）。返信欄と新規作成（手動入力）で別々に持つ。
+  const replyAttach = useMediaAttach();
+  const newAttach = useMediaAttach();
+  // 添付の送信準備中に押されたボタン（新規作成）。ボタン表示と進捗の段階に使う。
+  const [pendingDispatch, setPendingDispatch] = useState<Dispatch | null>(null);
+
   const [replyModel, setReplyModel] = useState(MODEL_DEFAULT);
   const [newModel, setNewModel] = useState(MODEL_DEFAULT);
   const [settingsByRepo, setSettingsByRepo] = useState<
@@ -532,6 +639,49 @@ export default function ComposerBar({
       cancelled = true;
     };
   }, [open, isReply, replyRepo, newRepo]);
+
+  // 返信欄の定型文（issue #323）。返信欄を開くたびに最新の一覧を取得する。
+  // 取得に失敗しても返信の送信は妨げない（セレクトを無効化して管理画面へ案内する）。
+  const [snippets, setSnippets] = useState<Snippet[] | null>(null);
+  const [snippetsError, setSnippetsError] = useState(false);
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!open || !isReply) return;
+    let cancelled = false;
+    fetchSnippets()
+      .then((data) => {
+        if (cancelled) return;
+        setSnippets(data.snippets);
+        setSnippetsError(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSnippets(null);
+        setSnippetsError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isReply]);
+
+  // 選択した定型文をカーソル位置に挿入（範囲選択中は置換）し、カーソルを挿入文の末尾へ移す。
+  function handleInsertSnippet(id: string) {
+    const snippet = snippets?.find((s) => s.id === id);
+    if (!snippet) return;
+    const ta = replyTextareaRef.current;
+    const { text, cursor } = insertAtCursor(
+      message,
+      ta?.selectionStart ?? message.length,
+      ta?.selectionEnd ?? message.length,
+      snippet.body,
+    );
+    setMessage(text);
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(cursor, cursor);
+    });
+  }
 
   // ESCキーでパネルを閉じる。
   useEffect(() => {
@@ -583,6 +733,7 @@ export default function ComposerBar({
     setQuoteIndex(null);
     setReplyModel(MODEL_DEFAULT);
     setMessage((m) => applyModelDirective(m, MODEL_DEFAULT));
+    replyAttach.reset();
   }
 
   const [wasOpen, setWasOpen] = useState(open);
@@ -596,6 +747,8 @@ export default function ComposerBar({
       setNewModel(MODEL_DEFAULT);
       setQuoteIndex(null);
       setError(null);
+      replyAttach.reset();
+      newAttach.reset();
       // inbox項目から開いた場合は、その本文を「やりたいこと」の初期値に計画モードで開く。
       setNewMode(inboxTarget ? "plan" : "manual");
       dispatchPlan({
@@ -612,35 +765,73 @@ export default function ComposerBar({
 
   // 送信はバックグラウンドのジョブとして実行し、パネルは即座に閉じる（issue #212）。
   // 進捗・失敗は対象カード（カードが無い場合・新規作成はヘッダーの処理状況）に表示する。
-  function handleSendReply() {
-    if (!replyTarget || !message.trim()) return;
+  // 添付をbase64にする（進捗をパネル内に表示）。読み込みに失敗したらnull。
+  async function encodeOrFail(attach: MediaAttachState) {
+    if (attach.items.length === 0) return [];
+    try {
+      return await attach.encode();
+    } catch (e) {
+      attach.cancelUpload();
+      setError(e instanceof Error ? e.message : "添付を読み込めませんでした");
+      return null;
+    }
+  }
+
+  async function handleSendReply() {
+    const hasAttach = replyAttach.items.length > 0;
+    if (!replyTarget || (!message.trim() && !hasAttach)) return;
+    if (replyAttach.uploadDone !== null) return;
     const target = replyTarget;
     const text = message.trim();
+    const stages = withAttachStage(REPLY_STAGES, replyAttach);
+    const attachments = await encodeOrFail(replyAttach);
+    if (attachments === null) return;
+    // 失敗時の再試行（retryJob）は同じexecを再実行するため、添付もそのまま再送される。
     const accepted = startJob({
       kind: "reply",
       repo: target.repo,
       number: target.number,
       title: target.title,
-      stages: REPLY_STAGES,
+      stages,
       exec: (progressId) =>
-        postInstruct(target.repo, target.number, "instruct", text, progressId),
+        postInstruct(
+          target.repo,
+          target.number,
+          "instruct",
+          text,
+          progressId,
+          undefined,
+          attachments,
+        ),
       successMessage: `${shortRepoName(target.repo)} #${target.number} へ指示を送信しました。`,
     });
     if (!accepted) {
+      replyAttach.cancelUpload();
       setError("このissueは別の操作を処理中です。完了後に再度お試しください。");
       return;
     }
+    replyAttach.reset();
     onClearReplyTarget();
     onClose();
   }
 
-  function handleCreateTask(
+  async function handleCreateTask(
     dispatch: Dispatch,
     taskTitle: string = title,
     taskBody: string = prompt,
     planJobId?: string,
   ) {
     if (!newRepo || !taskTitle.trim() || !taskBody.trim()) return;
+    // 添付は手動入力モードのみ（計画モードには付けない）。
+    const attach = newMode === "manual" ? newAttach : null;
+    if (attach && attach.uploadDone !== null) return;
+    const baseStages =
+      dispatch === "immediate" ? CREATE_IMMEDIATE_STAGES : CREATE_QUEUED_STAGES;
+    const stages = attach ? withAttachStage(baseStages, attach) : baseStages;
+    setPendingDispatch(dispatch);
+    const attachments = attach ? await encodeOrFail(attach) : [];
+    setPendingDispatch(null);
+    if (attachments === null) return;
     const repo = newRepo;
     const issueTitle = taskTitle.trim();
     const body = taskBody.trim();
@@ -651,10 +842,7 @@ export default function ComposerBar({
       kind: "new",
       repo,
       title: issueTitle,
-      stages:
-        dispatch === "immediate"
-          ? CREATE_IMMEDIATE_STAGES
-          : CREATE_QUEUED_STAGES,
+      stages,
       exec: (progressId) =>
         postCreateIssue(
           repo,
@@ -663,6 +851,7 @@ export default function ComposerBar({
           dispatch,
           progressId,
           promoteNumber,
+          attachments,
         ).then(async (result) => {
           // 承認（issue登録）に成功した計画ジョブは破棄する（issue #299）。
           if (planJobId) await deleteIssuePlan(repo, planJobId).catch(() => {});
@@ -674,6 +863,7 @@ export default function ComposerBar({
           ? `${shortRepoName(repo)} に新しいタスクを作成し、着手を依頼しました。`
           : `${shortRepoName(repo)} にタスクをtodoとして登録しました（あとで着手）。`,
     });
+    attach?.reset();
     onClose();
   }
 
@@ -806,19 +996,43 @@ export default function ComposerBar({
                   disabled={replyBusy || !replyTarget}
                   onChange={handleReplyModelChange}
                 />
-                <textarea
-                  className={styles.textarea}
-                  placeholder="追加の指示を入力…（例: この方針で進めて／まずテストを追加して）"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                <SnippetSelectRow
+                  snippets={snippets}
+                  error={snippetsError}
+                  disabled={replyBusy}
+                  noTarget={!replyTarget}
+                  onSelect={handleInsertSnippet}
+                  onManage={onClose}
+                />
+                <AttachDropZone
+                  state={replyAttach}
                   disabled={replyBusy || !replyTarget}
+                >
+                  <textarea
+                    ref={replyTextareaRef}
+                    className={styles.textarea}
+                    placeholder={`追加の指示を入力…（例: この方針で進めて／まずテストを追加して）${ATTACH_PLACEHOLDER_SUFFIX}`}
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    disabled={replyBusy || !replyTarget}
+                  />
+                </AttachDropZone>
+                <MediaAttach
+                  state={replyAttach}
+                  disabled={replyBusy || !replyTarget}
+                  stages={REPLY_STAGES}
                 />
                 <div className={styles.sendRow}>
                   <button
                     type="button"
                     className={styles.sendBtn}
                     onClick={handleSendReply}
-                    disabled={replyBusy || !replyTarget || !message.trim()}
+                    disabled={
+                      replyBusy ||
+                      !replyTarget ||
+                      replyAttach.uploadDone !== null ||
+                      (!message.trim() && replyAttach.items.length === 0)
+                    }
                   >
                     <svg
                       width="15"
@@ -833,7 +1047,9 @@ export default function ComposerBar({
                       <path d="M22 2 11 13" />
                       <path d="M22 2 15 22l-4-9-9-4Z" />
                     </svg>
-                    指示を送信
+                    {replyAttach.uploadDone !== null
+                      ? "アップロード中…"
+                      : "指示を送信"}
                   </button>
                 </div>
               </div>
@@ -887,11 +1103,22 @@ export default function ComposerBar({
                           onChange={handleNewModelChange}
                         />
                       </div>
-                      <textarea
-                        className={`${styles.textarea} ${styles.textareaPrompt}`}
-                        placeholder="AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）"
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
+                      <AttachDropZone state={newAttach}>
+                        <textarea
+                          className={`${styles.textarea} ${styles.textareaPrompt}`}
+                          placeholder={`AIエージェントへの具体的な指示を入力…（例: 合計金額が明細の和と一致するか検証し、不一致なら警告を出す）${ATTACH_PLACEHOLDER_SUFFIX}`}
+                          value={prompt}
+                          onChange={(e) => setPrompt(e.target.value)}
+                        />
+                      </AttachDropZone>
+                      <div className={styles.attachGap} />
+                      <MediaAttach
+                        state={newAttach}
+                        stages={
+                          pendingDispatch === "queued"
+                            ? CREATE_QUEUED_STAGES
+                            : CREATE_IMMEDIATE_STAGES
+                        }
                       />
                     </div>
                     <div className={styles.dispatchRow}>
@@ -899,7 +1126,12 @@ export default function ComposerBar({
                         type="button"
                         className={`${styles.dispatchBtn} ${styles.dispatchBtnPrimary}`}
                         onClick={() => handleCreateTask("immediate")}
-                        disabled={!newRepo || !title.trim() || !prompt.trim()}
+                        disabled={
+                          !newRepo ||
+                          !title.trim() ||
+                          !prompt.trim() ||
+                          newAttach.uploadDone !== null
+                        }
                       >
                         <svg
                           width="15"
@@ -913,13 +1145,21 @@ export default function ComposerBar({
                         >
                           <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
                         </svg>
-                        今すぐ着手
+                        {newAttach.uploadDone !== null &&
+                        pendingDispatch === "immediate"
+                          ? "アップロード中…"
+                          : "今すぐ着手"}
                       </button>
                       <button
                         type="button"
                         className={styles.dispatchBtn}
                         onClick={() => handleCreateTask("queued")}
-                        disabled={!newRepo || !title.trim() || !prompt.trim()}
+                        disabled={
+                          !newRepo ||
+                          !title.trim() ||
+                          !prompt.trim() ||
+                          newAttach.uploadDone !== null
+                        }
                       >
                         <svg
                           width="15"
@@ -934,7 +1174,10 @@ export default function ComposerBar({
                           <rect x="3" y="5" width="18" height="16" rx="2" />
                           <path d="M16 3v4M8 3v4M3 11h18M9 15l2 2 4-4" />
                         </svg>
-                        あとで着手（todo）
+                        {newAttach.uploadDone !== null &&
+                        pendingDispatch === "queued"
+                          ? "アップロード中…"
+                          : "あとで着手（todo）"}
                       </button>
                     </div>
                   </>

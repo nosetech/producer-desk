@@ -63,6 +63,9 @@ DEFAULT_DASHBOARD_SETTINGS: dict[str, float] = {
     "sync_tick_interval_seconds": DEFAULT_SYNC_TICK_INTERVAL_SECONDS,
 }
 
+# 利用リミット到達時の連続の自動再開の上限の既定値（issue #331）。
+DEFAULT_LIMIT_AUTO_RESUME_MAX_ATTEMPTS = 3
+
 # 自走タスク本体の実行手段（issue #148・#174・#176、docs/basic-design.md 4章）。
 # (A) Claude Code CLI直利用＋サブスクリプション（既定）と、
 # (B) LiteLLM Proxy経由の他モデル・ローカルLLM＋従量課金のいずれか。
@@ -80,6 +83,11 @@ class Project:
     # 渡す。orchestrator/orchestrator/agent_runner.py参照）。
     execution_mode: str = EXECUTION_MODE_CLAUDE_CODE
     litellm_model: str | None = None
+    # issue #331: (A) Claude Code直利用で利用リミット（429）に達したとき、解除予定時刻を
+    # 過ぎたら同じセッションで自動再開するか。`false`なら従来どおり判断待ちで止まる。
+    limit_auto_resume: bool = True
+    # 連続の自動再開の上限（再開後にまた429になる無限ループの防止）。
+    limit_auto_resume_max_attempts: int = DEFAULT_LIMIT_AUTO_RESUME_MAX_ATTEMPTS
     # `server.py`の`PATCH /api/projects/{repo}/settings`はディスパッチ実行中の別
     # スレッド（`DispatchQueue`のワーカーが`run_agent_runner`経由でこのインスタンスの
     # execution_mode/litellm_modelを読む）と並行して呼ばれうる。2フィールドを個別に
@@ -96,6 +104,14 @@ class Project:
 
     def __post_init__(self) -> None:
         validate_execution_settings(self.execution_mode, self.litellm_model, context=self.repo)
+        if not isinstance(self.limit_auto_resume, bool):
+            raise ValueError(f"{self.repo}: limit_auto_resumeはtrue/falseで指定してください。")
+        max_attempts = self.limit_auto_resume_max_attempts
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError(
+                f"{self.repo}: limit_auto_resume_max_attemptsは1以上の整数で指定してください"
+                f"（実際の値: {max_attempts!r}）。"
+            )
 
     def replace_execution_settings(self, execution_mode: str, litellm_model: str | None) -> None:
         validate_execution_settings(execution_mode, litellm_model, context=self.repo)

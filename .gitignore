@@ -5,7 +5,10 @@ config/plan_jobs.json
 config/usage.db
 config/execution_overrides.json
 config/prompts.yaml
+config/snippets.yaml
 config/litellm_config.yaml
+# ダッシュボードから添付された画像・動画の一時保存先（issue #301）
+config/media_uploads/
 .env
 .env.*
 !.env.example
@@ -54,6 +57,7 @@ dist/config/projects.yaml
 dist/config/sessions.json
 dist/config/plan_jobs.json
 dist/config/usage.db
+dist/config/media_uploads/
 dist/logs/*
 !dist/logs/.gitkeep
 dist/orchestrator/.venv/

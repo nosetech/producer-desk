@@ -6,6 +6,7 @@ docs/basic-design.md 2-2の集約仕様（判断待ち一覧・プロジェク�
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -550,6 +551,43 @@ def test_build_project_queue_empty_snapshot() -> None:
     queue = build_project_queue(QueueSnapshot(), [])
 
     assert queue.running is None
+    assert queue.waiting == []
+
+
+def test_build_project_queue_includes_plan_jobs_in_fifo_order() -> None:
+    """計画ジョブ（負の番号）は依頼文の1行目を持つ計画エントリになる（issue #335）。"""
+    jobs = {
+        -1: SimpleNamespace(
+            id="p1", request="  画面を作る\n詳細  ", inbox_issue_number=None, result=None
+        ),
+        -2: SimpleNamespace(
+            id="p2", request="inboxから", inbox_issue_number=30, result={"title": "T", "body": "B"}
+        ),
+    }
+    issues = [_issue("a/b", 5, [STATUS_TODO], "2026-08-01T00:00:00Z", title="task")]
+
+    queue = build_project_queue(QueueSnapshot(running=-1, waiting=[5, -2, -3]), issues, jobs.get)
+
+    assert queue.running == QueueEntry(number=-1, title="画面を作る", kind="plan", plan_job_id="p1")
+    # -3はキュー待ち中に破棄された（解決できない）ため待機列に出さない。
+    assert queue.waiting == [
+        QueueEntry(number=5, title="task", label=STATUS_TODO),
+        QueueEntry(
+            number=-2,
+            title="inboxから",
+            kind="plan",
+            plan_job_id="p2",
+            inbox_issue_number=30,
+            plan_revising=True,
+        ),
+    ]
+
+
+def test_build_project_queue_running_unresolved_plan_is_not_empty_slot() -> None:
+    """実行中の計画ジョブが解決できなくても、空き枠にせず種別だけのエントリにする。"""
+    queue = build_project_queue(QueueSnapshot(running=-4, waiting=[-5]), [], lambda n: None)
+
+    assert queue.running == QueueEntry(number=-4, kind="plan")
     assert queue.waiting == []
 
 

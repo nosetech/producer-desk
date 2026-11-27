@@ -375,6 +375,27 @@ def test_build_claude_command_instructs_decision_points_section() -> None:
     assert "判断が不要な場合はこのセクションを出さない" in instruction
 
 
+def test_build_claude_command_instructs_work_report_section() -> None:
+    """issue #324: レビュー待ちで出力させる作業結果セクションの固定書式が指示に含まれること。
+
+    ダッシュボード（dashboard/src/lib/comment.ts の extractWorkReport）が同じ
+    見出し文言・行書式でパースするため、変わるとレビュー待ちカードの表示が壊れる。
+    """
+    command = build_claude_command(
+        session_id="new-id", resume=False, repo="nosetech/project-a", issue_number=12
+    )
+
+    flag_index = command.index("--append-system-prompt")
+    instruction = command[flag_index + 1]
+
+    assert "**作業結果**" in instruction
+    assert "- CI: 完了" in instruction
+    assert "`未設定`" in instruction
+    assert "- レビュー: 指摘3件（対応済2件・未対応1件）" in instruction
+    assert "`未実施`" in instruction
+    assert "未対応の指摘がある場合は、その理由" in instruction
+
+
 def test_build_claude_command_uses_stream_json_output_format() -> None:
     """issue #49の再発防止テスト。
 
@@ -2326,6 +2347,27 @@ def test_build_claude_command_includes_dev_instance_instruction(_isolated_prompt
     assert AGENT_RUNNER_DEV_INSTANCE_INSTRUCTION not in overridden
 
 
+def test_build_claude_command_includes_language_instruction(_isolated_prompts_path) -> None:
+    from orchestrator.agent_runner import (
+        AGENT_RUNNER_LANGUAGE_INSTRUCTION,
+        AGENT_RUNNER_PROMPT_SPECS,
+    )
+    from orchestrator.prompts import save_prompt_override
+
+    command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    prompt = _system_prompt_of(command)
+    assert "すべて日本語で書いてください" in prompt
+    assert "{user_name}" not in prompt
+
+    spec = next(s for s in AGENT_RUNNER_PROMPT_SPECS if s.key == "language_instruction")
+    save_prompt_override(spec, "独自の言語ルール")
+    overridden = _system_prompt_of(
+        build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
+    )
+    assert "独自の言語ルール" in overridden
+    assert AGENT_RUNNER_LANGUAGE_INSTRUCTION not in overridden
+
+
 def test_build_claude_command_without_overrides_renders_placeholders() -> None:
     command = build_claude_command(session_id="s", resume=False, repo="o/r", issue_number=5)
 
@@ -2355,3 +2397,64 @@ def test_build_claude_command_replaces_user_name_in_instructions(_isolated_promp
     assert "山田さん向けの状況報告" in prompt
     assert "ユーザー" not in prompt
     assert "{user_name}" not in prompt
+
+
+def _run_limit_failure(tmp_path: Path, project: Project, message: str = "実装して") -> str:
+    labels = FakeLabels({STATUS_TODO})
+    comments = FakeComments()
+    payload_line = result_line(
+        {
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "You've hit your session limit · resets 1pm (Asia/Tokyo)",
+        }
+    )
+    run_agent_runner(
+        project,
+        1,
+        message,
+        popen=FakePopenFactory(lines=[payload_line], returncode=1),
+        post_comment=comments.post_comment,
+        get_labels=labels.get_labels,
+        add_label=labels.add_label,
+        remove_label=labels.remove_label,
+        logs_dir=tmp_path / "logs",
+        get_session_state_fn=FakeGetSessionState({("nosetech/project-a", 1): "existing-id"}),
+        persist_session_state_fn=FakePersistSessionState(),
+        record_usage_fn=FakeRecordUsage(),
+        now=FIXED_NOW,
+    )
+    assert labels.labels == {STATUS_NEEDS_HUMAN_DECISION}
+    return comments.posted[0][2]
+
+
+def test_run_agent_runner_limit_failure_adds_limit_wait_marker(tmp_path: Path) -> None:
+    """issue #331: 解除予定時刻を変換できれば自動再開マーカーを付けて判断待ちにする。"""
+    from orchestrator.limit_wait import build_limit_resume_message, extract_limit_wait_marker
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(repo="nosetech/project-a", worktree_path=str(worktree))
+
+    wait = extract_limit_wait_marker(_run_limit_failure(tmp_path, project))
+    assert wait is not None
+    assert wait.reset_at == datetime(2026, 8, 4, 4, 0, tzinfo=UTC)  # JST 13:00
+    assert wait.attempt == 1
+
+    # 自動再開後にまた429になった場合は連続回数を引き継ぐ
+    resumed = _run_limit_failure(tmp_path, project, build_limit_resume_message(1))
+    wait = extract_limit_wait_marker(resumed)
+    assert wait is not None and wait.attempt == 2
+
+
+def test_run_agent_runner_limit_failure_without_marker_when_auto_resume_disabled(
+    tmp_path: Path,
+) -> None:
+    from orchestrator.limit_wait import extract_limit_wait_marker
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    project = Project(
+        repo="nosetech/project-a", worktree_path=str(worktree), limit_auto_resume=False
+    )
+    assert extract_limit_wait_marker(_run_limit_failure(tmp_path, project)) is None
