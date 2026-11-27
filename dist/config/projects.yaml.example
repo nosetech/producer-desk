@@ -21,6 +21,12 @@ projects:
     # config/litellm_config.yaml（model_list[].model_info）で定義する
     # （num_ctxと同じ「そのモデルがどれだけの会話量を扱えるか」という関心事の
     # ため。config/litellm_config.yaml.example参照）。
+    #
+    # 利用リミット（429）到達時の自動再開（issue #331）。
+    # 省略時は true（解除予定時刻を過ぎたら同じセッションで自動再開する）。false なら
+    # 従来どおり判断待ちで止まる。連続の自動再開の上限は省略時 3 回。
+    # limit_auto_resume: false
+    # limit_auto_resume_max_attempts: 3
 
 # GitHubトークン（任意、issue #218）。Privateリポジトリを管理対象にする場合や、
 # `gh auth login`の認証とは別のトークンを使いたい場合に記載する。設定すると

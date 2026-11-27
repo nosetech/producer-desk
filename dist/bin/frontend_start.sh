@@ -25,6 +25,9 @@ check_not_running "dashboard" "${DASHBOARD_PID_FILE}" "frontend_stop.sh"
 mkdir -p "${LOG_DIR}"
 
 load_config || exit 1
+# ps上のプロセス名（issue #332）。空文字を明示した場合は上書きしない（nodeのまま）
+# ため、:= ではなく = で未設定時のみ既定値にする。
+: "${DASHBOARD_PROCESS_NAME=producer-desk-dashboard}"
 # ログローテータはorchestratorのvenvのpythonで動かすため、venvが必要（bin/start.shと同じ）
 ensure_orchestrator_venv || exit 1
 
@@ -41,6 +44,12 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
     export ORCHESTRATOR_URL
     if [ -n "${DASHBOARD_BIND_HOST}" ]; then
         export HOSTNAME="${DASHBOARD_BIND_HOST}"
+    fi
+    if [ -n "${DASHBOARD_PROCESS_NAME}" ] && [ -f "${SCRIPT_DIR}/set_process_title.cjs" ]; then
+        # Next.jsが起動後にprocess.titleを固定名へ書き換えるため、事前読み込み
+        # スクリプトで設定・上書き防止する。既存のNODE_OPTIONSには追記する。
+        export PROCESS_TITLE="${DASHBOARD_PROCESS_NAME}"
+        export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--require \"${SCRIPT_DIR}/set_process_title.cjs\""
     fi
     nohup node server.js > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
     echo $! >"${DASHBOARD_PID_FILE}"
