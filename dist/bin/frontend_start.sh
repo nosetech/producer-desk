@@ -45,13 +45,18 @@ log "dashboard を起動します（ポート${DASHBOARD_PORT}）..."
     if [ -n "${DASHBOARD_BIND_HOST}" ]; then
         export HOSTNAME="${DASHBOARD_BIND_HOST}"
     fi
+    node_preload_args=()
     if [ -n "${DASHBOARD_PROCESS_NAME}" ] && [ -f "${SCRIPT_DIR}/set_process_title.cjs" ]; then
         # Next.jsが起動後にprocess.titleを固定名へ書き換えるため、事前読み込み
-        # スクリプトで設定・上書き防止する。既存のNODE_OPTIONSには追記する。
+        # スクリプトで設定・上書き防止する。
+        # NODE_OPTIONSではなくnodeのコマンドライン引数（--require）で渡すこと。macOSでは
+        # process.titleに使える長さが元のargvの長さ（`node server.js`は14バイト）に
+        # 限られ、超えるとNULが潰れて`ps`に直後の環境変数（トークン等のsecrets）が
+        # 引数として表示されてしまう。--require <絶対パス>でargvを十分長くして防ぐ。
         export PROCESS_TITLE="${DASHBOARD_PROCESS_NAME}"
-        export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--require \"${SCRIPT_DIR}/set_process_title.cjs\""
+        node_preload_args=(--require "${SCRIPT_DIR}/set_process_title.cjs")
     fi
-    nohup node server.js > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
+    nohup node ${node_preload_args[@]+"${node_preload_args[@]}"} server.js > >(start_log_rotator "${DASHBOARD_LOG}") 2>&1 &
     echo $! >"${DASHBOARD_PID_FILE}"
 )
 
