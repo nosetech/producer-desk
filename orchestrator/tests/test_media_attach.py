@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -387,6 +390,64 @@ def _server_kwargs(tmp_path: Path, **overrides):
 INSTRUCT = "/api/projects/nosetech/project-a/issues/1/instruct"
 
 
+def _remaining_files(root: Path, timeout: float = 2.0) -> list[Path]:
+    """root配下に残っているファイルを返す。一時ファイルの削除完了を最大timeout秒待つ。
+
+    サーバーはレスポンスを返した後に`finally`で一時ファイルを消すため、レスポンス受信直後に
+    走査すると削除と競合する（issue #347）。走査中にディレクトリが消えた場合の
+    FileNotFoundErrorは削除途中とみなして再走査する。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            files = [p for p in root.rglob("*") if p.is_file()]
+        except FileNotFoundError:
+            files = None
+        if files == []:
+            return []
+        if time.monotonic() >= deadline:
+            # 期限切れ時は競合を吸収せずに走査し直し、残っているファイルをそのまま返す
+            return files if files is not None else [p for p in root.rglob("*") if p.is_file()]
+        time.sleep(0.01)
+
+
+def test_remaining_files_waits_for_deletion_after_response(tmp_path: Path) -> None:
+    issue_dir = tmp_path / "nosetech__project-a" / "1"
+    issue_dir.mkdir(parents=True)
+    (issue_dir / "a.png").write_bytes(PNG)
+    timer = threading.Timer(0.1, shutil.rmtree, args=(tmp_path / "nosetech__project-a",))
+    timer.start()
+    try:
+        assert _remaining_files(tmp_path) == []
+    finally:
+        timer.cancel()
+
+
+def test_remaining_files_tolerates_directory_removed_during_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "nosetech__project-a" / "1").mkdir(parents=True)
+    original_rglob = Path.rglob
+    raised: list[bool] = []
+
+    def racing_rglob(self, pattern):
+        # 1回目の走査では、走査中にサーバー側がディレクトリを消した状況を再現する
+        if not raised:
+            raised.append(True)
+            raise FileNotFoundError(2, "No such file or directory", str(self / "x" / "1"))
+        return original_rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", racing_rglob)
+    assert _remaining_files(tmp_path) == []
+    assert raised == [True]
+
+
+def test_remaining_files_returns_files_left_after_timeout(tmp_path: Path) -> None:
+    (tmp_path / "1").mkdir()
+    (tmp_path / "1" / "a.png").write_bytes(PNG)
+    assert _remaining_files(tmp_path, timeout=0.05) == [tmp_path / "1" / "a.png"]
+
+
 def test_server_instruct_with_attachment_saves_posts_and_dispatches(tmp_path: Path) -> None:
     kwargs, calls, event, posted = _server_kwargs(tmp_path)
     server, _ = _run_server(StateStore(), **kwargs)
@@ -454,7 +515,7 @@ def test_server_instruct_removes_files_when_posting_fails(tmp_path: Path) -> Non
             {"action": "instruct", "message": "x", "attachments": [_att("a.png", PNG)]},
         )
         assert status == 502
-        assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+        assert _remaining_files(tmp_path) == []
     finally:
         server.shutdown()
 
@@ -485,7 +546,7 @@ def test_server_create_issue_queued_removes_files_after_posting(tmp_path: Path) 
         assert status == 201
         assert body["issue_number"] == 30
         assert created == [("nosetech/project-a", "t", "p", [WEBM])]
-        assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+        assert _remaining_files(tmp_path) == []
     finally:
         server.shutdown()
 
